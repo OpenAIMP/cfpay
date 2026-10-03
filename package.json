@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "agents": "^0.4.0",
+    "ai": "^6.0.300",
     "hono": "^4.6.0",
     "postal-mime": "^2.4.0",
     "viem": "^2.21.0"
