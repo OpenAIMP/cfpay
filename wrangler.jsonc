@@ -15,7 +15,7 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_classes": ["CfmailAgent"]
+      "new_sqlite_classes": ["CfmailAgent"]
     }
   ],
   "send_email": [
