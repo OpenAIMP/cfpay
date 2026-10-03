@@ -73,6 +73,22 @@
     .status-msg.error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--red); }
     .status-msg.info { background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: var(--blue); }
     .no-metamask { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); border-radius: 6px; padding: 1rem; margin-bottom: 1rem; font-size: 0.85rem; color: var(--red); }
+
+    /* Dynamic Collapsible & Floating Guide UI */
+    .guide-banner { background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1.5rem; padding: 1rem 1.25rem; }
+    .guide-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+    .guide-title { font-weight: 600; font-size: 0.95rem; color: var(--accent); display: flex; align-items: center; gap: 0.5rem; }
+    .guide-actions { display: flex; gap: 0.5rem; }
+    .guide-btn { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--muted); padding: 0.25rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; }
+    .guide-btn:hover { color: var(--text); border-color: var(--accent); }
+    .guide-body { margin-top: 0.85rem; font-size: 0.825rem; color: var(--text); line-height: 1.5; border-top: 1px solid var(--border); padding-top: 0.85rem; }
+    .guide-body p { margin-bottom: 0.5rem; }
+    .guide-body ul { list-style: none; margin-left: 0.25rem; }
+    .guide-body li { margin-bottom: 0.5rem; color: var(--muted); }
+    .guide-body li strong { color: var(--text); }
+    .guide-body.collapsed { display: none; }
+    .floating-help-btn { position: fixed; bottom: 1.5rem; right: 1.5rem; background: var(--accent); color: white; border: none; padding: 0.5rem 1rem; border-radius: 20px; cursor: pointer; font-weight: 600; font-size: 0.8rem; box-shadow: 0 4px 12px rgba(0,0,0,0.4); z-index: 90; display: none; transition: background 0.2s; }
+    .floating-help-btn:hover { background: var(--accent-hover); }
   </style>
 </head>
 <body>
@@ -94,6 +110,27 @@
       </div>
     </div>
     <div class="container">
+      <div id="flowGuide" class="guide-banner">
+        <div class="guide-header" onclick="toggleGuide()">
+          <div class="guide-title">💡 How the tabs fit together</div>
+          <div class="guide-actions" onclick="event.stopPropagation()">
+            <button class="guide-btn" id="toggleGuideBtn" onclick="toggleGuide()">Minimize ▲</button>
+            <button class="guide-btn" onclick="dismissGuide()">Dismiss ✕</button>
+          </div>
+        </div>
+        <div id="guideBody" class="guide-body">
+          <p><strong>Typical flow:</strong> Scan → Auto Options Research (strategy universe → rank / best trade → Quant vs LLM) → Order ticket preview → Approve → Portfolio &amp; Ledger. Export or share any result as .xlsx by email, Slack, voice or webhook.</p>
+          <ul>
+            <li><strong>E*TRADE Broker hub:</strong> Market scan, Auto Options Research, order ticket, portfolio, ledger, NLQ, omnichannel and voice sub-tabs. Next: Starting point. Scan the market, research options, then preview an order.</li>
+            <li><strong>↳ Market Screener &amp; Scanner:</strong> Click Run Market Scan to screen stocks (nothing runs automatically). Next: Pick a symbol, then research its options or open it in the order ticket.</li>
+            <li><strong>↳ Auto Options Research:</strong> Ask in plain English or fill the thesis form. NLQ fills the form so you can see how it was interpreted. Rank candidates, pick the best trade, compare Quant vs LLM, or run the LLM idea experiment. Requests keep running if you switch tabs. Next: Click any recommendation to send it to the Fast Order Ticket.</li>
+            <li><strong>↳ Fast Order Ticket &amp; Preview:</strong> Creates a signed preview of an order. Nothing is sent without human approval. Next: Approve or reject, then follow the result in Portfolio and Ledger.</li>
+            <li><strong>↳ Portfolio / Ledger:</strong> Positions, orders and the audit trail of previews and executions. Next: Review outcomes and feed new ideas back into research.</li>
+            <li><strong>↳ NLQ / Omnichannel / Voice &amp; Slack:</strong> Multimodal AI interaction endpoints.</li>
+          </ul>
+        </div>
+      </div>
+      <button id="floatingHelpBtn" class="floating-help-btn" onclick="restoreGuide()">💡 Show Flow Guide</button>
       <div class="tabs">
         <div class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</div>
         <div class="tab" data-tab="emails" onclick="switchTab('emails')">Emails</div>
@@ -321,6 +358,34 @@
       container.scrollTop = container.scrollHeight;
     }
     document.getElementById('chatInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+    function toggleGuide() {
+      const body = document.getElementById('guideBody');
+      const btn = document.getElementById('toggleGuideBtn');
+      const isCollapsed = body.classList.toggle('collapsed');
+      btn.textContent = isCollapsed ? 'Expand ▼' : 'Minimize ▲';
+      localStorage.setItem('guide_collapsed', isCollapsed ? 'true' : 'false');
+    }
+    function dismissGuide() {
+      document.getElementById('flowGuide').style.display = 'none';
+      document.getElementById('floatingHelpBtn').style.display = 'block';
+      localStorage.setItem('guide_dismissed', 'true');
+    }
+    function restoreGuide() {
+      document.getElementById('flowGuide').style.display = 'block';
+      document.getElementById('guideBody').classList.remove('collapsed');
+      document.getElementById('toggleGuideBtn').textContent = 'Minimize ▲';
+      document.getElementById('floatingHelpBtn').style.display = 'none';
+      localStorage.removeItem('guide_dismissed');
+      localStorage.setItem('guide_collapsed', 'false');
+    }
+    if (localStorage.getItem('guide_dismissed') === 'true') {
+      document.getElementById('flowGuide').style.display = 'none';
+      document.getElementById('floatingHelpBtn').style.display = 'block';
+    } else if (localStorage.getItem('guide_collapsed') === 'true') {
+      document.getElementById('guideBody').classList.add('collapsed');
+      document.getElementById('toggleGuideBtn').textContent = 'Expand ▼';
+    }
+
     if (window.ethereum) {
       window.ethereum.on('accountsChanged', (accounts) => {
         if (accounts.length > 0) { account = accounts[0]; updateWalletUI(account); }
