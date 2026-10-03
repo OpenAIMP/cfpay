@@ -43,7 +43,6 @@
     "PAYMENT_ASSET": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "PAYMENT_AMOUNT": "10000",
     "PAYMENT_DESCRIPTION": "Agent service request via cfmail",
-    "PAY_TO_ADDRESS": "0xYourWalletAddress",
-    "DASHBOARD_API_KEY": "changeme-in-production"
+    "PAY_TO_ADDRESS": "0xYourWalletAddress"
   }
 }
