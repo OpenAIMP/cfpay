@@ -1,0 +1,50 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cfmail-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CfmailAgent",
+        "class_name": "CfmailAgent",
+        "script_name": "cfmail-agent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["CfmailAgent"]
+    }
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "remote": true
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "routes": [
+    {
+      "pattern": "pay.openaimp.com/*",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "EMAIL_DOMAIN": "cfmail.openaimp.com",
+    "PAYMENT_NETWORK": "base",
+    "PAYMENT_ASSET": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "PAYMENT_AMOUNT": "10000",
+    "PAYMENT_DESCRIPTION": "Agent service request via cfmail",
+    "PAY_TO_ADDRESS": "0xYourWalletAddress",
+    "DASHBOARD_API_KEY": "changeme-in-production"
+  }
+}

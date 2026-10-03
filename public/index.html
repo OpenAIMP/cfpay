@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CFmail Agent Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a; --text: #e4e4e7;
+      --muted: #71717a; --accent: #f6821f; --accent-hover: #e07010;
+      --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .header { background: var(--card); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 1.25rem; color: var(--accent); }
+    .header .right { display: flex; align-items: center; gap: 1rem; }
+    .header .badge { font-size: 0.75rem; color: var(--muted); }
+    .wallet-btn { background: #f6821f; color: white; border: none; padding: 0.4rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600; transition: background 0.2s; }
+    .wallet-btn:hover { background: #e07010; }
+    .wallet-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .wallet-addr { font-size: 0.75rem; font-family: monospace; color: var(--green); }
+    .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    .tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); }
+    .tab { padding: 0.75rem 1.5rem; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; transition: all 0.2s; }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab:hover { color: var(--text); }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; }
+    .stat-card .label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; margin-bottom: 0.5rem; }
+    .stat-card .value { font-size: 2rem; font-weight: 700; }
+    .stat-card .value.green { color: var(--green); }
+    .stat-card .value.blue { color: var(--blue); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; }
+    .card-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem; }
+    .card-header .subject { font-weight: 600; font-size: 0.95rem; }
+    .card-header .meta { font-size: 0.75rem; color: var(--muted); }
+    .card-body { font-size: 0.875rem; color: var(--muted); line-height: 1.5; }
+    .badge-inbound { background: var(--blue); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .badge-outbound { background: var(--accent); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .badge-received { background: var(--green); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .badge-sent { background: var(--blue); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .badge-confirmed { background: var(--green); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .badge-pending { background: #eab308; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .ai-box { background: rgba(246,130,31,0.08); border: 1px solid rgba(246,130,31,0.2); border-radius: 6px; padding: 0.75rem; margin-top: 0.75rem; font-size: 0.8rem; }
+    .ai-box .ai-label { color: var(--accent); font-weight: 600; margin-bottom: 0.25rem; }
+    .form-group { margin-bottom: 1rem; }
+    .form-group label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    .form-group input, .form-group textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem; color: var(--text); font-size: 0.875rem; font-family: inherit; }
+    .form-group textarea { min-height: 120px; resize: vertical; }
+    .btn { background: var(--accent); color: white; border: none; padding: 0.6rem 1.5rem; border-radius: 6px; cursor: pointer; font-size: 0.875rem; font-weight: 600; transition: background 0.2s; }
+    .btn:hover { background: var(--accent-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-metamask { background: #f6821f; }
+    .btn-metamask:hover { background: #e07010; }
+    .chat-container { max-height: 400px; overflow-y: auto; margin-bottom: 1rem; padding: 0.5rem; }
+    .chat-msg { margin-bottom: 0.75rem; padding: 0.6rem 1rem; border-radius: 8px; max-width: 80%; }
+    .chat-msg.user { background: var(--blue); color: white; margin-left: auto; }
+    .chat-msg.assistant { background: var(--card); border: 1px solid var(--border); }
+    .empty { text-align: center; color: var(--muted); padding: 3rem; }
+    .payment-info { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 1rem; }
+    .payment-info .item { font-size: 0.8rem; }
+    .payment-info .item .key { color: var(--muted); }
+    .payment-info .item .val { color: var(--text); font-family: monospace; }
+    .login-overlay { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .login-box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem; width: 360px; }
+    .login-box h2 { color: var(--accent); margin-bottom: 1rem; }
+    .loading { text-align: center; padding: 2rem; color: var(--muted); }
+    .status-msg { padding: 0.75rem; border-radius: 6px; margin-top: 1rem; font-size: 0.85rem; }
+    .status-msg.success { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: var(--green); }
+    .status-msg.error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--red); }
+    .status-msg.info { background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: var(--blue); }
+    .no-metamask { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); border-radius: 6px; padding: 1rem; margin-bottom: 1rem; font-size: 0.85rem; color: var(--red); }
+  </style>
+</head>
+<body>
+  <div id="login" class="login-overlay">
+    <div class="login-box">
+      <h2>CFmail Agent Dashboard</h2>
+      <p style="color:var(--muted);font-size:0.8rem;margin-bottom:1rem;">Enter your dashboard API key</p>
+      <div class="form-group"><input type="password" id="apiKeyInput" placeholder="API Key" /></div>
+      <button class="btn" style="width:100%;" onclick="login()">Login</button>
+    </div>
+  </div>
+  <div id="app" style="display:none;">
+    <div class="header">
+      <h1>CFmail Agent</h1>
+      <div class="right">
+        <span class="badge" id="emailAddr">agent@cfmail.openaimp.com</span>
+        <button class="wallet-btn" id="connectWalletBtn" onclick="connectMetaMask()">Connect MetaMask</button>
+        <span class="wallet-addr" id="walletAddrDisplay" style="display:none;"></span>
+      </div>
+    </div>
+    <div class="container">
+      <div class="tabs">
+        <div class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</div>
+        <div class="tab" data-tab="emails" onclick="switchTab('emails')">Emails</div>
+        <div class="tab" data-tab="payments" onclick="switchTab('payments')">Payments</div>
+        <div class="tab" data-tab="send" onclick="switchTab('send')">Send Email</div>
+        <div class="tab" data-tab="pay" onclick="switchTab('pay')">Pay & Process</div>
+        <div class="tab" data-tab="chat" onclick="switchTab('chat')">Chat</div>
+      </div>
+      <div id="overview" class="panel active">
+        <div class="stats-grid" id="statsGrid"><div class="loading">Loading stats...</div></div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;"><h3 style="font-size:1rem;">Payment Configuration</h3><span class="badge-confirmed">x402 Active</span></div>
+          <div class="payment-info" id="paymentInfo"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+      <div id="emails" class="panel"><div id="emailList"><div class="loading">Loading emails...</div></div></div>
+      <div id="payments" class="panel"><div id="paymentList"><div class="loading">Loading payments...</div></div></div>
+      <div id="send" class="panel">
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Send Email</h3>
+          <div class="form-group"><label>To</label><input type="email" id="sendTo" placeholder="recipient@example.com" /></div>
+          <div class="form-group"><label>Subject</label><input type="text" id="sendSubject" placeholder="Subject" /></div>
+          <div class="form-group"><label>Body</label><textarea id="sendBody" placeholder="Email content..."></textarea></div>
+          <button class="btn" onclick="sendEmail()">Send Email</button>
+          <div id="sendResult" style="margin-top:1rem;"></div>
+        </div>
+      </div>
+      <div id="pay" class="panel">
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Pay & Process Request</h3>
+          <p style="color:var(--muted);font-size:0.85rem;margin-bottom:1rem;">Submit a request and pay via MetaMask (USDC on Base). The agent will process your request with AI and send a response via email.</p>
+          <div id="metamaskWarning"></div>
+          <div class="form-group"><label>Your Email</label><input type="email" id="payEmail" placeholder="you@example.com" /></div>
+          <div class="form-group"><label>Request</label><textarea id="payRequest" placeholder="What do you want the agent to do?"></textarea></div>
+          <button class="btn btn-metamask" id="payProcessBtn" onclick="payAndProcess()" disabled>Connect MetaMask First</button>
+          <div id="payResult" style="margin-top:1rem;"></div>
+        </div>
+      </div>
+      <div id="chat" class="panel">
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Chat with Agent</h3>
+          <div class="chat-container" id="chatMessages"></div>
+          <div style="display:flex;gap:0.5rem;">
+            <input type="text" id="chatInput" placeholder="Ask the agent..." style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
+            <button class="btn" onclick="sendChat()">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    let apiKey = localStorage.getItem('cfmail_api_key') || '';
+    let chatHistory = [];
+    let account = null;
+    if (apiKey) { document.getElementById('login').style.display = 'none'; document.getElementById('app').style.display = 'block'; init(); }
+    function login() {
+      apiKey = document.getElementById('apiKeyInput').value;
+      if (!apiKey) return;
+      localStorage.setItem('cfmail_api_key', apiKey);
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      init();
+    }
+    async function api(path, method = 'GET', body = null) {
+      const opts = { method, headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' } };
+      if (body) opts.body = JSON.stringify(body);
+      const res = await fetch(path, opts);
+      if (res.status === 401) { localStorage.removeItem('cfmail_api_key'); location.reload(); }
+      return res.json();
+    }
+    function switchTab(tab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
+      document.getElementById(tab).classList.add('active');
+      if (tab === 'overview') loadStats();
+      if (tab === 'emails') loadEmails();
+      if (tab === 'payments') loadPayments();
+      if (tab === 'pay') checkMetaMask();
+    }
+    async function init() { loadStats(); checkMetaMask(); }
+    async function checkMetaMask() {
+      const warning = document.getElementById('metamaskWarning');
+      const btn = document.getElementById('payProcessBtn');
+      if (typeof window.ethereum === 'undefined') {
+        warning.innerHTML = `<div class="no-metamask">MetaMask not detected. <a href="https://metamask.io/download/" target="_blank" style="color:var(--accent);">Install MetaMask</a> to pay for requests.</div>`;
+        btn.disabled = true; btn.textContent = 'MetaMask Not Found'; return;
+      }
+      warning.innerHTML = ''; btn.disabled = false; btn.textContent = 'Connect MetaMask First';
+      const accounts = await window.ethereum.request({ method: 'eth_accounts' }).catch(() => []);
+      if (accounts.length > 0) { account = accounts[0]; updateWalletUI(account); }
+    }
+    async function connectMetaMask() {
+      if (typeof window.ethereum === 'undefined') { alert('MetaMask not detected. Install from https://metamask.io/download/'); return; }
+      try {
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        account = accounts[0]; updateWalletUI(account);
+        try {
+          await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x2105' }] });
+        } catch (switchError) {
+          if (switchError.code === 4902) {
+            await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{ chainId: '0x2105', chainName: 'Base', nativeCurrency: { name: 'Ethereum', symbol: 'ETH', decimals: 18 }, rpcUrls: ['https://mainnet.base.org'], blockExplorerUrls: ['https://basescan.org'] }] });
+          }
+        }
+      } catch (err) { console.error('MetaMask connection failed:', err); alert('Failed to connect MetaMask: ' + err.message); }
+    }
+    function updateWalletUI(addr) {
+      const shortAddr = addr.slice(0, 6) + '...' + addr.slice(-4);
+      document.getElementById('walletAddrDisplay').textContent = shortAddr;
+      document.getElementById('walletAddrDisplay').style.display = 'inline';
+      document.getElementById('connectWalletBtn').textContent = 'Connected';
+      document.getElementById('connectWalletBtn').disabled = true;
+      const btn = document.getElementById('payProcessBtn');
+      btn.disabled = false; btn.textContent = 'Pay & Process ($0.01 USDC)';
+    }
+    async function payAndProcess() {
+      const resultDiv = document.getElementById('payResult');
+      const btn = document.getElementById('payProcessBtn');
+      if (!account) { resultDiv.innerHTML = '<div class="status-msg error">Please connect MetaMask first.</div>'; return; }
+      const email = document.getElementById('payEmail').value;
+      const request = document.getElementById('payRequest').value;
+      if (!email || !request) { resultDiv.innerHTML = '<div class="status-msg error">Please fill in email and request.</div>'; return; }
+      btn.disabled = true; btn.textContent = 'Processing...';
+      resultDiv.innerHTML = '<div class="status-msg info">Step 1: Requesting payment challenge...</div>';
+      try {
+        const requestBody = JSON.stringify({ email, request });
+        const response = await fetch('/api/process', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: requestBody });
+        if (response.status === 402) {
+          const paymentRequired = response.headers.get('PAYMENT-REQUIRED') || response.headers.get('x-payment-required');
+          if (!paymentRequired) { resultDiv.innerHTML = '<div class="status-msg error">No payment challenge header found in 402 response.</div>'; btn.disabled = false; btn.textContent = 'Pay & Process ($0.01 USDC)'; return; }
+          const challenge = JSON.parse(atob(paymentRequired));
+          const accept = challenge.accepts[0];
+          resultDiv.innerHTML = '<div class="status-msg info">Step 2: Sending USDC payment via MetaMask...</div>';
+          const usdcContract = accept.asset;
+          const amount = accept.amount;
+          const payTo = accept.payTo;
+          const transferData = encodeERC20Transfer(payTo, amount);
+          const txHash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from: account, to: usdcContract, data: transferData }] });
+          resultDiv.innerHTML = '<div class="status-msg info">Step 3: Payment sent! Confirming with agent...<br>Tx: ' + txHash.slice(0, 10) + '...</div>';
+          const retryResponse = await fetch('/api/process', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'PAYMENT-SIGNATURE': btoa(JSON.stringify({ x402Version: 2, scheme: 'exact', network: accept.network, asset: accept.asset, amount: accept.amount, payTo: accept.payTo, txHash: txHash })) },
+            body: requestBody,
+          });
+          if (retryResponse.ok) {
+            const result = await retryResponse.json();
+            resultDiv.innerHTML = '<div class="status-msg success">Payment confirmed! Request processed.<br>Receipt ID: ' + (result.receipt?.paymentId || 'N/A') + '<br>Response sent to ' + email + '</div>';
+            document.getElementById('payEmail').value = ''; document.getElementById('payRequest').value = '';
+          } else if (retryResponse.status === 402) {
+            resultDiv.innerHTML = '<div class="status-msg error">Payment not yet verified. The facilitator may need a few seconds to confirm the on-chain transaction. Please try again in a moment.</div>';
+          } else {
+            const err = await retryResponse.json().catch(() => ({}));
+            resultDiv.innerHTML = '<div class="status-msg error">Request failed: ' + (err.error || retryResponse.statusText) + '</div>';
+          }
+        } else if (response.ok) {
+          const result = await response.json();
+          resultDiv.innerHTML = '<div class="status-msg success">Request processed (no payment required).<br>Receipt ID: ' + (result.receipt?.paymentId || 'N/A') + '</div>';
+        } else {
+          resultDiv.innerHTML = '<div class="status-msg error">Unexpected response: ' + response.status + '</div>';
+        }
+      } catch (err) { console.error('Payment flow error:', err); resultDiv.innerHTML = '<div class="status-msg error">Error: ' + err.message + '</div>'; }
+      btn.disabled = false; btn.textContent = 'Pay & Process ($0.01 USDC)';
+    }
+    function encodeERC20Transfer(to, amount) {
+      const selector = '0xa9059cbb';
+      const paddedTo = to.toLowerCase().replace('0x', '').padStart(64, '0');
+      const paddedAmount = BigInt(amount).toString(16).padStart(64, '0');
+      return selector + paddedTo + paddedAmount;
+    }
+    async function loadStats() {
+      const [stats, config] = await Promise.all([api('/api/dashboard/stats'), api('/api/dashboard/payment-config')]);
+      document.getElementById('statsGrid').innerHTML = `
+        <div class="stat-card"><div class="label">Emails Received</div><div class="value blue">${stats.totalEmailsReceived}</div></div>
+        <div class="stat-card"><div class="label">Emails Sent</div><div class="value">${stats.totalEmailsSent}</div></div>
+        <div class="stat-card"><div class="label">Payments Received</div><div class="value green">${stats.totalPaymentsReceived}</div></div>
+        <div class="stat-card"><div class="label">Payments Sent</div><div class="value">${stats.totalPaymentsSent}</div></div>`;
+      document.getElementById('paymentInfo').innerHTML = `
+        <div class="item"><div class="key">Wallet</div><div class="val">${config.payTo}</div></div>
+        <div class="item"><div class="key">Network</div><div class="val">${config.network}</div></div>
+        <div class="item"><div class="key">Asset</div><div class="val">USDC</div></div>
+        <div class="item"><div class="key">Amount</div><div class="val">${config.formattedAmount}</div></div>`;
+    }
+    async function loadEmails() {
+      const data = await api('/api/dashboard/emails');
+      const list = document.getElementById('emailList');
+      if (!data.emails || data.emails.length === 0) { list.innerHTML = '<div class="empty">No emails yet</div>'; return; }
+      list.innerHTML = data.emails.map(e => `
+        <div class="card">
+          <div class="card-header"><div><span class="badge-${e.direction}">${e.direction}</span><span class="subject" style="margin-left:0.5rem;">${e.subject}</span></div><div class="meta">${e.direction === 'inbound' ? 'From: ' + e.from : 'To: ' + e.to}<br>${new Date(e.receivedAt).toLocaleString()}</div></div>
+          <div class="card-body">${(e.body || '').substring(0, 300)}${e.body && e.body.length > 300 ? '...' : ''}</div>
+          ${e.aiSummary ? `<div class="ai-box"><div class="ai-label">AI Summary</div>${e.aiSummary}</div>` : ''}
+          ${e.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${(e.aiResponse || '').substring(0, 300)}...</div>` : ''}
+        </div>`).join('');
+    }
+    async function loadPayments() {
+      const data = await api('/api/dashboard/payments');
+      const list = document.getElementById('paymentList');
+      if (!data.payments || data.payments.length === 0) { list.innerHTML = '<div class="empty">No payments yet</div>'; return; }
+      list.innerHTML = data.payments.map(p => `
+        <div class="card">
+          <div class="card-header"><div><span class="badge-${p.direction}">${p.direction}</span><span class="badge-${p.status}" style="margin-left:0.5rem;">${p.status}</span><span style="margin-left:0.5rem;font-weight:600;">${p.amount} ${p.currency}</span></div><div class="meta">${new Date(p.createdAt).toLocaleString()}</div></div>
+          <div class="card-body">${p.description}<br><span style="font-family:monospace;font-size:0.75rem;">To: ${p.toAddress}</span><br><span style="font-family:monospace;font-size:0.75rem;">Network: ${p.network}</span></div>
+        </div>`).join('');
+    }
+    async function sendEmail() {
+      const to = document.getElementById('sendTo').value, subject = document.getElementById('sendSubject').value, body = document.getElementById('sendBody').value;
+      const result = document.getElementById('sendResult');
+      result.innerHTML = '<div class="loading">Sending...</div>';
+      const res = await api('/api/dashboard/send-email', 'POST', { to, subject, body });
+      if (res.success) { result.innerHTML = '<div class="status-msg success">Email sent successfully!</div>'; document.getElementById('sendTo').value=''; document.getElementById('sendSubject').value=''; document.getElementById('sendBody').value=''; }
+      else { result.innerHTML = '<div class="status-msg error">Failed to send email</div>'; }
+    }
+    async function sendChat() {
+      const input = document.getElementById('chatInput');
+      const msg = input.value;
+      if (!msg) return;
+      input.value = '';
+      const container = document.getElementById('chatMessages');
+      container.innerHTML += `<div class="chat-msg user">${msg}</div>`;
+      container.innerHTML += `<div class="chat-msg assistant" id="thinking">Thinking...</div>`;
+      container.scrollTop = container.scrollHeight;
+      const res = await api('/api/dashboard/chat', 'POST', { message: msg });
+      document.getElementById('thinking').remove();
+      container.innerHTML += `<div class="chat-msg assistant">${res.response}</div>`;
+      container.scrollTop = container.scrollHeight;
+    }
+    document.getElementById('chatInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+    if (window.ethereum) {
+      window.ethereum.on('accountsChanged', (accounts) => {
+        if (accounts.length > 0) { account = accounts[0]; updateWalletUI(account); }
+        else { account = null; document.getElementById('walletAddrDisplay').style.display = 'none'; document.getElementById('connectWalletBtn').textContent = 'Connect MetaMask'; document.getElementById('connectWalletBtn').disabled = false; }
+      });
+    }
+  </script>
+</body>
+</html>

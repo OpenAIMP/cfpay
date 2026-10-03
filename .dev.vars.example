@@ -1,0 +1,6 @@
+# Copy this file to .dev.vars and fill in your secrets for local development.
+# For production, use: npx wrangler secret put <NAME>
+
+PAYMENT_PRIVATE_KEY=0xYourWalletPrivateKey
+EMAIL_SECRET=your-random-secret-string-for-secure-replies
+DASHBOARD_API_KEY=your-dashboard-api-key
