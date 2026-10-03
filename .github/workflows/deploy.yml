@@ -65,4 +65,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: deploy --name cfmail-agent-preview
+          command: deploy src/index.ts --name cfmail-agent-preview
