@@ -8,8 +8,7 @@
     "bindings": [
       {
         "name": "CfmailAgent",
-        "class_name": "CfmailAgent",
-        "script_name": "cfmail-agent"
+        "class_name": "CfmailAgent"
       }
     ]
   },

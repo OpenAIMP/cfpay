@@ -44,6 +44,19 @@ A production-grade, fully agentic solution that:
   USDC on Base      (outbound email)    (AI responses)
 ```
 
+## Troubleshooting & Custom Domain Setup
+
+### Why `pay.openaimp.com` didn't bring up the agent/UI on Cloudflare
+
+1. **Durable Object Binding Loop (`script_name` issue in `wrangler.jsonc`):**
+   - In `wrangler.jsonc`, the Durable Object binding had `"script_name": "cfmail-agent"`. Self-referencing Durable Objects in the same Worker script must NOT specify `script_name` pointing to itself. Having `script_name` set causes Cloudflare Workers to attempt cross-script RPC resolution to a target script that fails or creates an invalid binding loop, resulting in runtime 500 errors when accessing agent routes or rendering DO-dependent components. This has been fixed in `wrangler.jsonc`.
+
+2. **GitHub Actions Deployment CI/CD Peer Dependency Failures:**
+   - The CI deployment action (`.github/workflows/deploy.yml`) runs `npm install`. Without `legacy-peer-deps=true`, `npm install` failed due to peer dependency mismatches between `@cloudflare/workers-types`, `wrangler`, and `agents`. Added `.npmrc` with `legacy-peer-deps=true` so deployments succeed seamlessly in CI/CD.
+
+3. **Cloudflare Custom Domain DNS & SSL Propagation:**
+   - Worker custom domains require `openaimp.com` to be an active DNS zone in your Cloudflare account (`CF_ACCOUNT_ID`). On initial creation, TLS certificate generation and DNS route creation can take 1–2 minutes. Ensure the `CF_API_TOKEN` in GitHub secrets has permissions for `Zone:Edit` or `Workers Tail/Routes`.
+
 ## Custom Domain
 
 The Worker is served at `https://pay.openaimp.com` via a Workers custom domain (configured in `wrangler.jsonc`). On first deploy, Wrangler automatically creates the DNS record and TLS certificate.
