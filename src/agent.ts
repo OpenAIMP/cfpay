@@ -111,10 +111,13 @@ Be concise, professional, and helpful.`;
       direction: "outbound", receivedAt: new Date().toISOString(), paid: false,
     };
     try {
-      await this.sendEmail({
-        binding: this.env.EMAIL, to, from: `agent@${this.env.EMAIL_DOMAIN}`,
-        replyTo: `agent@${this.env.EMAIL_DOMAIN}`, subject, text: body, secret: this.env.EMAIL_SECRET,
-      } as any);
+      await this.env.EMAIL.send({
+        to,
+        from: `agent@${this.env.EMAIL_DOMAIN}`,
+        replyTo: `agent@${this.env.EMAIL_DOMAIN}`,
+        subject,
+        text: body,
+      });
       const emails = this.state.emails || [];
       emails.push(record);
       this.setState({ ...this.state, emails, totalEmailsSent: (this.state.totalEmailsSent || 0) + 1 });
