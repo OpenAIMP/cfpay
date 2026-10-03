@@ -34,7 +34,7 @@
   },
   "routes": [
     {
-      "pattern": "pay.openaimp.com/*",
+      "pattern": "pay.openaimp.com",
       "custom_domain": true
     }
   ],
