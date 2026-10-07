@@ -1,182 +1,136 @@
-# Agentic Solution — Cloudflare Agents
+# CFmail Agent — Fully Agentic Email + x402 Payments on Cloudflare
 
-A full-stack agentic solution built on the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/) that combines every capability from the Agents documentation:
-
-| Capability | Where in this project | Docs |
-|---|---|---|
-| **AI / LLM** | `src/agent.ts` — `callReasoningModel()`, `generateInsight()` | [Using AI Models](https://developers.cloudflare.com/agents/runtime/operations/using-ai-models/) |
-| **MCP Tools** | `src/mcp-server.ts` — `ToolsMCP` class + `addMcpServer()` in agent | [MCP servers](https://developers.cloudflare.com/agents/model-context-protocol/) |
-| **Scheduled Tasks** | `src/agent.ts` — `this.schedule()` with cron, delay, one-time | [Schedule tasks](https://developers.cloudflare.com/agents/runtime/execution/schedule-tasks/) |
-| **Email Routing** | `src/agent.ts` — `onEmail()`, `replyToEmail()`, `sendEmail()` | [Email](https://developers.cloudflare.com/agents/communication-channels/email/) |
-| **Cloudflare Workflows** | `src/workflow.ts` — `ProcessingWorkflow extends AgentWorkflow` | [Run Workflows](https://developers.cloudflare.com/agents/runtime/execution/run-workflows/) |
-| **Webhooks** | `src/webhooks.ts` — signature verification + routing for GitHub, Stripe, Slack | [Webhooks](https://developers.cloudflare.com/agents/communication-channels/webhooks/) |
-| **State Management** | `src/agent.ts` — `initialState`, `setState()`, `onStateChanged()` | [State management](https://developers.cloudflare.com/agents/runtime/lifecycle/state/) |
-| **Callable Methods** | `src/agent.ts` — `@callable()` decorator for RPC | [Callable methods](https://developers.cloudflare.com/agents/runtime/lifecycle/callable-methods/) |
-| **Client SDK** | `public/index.html` — `useAgent()` React hook | [Client SDK](https://developers.cloudflare.com/agents/communication-channels/chat/client-sdk/) |
+A production-grade, fully agentic solution that:
+- **Receives and sends emails** via `cfmail.openaimp.com` using Cloudflare Email Service
+- **Accepts x402 v2 payments** in ETH or USDC on Base, Base Sepolia, and Ethereum Sepolia — clients pay via MetaMask
+- **Sends payments to other x402 endpoints** — agent can pay other x402-gated services using viem
+- **Uses Workers AI** to generate intelligent email responses and summaries
+- **Built on the Agents SDK** with Durable Objects for stateful, persistent state
+- **Web dashboard** at `https://pay.openaimp.com` — view emails, payments, send emails, chat with agent, pay via MetaMask
+- **CI/CD via GitHub Actions** with GitHub Environments — auto-deploys on push to `main`
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Client (Browser)                    │
-│  useAgent() ←→ WebSocket ←→ Agent (Durable Object)   │
-└──────────────────────────┬──────────────────────────┘
-                           │
-         ┌─────────────────┼──────────────────┐
-         ▼                 ▼                  ▼
-   ┌──────────┐    ┌──────────┐     ┌──────────────┐
-   │ Workers AI│    │ MCP Server│     │  Workflows   │
-   │ (LLM)    │    │ (ToolsMCP)│     │ (Processing) │
-   └──────────┘    └─────┬────┘     └──────┬───────┘
-                         │                  │
-                    External MCP      Durable steps
-                    servers (OAuth)   + retries
-                           │
-         ┌─────────────────┼──────────────────┐
-         ▼                 ▼                  ▼
-   ┌──────────┐    ┌──────────┐     ┌──────────────┐
-   │  Email   │    │ Scheduled │     │   Webhooks   │
-   │ Routing  │    │  Tasks    │     │ GitHub/Stripe│
-   └──────────┘    │ (cron)   │     │ /Slack       │
-                   └──────────┘     └──────────────┘
+                         ┌──────────────────────────┐
+                         │   Email Routing            │
+                         │   cfmail.openaimp.com      │
+                         └───────────┬──────────────┘
+                                     │ inbound email
+                                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Cloudflare Worker (pay.openaimp.com)           │
+│                                                              │
+│  ┌──────────┐   ┌──────────────────────────────────────────┐ │
+│  │ email()  │──▶│  CfmailAgent (Durable Object)            │ │
+│  │ handler  │   │  - onEmail(): parse + AI summary + reply │ │
+│  └──────────┘   │  - sendOutboundEmail(): send via binding │ │
+│                  │  - processPaidRequest(): x402 + AI + email│
+│  ┌──────────┐   │  - payExternalEndpoint(): pay other x402 │ │
+│  │ fetch()  │──▶│  - chat(): AI chat for dashboard          │ │
+│  │ Hono API │   │  - State: emails[], payments[], stats    │ │
+│  │ + x402   │   └──────────────────────────────────────────┘ │
+│  └──────────┘                                                │
+│  ┌──────────┐                                                 │
+│  │ ASSETS   │──▶ public/index.html (Dashboard SPA + MetaMask) │
+│  └──────────┘                                                 │
+│  ┌──────────┐                                                 │
+│  │ AI       │──▶ Workers AI (Llama 3.3 70B)                   │
+│  └──────────┘                                                 │
+└─────────────────────────────────────────────────────────────┘
+       │                │                    │
+       ▼                ▼                    ▼
+  x402 v2 + facilitator  Email Service       Workers AI
+  ETH / USDC on 3 EVM networks (outbound email) (AI responses)
 ```
 
-## Quick start
+## Troubleshooting & Custom Domain Setup
 
+### Why `pay.openaimp.com` didn't bring up the agent/UI on Cloudflare
+
+1. **Durable Object Binding Loop (`script_name` issue in `wrangler.jsonc`):**
+   - In `wrangler.jsonc`, the Durable Object binding had `"script_name": "cfmail-agent"`. Self-referencing Durable Objects in the same Worker script must NOT specify `script_name` pointing to itself. Having `script_name` set causes Cloudflare Workers to attempt cross-script RPC resolution to a target script that fails or creates an invalid binding loop, resulting in runtime 500 errors when accessing agent routes or rendering DO-dependent components. This has been fixed in `wrangler.jsonc`.
+
+2. **GitHub Actions Deployment CI/CD Peer Dependency Failures:**
+   - The CI deployment action (`.github/workflows/deploy.yml`) runs `npm install`. Without `legacy-peer-deps=true`, `npm install` failed due to peer dependency mismatches between `@cloudflare/workers-types`, `wrangler`, and `agents`. Added `.npmrc` with `legacy-peer-deps=true` so deployments succeed seamlessly in CI/CD.
+
+3. **Cloudflare Custom Domain DNS & SSL Propagation:**
+   - Worker custom domains require `openaimp.com` to be an active DNS zone in your Cloudflare account (`CF_ACCOUNT_ID`). On initial creation, TLS certificate generation and DNS route creation can take 1–2 minutes. Ensure the `CF_API_TOKEN` in GitHub secrets has permissions for `Zone:Edit` or `Workers Tail/Routes`.
+
+## Custom Domain
+
+The Worker is served at `https://pay.openaimp.com` via a Workers custom domain (configured in `wrangler.jsonc`). On first deploy, Wrangler automatically creates the DNS record and TLS certificate.
+
+## MetaMask Integration
+
+The dashboard includes a **Pay & Process** tab that lets users:
+1. Choose Base, Base Sepolia, or Ethereum Sepolia and connect MetaMask (auto-switches to the selected chain)
+2. Submit a request with their email address
+3. Pay the configured ETH or USDC amount on the selected chain via MetaMask
+4. The agent processes the request with AI and sends a response via email
+
+Payment requirements use CAIP-2 network IDs (`eip155:8453`, `eip155:84532`, and `eip155:11155111`) and are configured in `PAYMENT_CONFIG`. The Worker verifies payment signatures through `X402_FACILITATOR_URL` and fails closed if verification is unavailable or unsuccessful. A successful response includes both `PAYMENT-RESPONSE` and `x-payment-response` receipt headers.
+
+The dashboard displays the configured payment amount for the selected network and currency. Paid requests are recorded as confirmed only after payment verification, with the transaction hash retained in the payment record.
+
+## Agent-to-Agent Payments
+
+The agent can also **pay other x402-gated services** using the `payExternalEndpoint` RPC method. This uses `viem` to sign and send USDC transfers on Base, then retries the request with payment proof.
+
+### Getting your wallet address and private key from MetaMask
+
+**Wallet address** (for `PAY_TO_ADDRESS` in `wrangler.jsonc`):
+- Open MetaMask → copy the address at the top (starts with `0x...`)
+
+**Private key** (for `PAYMENT_PRIVATE_KEY` GitHub secret):
+- MetaMask → Account details → Show private key (requires password)
+- Format: `0x` followed by 64 hex characters
+- ⚠️ Never commit this to git — only put it in GitHub environment secrets
+
+## Setup
+
+### 1. Clone & Install
 ```bash
+git clone <your-repo-url>
+cd cfmail-agent
 npm install
-npx wrangler types
-npx wrangler dev
 ```
 
-Then open `http://localhost:8787`.
+### 2. Configure wrangler.jsonc
+Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 
-## Deploy
+### 3. Set Up GitHub Environments (see .github/SECRETS.md)
+1. Go to GitHub repo → Settings → Environments → New environment → `PROD`
+2. Add 5 secrets:
+   - `CF_API_TOKEN`
+   - `CF_ACCOUNT_ID` — `1e7e9bb45eca8d59ec86bbd6dac9b900`
+   - `PAYMENT_PRIVATE_KEY` (from MetaMask → Account details → Show private key)
+   - `EMAIL_SECRET` — `openssl rand -hex 32`
+   - `DASHBOARD_API_KEY` — `openssl rand -hex 32`
 
-```bash
-npx wrangler deploy
-```
+### 4. Push to main → CI/CD deploys automatically
 
-## File structure
+### 5. Configure Email Routing (one-time, dashboard)
+1. Go to [Email Routing](https://dash.cloudflare.com/1e7e9bb45eca8d59ec86bbd6dac9b900/openaimp.com/email/routing)
+2. Settings → Subdomains → Add `cfmail` (Cloudflare auto-adds MX/SPF/DKIM)
+3. Onboard `cfmail.openaimp.com` for [Email Sending](https://dash.cloudflare.com/?to=/:account/email-service/sending)
+4. Create routing rule: `agent@cfmail.openaimp.com` → Send to Worker → `cfmail-agent`
 
-```
-agentic-solution/
-├── src/
-│   ├── index.ts          # Worker entry point (re-exports)
-│   ├── agent.ts          # Main Agent class — AI, MCP, scheduling, email, state, RPC, webhooks
-│   ├── mcp-server.ts     # MCP server exposing tools (get_weather, search_knowledge, create_task)
-│   ├── webhooks.ts       # Webhook signature verification (GitHub, Stripe, Slack) + outgoing webhook helpers
-│   └── workflow.ts       # AgentWorkflow — durable multi-step background processing
-├── public/
-│   └── index.html        # React frontend using useAgent() client SDK
-├── wrangler.jsonc        # Wrangler config (AI, email, DOs, workflows, assets bindings)
-├── package.json
-└── tsconfig.json
-```
+## API Endpoints
 
-## Key APIs used
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/` | GET | — | Dashboard SPA + MetaMask |
+| `/health` | GET | — | Health check |
+| `/api/process` | POST | x402 ($0.01 USDC) | Process request + send email |
+| `/api/emails` | GET | x402 ($0.01 USDC) | Retrieve email history |
+| `/mcp/tools/process` | POST | x402 ($0.01 USDC) | MCP tool for agent-to-agent calls |
+| `/api/dashboard/*` | GET/POST | API Key | Dashboard endpoints |
 
-### State Management
-```ts
-initialState: AgentState = { messages: [], taskProgress: 0, ... };
-onStateChanged(prev, current) { /* react to changes */ }
-this.setState({ ...this.state, taskProgress: 0.5 });
-```
+## Documentation References
 
-### Callable Methods (RPC)
-```ts
-@callable()
-async addTask(title: string, data: string) { ... }
-
-// From client:
-await agent.call("addTask", ["My Task", "data"]);
-```
-
-### Scheduling
-```ts
-// One-time delay (seconds)
-await this.schedule(60, "processTask", { taskId: "123" });
-
-// Cron (daily at 9 AM)
-await this.schedule("0 9 * * *", "dailySummary", {}, { idempotent: true });
-```
-
-### Email
-```ts
-async onEmail(email: AgentEmail) {
-  const parsed = await PostalMime.parse(await email.getRaw());
-  await this.replyToEmail(email, { fromName: "AI Agent", body: "..." });
-}
-```
-
-### Workflows
-```ts
-class ProcessingWorkflow extends AgentWorkflow<MyAgent, TaskParams> {
-  async run(event, step) {
-    await this.agent.updateStatus(taskId, "processing");
-    const result = await step.do("process", async () => { ... });
-    await this.reportComplete(result);
-  }
-}
-```
-
-### MCP Client
-```ts
-await this.addMcpServer("internal-tools", this.env.MCP_SERVER);
-await this.addMcpServer("github", "https://mcp.github.com/mcp", { callbackHost: "..." });
-```
-
-## Prerequisites
-
-1. A Cloudflare account with Workers.
-2. A domain onboarded to [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) for email features.
-3. Workers AI binding (included — no API key needed for `@cf/` models).
-
-## Webhooks
-
-Incoming webhooks from GitHub, Stripe, and Slack are verified and routed to
-per-entity agent instances.
-
-### Endpoints
-
-| Provider | URL Path | Signature Header |
-|----------|----------|-----------------|
-| GitHub | `POST /webhooks/github` | `X-Hub-Signature-256` (HMAC-SHA256) |
-| Stripe | `POST /webhooks/stripe` | `Stripe-Signature` (HMAC-SHA256 + timestamp) |
-| Slack | `POST /webhooks/slack` | `X-Slack-Signature` (HMAC-SHA256 + timestamp) |
-
-### Agent routing
-
-The Worker verifies the raw request body against the provider's signature,
-then derives the agent instance name from the authenticated payload:
-
-- **GitHub** → `repository.full_name` (e.g. `owner/repo` → `owner-repo`)
-- **Stripe** → `customer` / `account` / event `id`
-- **Slack** → `team_id` / `event.channel`
-
-Each entity gets its own isolated, stateful agent instance via `getAgentByName()`.
-
-### Secrets
-
-Set these via `npx wrangler secret put <NAME>` (or `.dev.vars` for local dev):
-
-```
-GITHUB_WEBHOOK_SECRET=your-github-webhook-secret
-STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
-SLACK_WEBHOOK_SECRET=your-slack-signing-secret
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...   # optional, for outgoing notifications
-```
-
-### Outgoing webhooks
-
-The agent can also send webhooks:
-
-```ts
-// Slack notification
-await agent.call("notifySlack", ["Deployment complete!"]);
-
-// Signed webhook to any URL
-await agent.call("sendWebhook", ["https://example.com/hook", { event: "done" }]);
-```
-
-Docs: [Webhooks](https://developers.cloudflare.com/agents/communication-channels/webhooks/)
+- [Agentic Payments](https://developers.cloudflare.com/agents/tools/payments/)
+- [Email Agent Example](https://developers.cloudflare.com/agents/examples/email-agent/)
+- [Email Service](https://developers.cloudflare.com/email-service/)
+- [x402 Examples](https://github.com/cloudflare/agents/tree/main/examples)
+- [Cloudflare Wallets](https://blog.cloudflare.com/wallets/)

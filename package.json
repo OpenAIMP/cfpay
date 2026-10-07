@@ -1,24 +1,23 @@
 {
-  "name": "agentic-solution",
-  "version": "1.0.0",
+  "name": "cfmail-agent",
+  "version": "9.1.0",
   "private": true,
-  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "types": "wrangler types"
+    "start": "wrangler dev",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "agents": "latest",
-    "@modelcontextprotocol/sdk": "latest",
-    "@cloudflare/ai-providers": "latest",
-    "ai": "latest",
-    "zod": "^4.0.0",
-    "postal-mime": "latest"
+    "agents": "^0.4.0",
+    "ai": "^6.0.300",
+    "hono": "^4.6.0",
+    "postal-mime": "^2.4.0",
+    "viem": "^2.21.0"
   },
   "devDependencies": {
-    "wrangler": "latest",
-    "@cloudflare/workers-types": "latest",
-    "typescript": "^5.5.0"
+    "@cloudflare/workers-types": "^4.20251001.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
   }
 }

@@ -1,14 +1,15 @@
 import { Agent, callable } from "agents";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime from "postal-mime";
-import type { AgentState, ChatMessage, EmailRecord, Env, PaymentClaim, PaymentRecord } from "./types";
-import { formatAmount, generateId } from "./payments";
-import {
-  connectSlackSocketMode,
-  sendSlackMessage,
-  sendSlackMessageWithButton,
-  type SlackEvent,
-} from "./slack";
+import type {
+  AgentState,
+  ChatMessage,
+  EmailRecord,
+  Env,
+  PaymentClaim,
+  PaymentRecord,
+} from "./types";
+import { formatAmount, formatEthAmount, generateId, parsePaymentConfig } from "./payments";
 
 const DEFAULT_STATE: AgentState = {
   emails: [],
@@ -24,13 +25,6 @@ type AiMessage = {
   content: string;
 };
 
-const PAYMENT_KEYWORDS = ["pay", "payment", "buy", "purchase", "subscribe", "process", "request"];
-
-function isPaymentRequest(text: string): boolean {
-  const lower = text.toLowerCase();
-  return PAYMENT_KEYWORDS.some(keyword => lower.includes(keyword));
-}
-
 export class CfmailAgentSQLite extends Agent<Env, AgentState> {
   initialState: AgentState = {
     ...DEFAULT_STATE,
@@ -39,15 +33,9 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
   };
 
   private chatHistory: ChatMessage[] = [];
-  private slackSocket: WebSocket | null = null;
 
   async onStart(): Promise<void> {
     this.ensureState();
-
-    // Socket Mode disabled — using HTTP webhook
-    // if (this.env.SLACK_APP_TOKEN) {
-    //   this.connectSlack();
-    // }
   }
 
   private ensureState(): AgentState {
@@ -59,6 +47,7 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
         emails: [],
         payments: [],
       };
+
       this.setState(next);
       return next;
     }
@@ -101,107 +90,19 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
     return next;
   }
 
-  // ─── Slack Integration ──────────────────────────────────────
-
-  /**
-   * Connect to Slack Socket Mode for modern Slack agents.
-   * The Durable Object maintains a persistent WebSocket connection to Slack.
-   */
-  private async connectSlack(): Promise<void> {
-    if (!this.env.SLACK_APP_TOKEN || !this.env.SLACK_BOT_TOKEN) {
-      console.log("Slack tokens not configured — skipping Socket Mode");
-      return;
-    }
-
-    try {
-      this.slackSocket = await connectSlackSocketMode(
-        this.env.SLACK_APP_TOKEN,
-        async (event: SlackEvent) => {
-          await this.handleSlackEvent(event);
-        },
-      );
-      console.log("Slack Socket Mode connected successfully");
-    } catch (error) {
-      console.error("Failed to connect Slack Socket Mode:", error);
-    }
-  }
-
-  /**
-   * Handle a Slack event from either HTTP webhook or Socket Mode.
-   */
-  async handleSlackEvent(event: SlackEvent): Promise<void> {
-    const state = this.ensureState();
-
-    // Check if this is a payment-related request
-    const wantsPayment = isPaymentRequest(event.text);
-
-    let response: string;
-
-    if (wantsPayment) {
-      // Pre-fill the payment page with the user's request
-      const encodedRequest = encodeURIComponent(event.text);
-      const paymentUrl = `https://pay.openaimp.com?request=${encodedRequest}`;
-      
-      await sendSlackMessageWithButton(
-        this.env.SLACK_BOT_TOKEN,
-        event.channel,
-        "To process your request, please complete the payment below:",
-        "Pay & Process",
-        paymentUrl,
-        event.thread_ts || event.ts,
-      );
-      response = "Payment button sent. Please complete the payment at https://pay.openaimp.com to proceed.";
-    } else {
-      // Generate AI response for non-payment messages
-      response = await this.generateAIResponse(event.text);
-      await sendSlackMessage(
-        this.env.SLACK_BOT_TOKEN,
-        event.channel,
-        response,
-        event.thread_ts || event.ts,
-      );
-    }
-
-    // Store as email-like record
-    const emailRecord: EmailRecord = {
-      id: generateId(),
-      from: `slack:${event.user}`,
-      to: `slack:${event.channel}`,
-      subject: event.text.slice(0, 50),
-      body: event.text,
-      direction: "inbound",
-      receivedAt: new Date().toISOString(),
-      paid: false,
-      aiResponse: response,
-    };
-
-    this.setState({
-      ...state,
-      emails: [...state.emails, emailRecord],
-      totalEmailsReceived: state.totalEmailsReceived + 1,
-    });
-  }
-
-  // ─── AI ─────────────────────────────────────────────────────
-
   async generateAIResponse(
     userMessage: string,
     emailContext?: string,
   ): Promise<string> {
-    const systemPrompt = `You are the CFmail Agent, an AI assistant operating via email and Slack.
-You are connected to a payment system using the x402 protocol.
-
-When a user wants to use a paid service or make a payment, respond with:
-"To process your request, please visit https://pay.openaimp.com and use the Pay & Process tab. You can pay with ETH or USDC via MetaMask on Base, Base Sepolia, or Ethereum Sepolia."
-
-When a user asks about pricing, respond with:
-"Each request costs 0.001 ETH or 0.01 USDC. You can pay via MetaMask at https://pay.openaimp.com"
-
-For general questions, be concise, professional, and helpful.
-Do not claim to have completed a payment unless you have received confirmation.`;
+    const systemPrompt = `You are the CFmail Agent, an AI assistant operating via email.
+Be concise, professional, and helpful. Do not claim to have completed an action
+unless the supplied system data confirms it.`;
 
     const messages: AiMessage[] = [
-      { role: "system", content: systemPrompt },
+      {
+        role: "system",
+        content: systemPrompt,
+      },
     ];
 
     if (emailContext) {
@@ -224,25 +125,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
 
     try {
-      let text: string;
-      try {
-        const response = await this.env.AI.run(
-          "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
-          {
-            messages,
-          } as never,
-        );
-        text = (response as { response?: string }).response ?? "I could not generate a response.";
-      } catch (modelError) {
-        console.warn("Primary model failed, trying fallback:", modelError);
-        const fallbackResponse = await this.env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct" as never,
-          {
-            messages,
-          } as never,
-        );
-        text = (fallbackResponse as { response?: string }).response ?? "I could not generate a response.";
-      }
+      const response = await this.env.AI.run(
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
+        {
+          messages,
+        } as never,
+      );
+
+      const text =
+        (response as { response?: string }).response ??
+        "I could not generate a response.";
 
       this.chatHistory.push(
         {
@@ -260,11 +152,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
       return text;
     } catch (error) {
       console.error("AI generation failed:", error);
+
       return "I received your message but encountered an issue generating an AI response. Your request has been logged.";
     }
   }
-
-  // ─── Email ──────────────────────────────────────────────────
 
   async onEmail(email: AgentEmail): Promise<void> {
     const emailHeaders = Array.from(email.headers.entries()).map(
@@ -338,11 +229,8 @@ Do not claim to have completed a payment unless you have received confirmation.`
     };
 
     this.setState(stateAfterInbound);
-    console.log(
-      `State after inbound: ${stateAfterInbound.emails.length} emails, ${stateAfterInbound.totalEmailsReceived} received`,
-    );
+    console.log(`State after inbound: ${stateAfterInbound.emails.length} emails, ${stateAfterInbound.totalEmailsReceived} received`);
 
-    // Send auto-reply (requires Workers Paid plan for Email Sending)
     try {
       await this.env.EMAIL.send({
         to: email.from,
@@ -376,8 +264,6 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
-  // ─── Callable Methods ──────────────────────────────────────
-
   @callable()
   async sendOutboundEmail(
     to: string,
@@ -410,7 +296,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
       this.setState({
         ...state,
         emails: [...state.emails, record],
-        totalEmailsSent: this.state.totalEmailsSent + 1,
+        totalEmailsSent: state.totalEmailsSent + 1,
       });
 
       return { success: true, emailId };
@@ -424,22 +310,31 @@ Do not claim to have completed a payment unless you have received confirmation.`
   async processPaidRequest(
     senderEmail: string,
     request: string,
-    claim?: PaymentClaim,
+    paymentClaim: PaymentClaim,
   ): Promise<{ success: boolean; response: string; paymentId: string }> {
     const state = this.ensureState();
     const paymentId = generateId();
+    const isNativeEth =
+      paymentClaim.asset.toLowerCase() === "0x0000000000000000000000000000000000000000";
+    const paymentConfig = parsePaymentConfig(this.env.PAYMENT_CONFIG);
+    if (!paymentConfig.networks[paymentClaim.network]) {
+      throw new Error("PAYMENT-SIGNATURE specifies an unsupported network");
+    }
+    const paymentAmount = isNativeEth
+      ? formatEthAmount(paymentClaim.amount)
+      : formatAmount(paymentClaim.amount).replace("$", "");
+    const currency = isNativeEth ? "ETH" : "USDC";
 
     const payment: PaymentRecord = {
       id: paymentId,
       direction: "received",
-      amount: claim?.amount || "10000",
-      currency: claim?.asset === "0x0000000000000000000000000000000000000000" ? "ETH" : "USDC",
-      network: claim?.network || "base",
-      fromAddress: undefined,
-      toAddress: this.env.PAY_TO_ADDRESS,
+      amount: paymentClaim.amount,
+      currency,
+      network: paymentClaim.network,
+      toAddress: paymentClaim.payTo,
       description: this.env.PAYMENT_DESCRIPTION,
       status: "confirmed",
-      txHash: claim?.txHash,
+      txHash: paymentClaim.txHash,
       createdAt: new Date().toISOString(),
     };
 
@@ -448,7 +343,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const emailResult = await this.sendOutboundEmail(
       senderEmail,
       "CFmail Agent Request Received",
-      `${aiResponse}\n\n---\nRequest ID: ${paymentId}\nPayment: ${payment.amount} ${payment.currency} on ${payment.network}\nStatus: Confirmed`,
+      `${aiResponse}\n\n---\nRequest ID: ${paymentId}\nVerified payment: ${paymentAmount} ${currency} on ${paymentClaim.network}\nTransaction: ${paymentClaim.txHash}`,
     );
 
     payment.relatedEmailId = emailResult.emailId;
@@ -468,8 +363,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
   @callable()
   async getDashboardData(): Promise<AgentState> {
-    return this.ensureState();
+      const state = this.ensureState();
+      console.log(`Dashboard data requested: ${state.emails.length} emails, ${state.totalEmailsReceived} received`);
+      return state;
   }
+
 
   @callable()
   async getEmails(
@@ -500,17 +398,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   @callable()
-  async getSlackMessages(limit: number): Promise<EmailRecord[]> {
-    const state = this.ensureState();
-    const slackMessages = state.emails.filter((email) => email.from.startsWith("slack:"));
-    return slackMessages.slice(-limit).reverse();
-  }
-
-  @callable()
   async chat(
     message: string,
   ): Promise<{ response: string; history: ChatMessage[] }> {
     const response = await this.generateAIResponse(message);
+
     return {
       response,
       history: this.chatHistory,
