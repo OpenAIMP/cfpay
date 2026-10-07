@@ -1,0 +1,59 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agentic-solution",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "ai": {
+    "binding": "AI"
+  },
+
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "remote": true
+    }
+  ],
+
+  "addresses": [
+    "agent@yourdomain.com"
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "binding": "AGENT",
+        "class_name": "MyAgent"
+      },
+      {
+        "binding": "MCP_SERVER",
+        "class_name": "ToolsMCP"
+      }
+    ]
+  },
+
+  "workflows": [
+    {
+      "binding": "PROCESSING_WORKFLOW",
+      "name": "ProcessingWorkflow",
+      "class_name": "ProcessingWorkflow"
+    }
+  ],
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MyAgent", "ToolsMCP"]
+    }
+  ],
+
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./public"
+  },
+
+  "vars": {
+    "SLACK_WEBHOOK_URL": ""
+  }
+}

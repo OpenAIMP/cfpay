@@ -1,0 +1,24 @@
+{
+  "name": "agentic-solution",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "agents": "latest",
+    "@modelcontextprotocol/sdk": "latest",
+    "@cloudflare/ai-providers": "latest",
+    "ai": "latest",
+    "zod": "^4.0.0",
+    "postal-mime": "latest"
+  },
+  "devDependencies": {
+    "wrangler": "latest",
+    "@cloudflare/workers-types": "latest",
+    "typescript": "^5.5.0"
+  }
+}

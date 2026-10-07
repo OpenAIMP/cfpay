@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agentic Solution</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f1117; color: #e4e4e7; display: flex; height: 100vh; }
+    #sidebar { width: 280px; background: #18181b; border-right: 1px solid #27272a; padding: 20px; overflow-y: auto; }
+    #sidebar h2 { font-size: 14px; color: #71717a; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+    .stat { background: #27272a; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; }
+    .stat-label { font-size: 12px; color: #a1a1aa; }
+    .stat-value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+    #main { flex: 1; display: flex; flex-direction: column; }
+    #header { padding: 16px 24px; border-bottom: 1px solid #27272a; display: flex; align-items: center; gap: 12px; }
+    #header h1 { font-size: 18px; }
+    .badge { background: #2563eb; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+    #chat { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { max-width: 70%; padding: 12px 16px; border-radius: 12px; line-height: 1.5; }
+    .msg.user { background: #2563eb; align-self: flex-end; }
+    .msg.assistant { background: #27272a; align-self: flex-start; }
+    #input-bar { padding: 16px 24px; border-top: 1px solid #27272a; display: flex; gap: 12px; }
+    #msg-input { flex: 1; background: #27272a; border: 1px solid #3f3f46; border-radius: 8px; padding: 12px 16px; color: #e4e4e7; font-size: 14px; outline: none; }
+    #msg-input:focus { border-color: #2563eb; }
+    button { background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 14px; cursor: pointer; font-weight: 600; }
+    button:hover { background: #1d4ed8; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 24px 16px; }
+    .action-btn { background: #27272a; border: 1px solid #3f3f46; font-size: 12px; padding: 8px 14px; }
+    .action-btn:hover { background: #3f3f46; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h2>Agent State</h2>
+    <div class="stat">
+      <div class="stat-label">Tasks</div>
+      <div class="stat-value" id="task-count">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Task Progress</div>
+      <div class="stat-value" id="progress">0%</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Pending Emails</div>
+      <div class="stat-value" id="email-count">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">MCP Tools</div>
+      <div class="stat-value" id="tool-count">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Webhooks Received</div>
+      <div class="stat-value" id="webhook-count">0</div>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="header">
+      <h1>Agentic Solution</h1>
+      <span class="badge">Workers AI · MCP · Workflows · Email · Webhooks</span>
+    </div>
+    <div id="chat"></div>
+    <div class="actions">
+      <button class="action-btn" onclick="addTask()">+ Add Task</button>
+      <button class="action-btn" onclick="startWorkflow()">Start Workflow</button>
+      <button class="action-btn" onclick="sendEmail()">Send Email</button>
+      <button class="action-btn" onclick="listTools()">List MCP Tools</button>
+      <button class="action-btn" onclick="listWebhooks()">List Webhooks</button>
+      <button class="action-btn" onclick="notifySlack()">Notify Slack</button>
+    </div>
+    <div id="input-bar">
+      <input id="msg-input" placeholder="Ask the agent anything…" onkeydown="if(event.key==='Enter')sendChat()" />
+      <button onclick="sendChat()">Send</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { useAgent } from "https://esm.sh/agents@latest/react";
+
+    // ── Connect to the Agent via WebSocket ──────────────────────
+    const agent = useAgent({
+      agent: "MyAgent",
+      name: "default",
+      onStateUpdate: (state) => {
+        document.getElementById("task-count").textContent = state.tasks?.length ?? 0;
+        document.getElementById("progress").textContent = `${Math.round((state.taskProgress ?? 0) * 100)}%`;
+        document.getElementById("email-count").textContent = state.pendingEmails?.length ?? 0;
+        document.getElementById("webhook-count").textContent = state.totalWebhooksReceived ?? 0;
+      },
+      onMcpUpdate: (mcpState) => {
+        document.getElementById("tool-count").textContent = mcpState.tools?.length ?? 0;
+      },
+    });
+
+    // ── Chat ────────────────────────────────────────────────────
+    function sendChat() {
+      const input = document.getElementById("msg-input");
+      const content = input.value.trim();
+      if (!content) return;
+      input.value = "";
+      addMessage("user", content);
+      agent.call("callReasoningModel", [content]);
+    }
+    window.sendChat = sendChat;
+
+    // ── Callable RPC actions ────────────────────────────────────
+    window.addTask = async () => {
+      const title = prompt("Task title:");
+      if (!title) return;
+      await agent.call("addTask", [title, "Created from UI"]);
+    };
+
+    window.startWorkflow = async () => {
+      const taskId = crypto.randomUUID();
+      const result = await agent.call("startProcessing", [taskId, "Process this data"]);
+      addMessage("assistant", `Workflow started: ${JSON.stringify(result)}`);
+    };
+
+    window.sendEmail = async () => {
+      const to = prompt("Recipient email:");
+      if (!to) return;
+      const subject = prompt("Subject:");
+      const body = prompt("Body:");
+      await agent.call("sendAgentEmail", [to, subject, body]);
+      addMessage("assistant", `Email sent to ${to}`);
+    };
+
+    window.listTools = async () => {
+      const tools = await agent.call("listMcpTools", []);
+      addMessage("assistant", `MCP Tools: ${JSON.stringify(tools, null, 2)}`);
+    };
+
+    // ── Webhook actions ────────────────────────────────────────
+    window.listWebhooks = async () => {
+      const provider = prompt("Filter by provider (github/stripe/slack) or leave blank for all:");
+      const events = await agent.call("getWebhookEvents", [provider || null, 20]);
+      if (!events || events.length === 0) {
+        addMessage("assistant", "No webhook events received yet.");
+        return;
+      }
+      const summary = events.map((e) =>
+        `[${e.provider}] ${e.eventType} — agent: ${e.agentName} @ ${e.receivedAt}`,
+      ).join("\n");
+      addMessage("assistant", `Recent webhooks:\n${summary}`);
+    };
+
+    window.notifySlack = async () => {
+      const message = prompt("Slack message to send:");
+      if (!message) return;
+      const result = await agent.call("notifySlack", [message]);
+      addMessage("assistant", result.success ? "✅ Slack notification sent" : "❌ Slack notification failed (is SLACK_WEBHOOK_URL configured?)");
+    };
+
+    // ── Helpers ─────────────────────────────────────────────────
+    function addMessage(role, content) {
+      const chat = document.getElementById("chat");
+      const div = document.createElement("div");
+      div.className = `msg ${role}`;
+      div.textContent = content;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+  </script>
+</body>
+</html>
