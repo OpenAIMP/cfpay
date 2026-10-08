@@ -81,6 +81,7 @@ jobs:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           MCP_AUTH_TOKEN: ${{ secrets.MCP_AUTH_TOKEN }}
           MCP_GITHUB_ORG: ${{ secrets.MCP_GITHUB_ORG }}
+          MCP_AUTH_MODE: ${{ secrets.MCP_AUTH_MODE }}
           WEBHOOK_NOTIFY_PROVIDERS: ${{ secrets.WEBHOOK_NOTIFY_PROVIDERS }}
           OUTBOUND_PAY_TO_WHITELIST: ${{ secrets.OUTBOUND_PAY_TO_WHITELIST }}
           OUTBOUND_MAX_AMOUNT_ATOMIC: ${{ secrets.OUTBOUND_MAX_AMOUNT_ATOMIC }}
@@ -127,6 +128,8 @@ jobs:
           # when it is absent, so this must be set before the guard is deployed.
           push_optional MCP_AUTH_TOKEN             "$MCP_AUTH_TOKEN"
           push_optional MCP_GITHUB_ORG             "$MCP_GITHUB_ORG"
+          # Not secret, but keep all /mcp configuration in one place.
+          push_optional MCP_AUTH_MODE              "$MCP_AUTH_MODE"
           push_optional WEBHOOK_NOTIFY_PROVIDERS  "$WEBHOOK_NOTIFY_PROVIDERS"
           push_optional OUTBOUND_PAY_TO_WHITELIST "$OUTBOUND_PAY_TO_WHITELIST"
           push_optional OUTBOUND_MAX_AMOUNT_ATOMIC "$OUTBOUND_MAX_AMOUNT_ATOMIC"

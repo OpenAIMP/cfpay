@@ -1,37 +1,44 @@
 import type { Env } from "./types";
 
 /**
- * Authorisation for the unauthenticated-by-design phase-1 /mcp endpoint.
+ * Authorisation for the /mcp endpoint.
  *
- * Two credential types are accepted, so that both classes of client can connect:
+ * Which credential types are accepted is chosen by MCP_AUTH_MODE:
  *
- *   1. A static bearer token (`MCP_AUTH_TOKEN`) — a shared secret. Simple, and
- *      the only thing that works for clients you cannot give GitHub credentials.
- *   2. A GitHub token (classic `ghp_...`, or fine-grained `github_pat_...`) —
- *      validated against the GitHub API, giving per-user identity and central
- *      revocation: revoking the token immediately ends access.
+ *   "either" (default) — a static bearer token OR a valid GitHub token
+ *   "static"           — only the static bearer token
+ *   "github"           — only a valid GitHub token
+ *   "none"             — no authorisation; the endpoint is public
  *
- * Slack is a separate case and cannot use either: Slack signs its requests with
- * `X-Slack-Signature` and never attaches an arbitrary Authorization header, so
- * it needs the signature path (see src/slack.ts) instead.
+ * "none" must be requested explicitly. An unset mode defaults to "either" and
+ * still refuses everything when no credential is configured, so the endpoint is
+ * never opened by omission — only by saying so.
  *
- * Fails CLOSED: with no credential configured, every request is refused rather
- * than leaving the endpoint open.
+ * Credentials:
+ *   MCP_AUTH_TOKEN  — a shared secret, compared in constant time. Identifies
+ *                     nobody; anyone holding it has the same access.
+ *   MCP_GITHUB_ORG  — optional organisation. When set, a GitHub token must belong
+ *                     to it. Gives per-user identity and central revocation.
+ *
+ * Slack is a separate case and cannot use either path: Slack signs with
+ * X-Slack-Signature and never attaches an Authorization header (see src/slack.ts).
  *
  * Only the Authorization header is read. Query parameters are rejected on
  * purpose, because the Worker has observability enabled and would log them.
  */
+
+export type McpAuthMode = "either" | "static" | "github" | "none";
 
 /** How long a validated GitHub token is trusted before re-checking. */
 const GITHUB_CACHE_TTL_MS = 5 * 60 * 1000;
 /** Bound the cache so a flood of bogus tokens cannot grow it without limit. */
 const GITHUB_CACHE_MAX = 200;
 
-/** tokenHash -> expiry timestamp (ms). Per isolate, so best-effort only. */
+/** Hash of a validated credential -> expiry timestamp (ms). Per isolate. */
 const githubTokenCache = new Map<string, number>();
 
 /**
- * Constant-time comparison, so a wrong token cannot be recovered by measuring
+ * Constant-time comparison, so a wrong secret cannot be recovered by measuring
  * how long the check takes.
  */
 export function timingSafeStringEqual(a: string, b: string): boolean {
@@ -41,6 +48,19 @@ export function timingSafeStringEqual(a: string, b: string): boolean {
     diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return diff === 0;
+}
+
+/**
+ * Resolve MCP_AUTH_MODE. Returns null when the value is unrecognised, so an
+ * operator typo fails closed rather than silently picking a mode.
+ */
+export function resolveMcpAuthMode(raw: string | undefined): McpAuthMode | null {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (value === "") return "either";
+  if (value === "either" || value === "static" || value === "github" || value === "none") {
+    return value;
+  }
+  return null;
 }
 
 /** Cheap shape check, so random strings are not sent to GitHub at all. */
@@ -65,29 +85,33 @@ function cacheGet(key: string): boolean {
 
 function cacheSet(key: string): void {
   if (githubTokenCache.size >= GITHUB_CACHE_MAX) {
-    // Drop the oldest entry; Map preserves insertion order.
     const oldest = githubTokenCache.keys().next();
     if (!oldest.done) githubTokenCache.delete(oldest.value);
   }
   githubTokenCache.set(key, Date.now() + GITHUB_CACHE_TTL_MS);
 }
 
+/** Build the outbound request headers for a GitHub API call. */
+function githubHeaders(credential: string): Headers {
+  const headers = new Headers();
+  headers.set("User-Agent", "cfmail-agent-mcp");
+  headers.set("Accept", "application/vnd.github+json");
+  headers.set("X-GitHub-Api-Version", "2022-11-28");
+  headers.set("Authorization", "Bearer " + credential);
+  return headers;
+}
+
 /**
- * Validate a GitHub token, optionally requiring membership of an organisation.
- * Returns false on any failure, including GitHub being unreachable — an
- * authorisation check must not fail open because a dependency is down.
+ * Validate a GitHub credential, optionally requiring membership of an
+ * organisation. Returns false on any failure, including GitHub being
+ * unreachable — an authorisation check must not fail open because a dependency
+ * is down.
  */
-async function verifyGitHubToken(token: string, requiredOrg?: string): Promise<boolean> {
-  const cacheKey = await sha256Hex(token + "|" + (requiredOrg ?? ""));
+async function verifyGitHubToken(credential: string, requiredOrg?: string): Promise<boolean> {
+  const cacheKey = await sha256Hex(credential + "|" + (requiredOrg ?? ""));
   if (cacheGet(cacheKey)) return true;
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    // GitHub requires a User-Agent.
-    "User-Agent": "cfmail-agent-mcp",
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
+  const headers = githubHeaders(credential);
 
   try {
     const userRes = await fetch("https://api.github.com/user", { headers });
@@ -103,14 +127,37 @@ async function verifyGitHubToken(token: string, requiredOrg?: string): Promise<b
       if (membership.state !== "active") return false;
     }
   } catch (error) {
-    console.error("GitHub token verification failed:", error);
+    console.error("GitHub credential verification failed:", error);
     return false;
   }
 
-  // Avoid caching a token when an org was required but the response we cached
-  // against did not actually include it; the key includes the org, so this is safe.
   cacheSet(cacheKey);
   return true;
+}
+
+function jsonResponse(
+  body: unknown,
+  status: number,
+  extraHeaders: Record<string, string> = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...extraHeaders },
+  });
+}
+
+/** Which credential paths the resolved mode permits. */
+function permittedPaths(mode: McpAuthMode): { static: boolean; github: boolean } {
+  switch (mode) {
+    case "static":
+      return { static: true, github: false };
+    case "github":
+      return { static: false, github: true };
+    case "either":
+      return { static: true, github: true };
+    default:
+      return { static: false, github: false };
+  }
 }
 
 /**
@@ -118,43 +165,56 @@ async function verifyGitHubToken(token: string, requiredOrg?: string): Promise<b
  * continue.
  */
 export async function authorizeMcpRequest(request: Request, env: Env): Promise<Response | null> {
-  const staticToken = (env.MCP_AUTH_TOKEN ?? "").trim();
-  const requiredOrg = (env.MCP_GITHUB_ORG ?? "").trim();
+  const mode = resolveMcpAuthMode(env.MCP_AUTH_MODE);
 
-  if (!staticToken && !requiredOrg) {
+  // A typo must not silently downgrade to a weaker mode.
+  if (mode === null) {
     console.error(
-      "MCP authorisation is not configured (MCP_AUTH_TOKEN / MCP_GITHUB_ORG unset); refusing /mcp.",
+      'MCP_AUTH_MODE is not one of "either", "static", "github" or "none"; refusing /mcp.',
     );
-    return new Response(JSON.stringify({ error: "MCP is not configured." }), {
-      status: 503,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: "MCP authorisation is misconfigured." }, 503);
+  }
+
+  // Explicit opt-out, and deliberately loud: this serves the tool surface openly.
+  if (mode === "none") {
+    console.warn("MCP_AUTH_MODE=none: /mcp is serving WITHOUT authentication.");
+    return null;
+  }
+
+  const staticSecret = (env.MCP_AUTH_TOKEN ?? "").trim();
+  const requiredOrg = (env.MCP_GITHUB_ORG ?? "").trim();
+  const paths = permittedPaths(mode);
+
+  // Fail closed when the selected mode has nothing to authenticate against.
+  const staticReady = paths.static && Boolean(staticSecret);
+  const githubReady = paths.github && Boolean(requiredOrg);
+
+  if (!staticReady && !githubReady) {
+    console.error(
+      `MCP authorisation is enabled (mode=${mode}) but no usable credential is configured; refusing /mcp.`,
+    );
+    return jsonResponse({ error: "MCP is not configured." }, 503);
   }
 
   const header = request.headers.get("Authorization") ?? "";
   const presented = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
 
   if (presented) {
-    // 1) Configured static token.
-    if (staticToken && timingSafeStringEqual(presented, staticToken)) {
+    // 1) Static secret, when permitted.
+    if (paths.static && staticSecret && timingSafeStringEqual(presented, staticSecret)) {
       return null;
     }
 
-    // 2) GitHub token. Only attempted when an org is configured, or when the
-    //    value has GitHub token shape — otherwise every stray string would cost
-    //    an outbound API call.
-    if (requiredOrg || looksLikeGitHubToken(presented)) {
+    // 2) GitHub credential, when permitted. Shape-checked first so stray strings
+    //    never cost an outbound API call.
+    if (paths.github && looksLikeGitHubToken(presented)) {
       if (await verifyGitHubToken(presented, requiredOrg || undefined)) {
         return null;
       }
     }
   }
 
-  return new Response(JSON.stringify({ error: "Unauthorized" }), {
-    status: 401,
-    headers: {
-      "Content-Type": "application/json",
-      "WWW-Authenticate": 'Bearer realm="cfmail-mcp"',
-    },
+  return jsonResponse({ error: "Unauthorized" }, 401, {
+    "WWW-Authenticate": 'Bearer realm="cfmail-mcp"',
   });
 }

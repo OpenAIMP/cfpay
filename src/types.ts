@@ -31,6 +31,10 @@ export interface Env {
   MCP_AUTH_TOKEN?: string;
   // When set, a GitHub token must belong to this organisation to be accepted.
   MCP_GITHUB_ORG?: string;
+  // Which credentials /mcp accepts: "either" (default), "static", "github" or
+  // "none". "none" serves without authentication and must be set explicitly; an
+  // unset or unrecognised value is not treated as "none".
+  MCP_AUTH_MODE?: string;
   // Staging/test only: when "true", outbound email is logged and recorded
   // instead of being delivered. Never set in production.
   EMAIL_CAPTURE_MODE?: string;
