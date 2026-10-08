@@ -374,7 +374,16 @@ export function createApp() {
 
     const agentId = c.env.CfmailAgent.idFromName("agent");
     const agent = c.env.CfmailAgent.get(agentId) as any;
-    return agent.fetch(c.req.raw);
+    // The Durable Object reads its instance name from these headers
+    // (partyserver's Server.fetch throws "Missing namespace or room headers"
+    // without x-partykit-room on a cold instance, which surfaces as the
+    // WebSocket closing with 1011 before onConnect ever runs). routeAgentRequest
+    // and getAgentByName set them for their own routes; /ws forwards the raw
+    // request, so mirror them here.
+    const request = new Request(c.req.raw);
+    request.headers.set("x-partykit-room", "agent");
+    request.headers.set("x-partykit-namespace", "CfmailAgent");
+    return agent.fetch(request);
   });
 
   app.get("/api/dashboard/payment-config", requireAuth, async (c) => {

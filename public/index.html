@@ -617,11 +617,26 @@
     }
   </script>
 <script type="module">
-  import { AgentClient } from "https://esm.sh/agents@latest/client";
+  import { AgentClient } from "https://esm.sh/agents@0.4.1/client";
 
   // The /ws upgrade is authenticated. A browser cannot set headers on a
   // WebSocket handshake, so the same dashboard API key is passed as a query
   // parameter; the getter is re-evaluated on every (re)connect.
+  //
+  // Wiring notes — all of these are required for the socket to work:
+  // - `host` must be set explicitly. AgentClient delegates to PartySocket,
+  //   which has no default host and throws without one.
+  // - `basePath` (not `url`) points the socket at this app's authenticated
+  //   /ws route. There is no `url` option, so one is silently ignored and the
+  //   client would fall back to /agents/<agent>/<name> — a path this worker
+  //   does not serve since routeAgentRequest was removed. basePath is
+  //   inserted after a "/" by PartySocket, so it must not start with one.
+  // - `onStateUpdate` is a constructor option, not a method on the client;
+  //   calling it as a method throws and the handler is never registered.
+  //
+  // The import is pinned to the same agents version the worker runs
+  // (see package.json) instead of `@latest`, so the browser speaks the exact
+  // wire protocol the server was built against.
   //
   // Nothing is opened until a key exists: a 401 clears the stored key and
   // reloads, so connecting with an empty token would only produce a retry loop.
@@ -634,18 +649,21 @@
     const agent = new AgentClient({
       agent: "CfmailAgent",
       name: "agent",
-      url: "/ws", // Explicitly connect to the /ws route
+      host: window.location.host,
+      basePath: "ws",
       query: () => ({ token: localStorage.getItem("cfmail_api_key") || "" }),
-    });
-
-    agent.onStateUpdate((state) => {
-      console.log("State updated:", state);
-      // Auto-refresh the current tab when new data arrives
-      const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
-      if (activeTab === "emails") loadEmails();
-      if (activeTab === "overview") loadStats();
-      if (activeTab === "slack") loadSlackMessages();
-      if (activeTab === "payments") loadPayments();
+      // Called for the state pushed on connect and for every setState()
+      // broadcast afterwards; refresh the tab the user is looking at.
+      onStateUpdate: (state) => {
+        console.log("State updated:", state);
+        const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
+        if (activeTab === "emails") loadEmails();
+        if (activeTab === "overview") loadStats();
+        if (activeTab === "slack") loadSlackMessages();
+        if (activeTab === "payments") loadPayments();
+        if (activeTab === "webhooks") loadWebhooks();
+      },
+      onStateUpdateError: (error) => console.warn("State update rejected:", error),
     });
 
     // Make agent available globally for debugging
