@@ -494,23 +494,28 @@
         </div>`).join('');
     }
 
+    // Slack messages are stored with "slack:<id>" in the from/to fields; strip
+    // that for display so the tab reads as a conversation, not raw IDs.
+    function slackLabel(value) {
+      return escapeHtml(String(value || '').replace(/^slack:/, ''));
+    }
     async function loadSlackMessages() {
       const listDiv = document.getElementById('slackList');
       listDiv.innerHTML = '<div class="loading">Loading Slack messages...</div>';
       try {
-        const response = await fetch('/api/dashboard/slack', {
-          headers: { 'X-API-Key': localStorage.getItem('cfmail_api_key') }
-        });
-        const data = await response.json();
+        const data = await api('/api/dashboard/slack');
         if (data.messages && data.messages.length > 0) {
           listDiv.innerHTML = data.messages.map(m => `
             <div class="card">
               <div class="card-header">
-                <span class="subject">${m.subject || '(no text)'}</span>
-                <span class="meta">${m.from} - ${new Date(m.receivedAt).toLocaleString()}</span>
+                <div>
+                  <span class="badge-${m.direction || 'inbound'}">${m.direction || 'inbound'}</span>
+                  <span class="subject" style="margin-left:0.5rem;">${slackLabel(m.subject) || '(no text)'}</span>
+                </div>
+                <div class="meta">User: ${slackLabel(m.from)}<br>Channel: ${slackLabel(m.to)}<br>${new Date(m.receivedAt).toLocaleString()}</div>
               </div>
-              <div class="card-body">${m.body}</div>
-              ${m.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${m.aiResponse}</div>` : ''}
+              <div class="card-body">${escapeHtml(m.body)}</div>
+              ${m.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${escapeHtml(m.aiResponse)}</div>` : ''}
             </div>
           `).join('');
         } else {
