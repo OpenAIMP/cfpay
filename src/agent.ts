@@ -2,7 +2,12 @@ import { Agent, callable } from "agents";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime from "postal-mime";
 import type { AgentState, ChatMessage, EmailRecord, Env, PaymentClaim, PaymentRecord, WebhookEvent } from "./types";
-import { formatAmount, generateId } from "./payments";
+import {
+  formatAmount,
+  generateId,
+  payX402EndpointWithReceipt,
+  type X402AcceptedPayment,
+} from "./payments";
 import { sendSlackNotification, sendSignedWebhook } from "./webhooks";
 import {
   connectSlackSocketMode,
@@ -32,6 +37,24 @@ const PAYMENT_KEYWORDS = ["pay", "payment", "buy", "purchase", "subscribe", "pro
 function isPaymentRequest(text: string): boolean {
   const lower = text.toLowerCase();
   return PAYMENT_KEYWORDS.some(keyword => lower.includes(keyword));
+}
+
+/**
+ * Only POST back to Slack's own HTTPS hosts. response_url arrives inside an
+ * attacker-influenceable webhook payload, so an unchecked fetch would let a
+ * caller point this agent at an arbitrary URL.
+ */
+function isTrustedResponseUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      (url.hostname === "hooks.slack.com" || url.hostname.endsWith(".slack.com"))
+    );
+  } catch {
+    return false;
+  }
 }
 
 export class CfmailAgentSQLite extends Agent<Env, AgentState> {
@@ -267,6 +290,38 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
+  // ─── Webhook AI analysis ───────────────────────────
+
+  /**
+   * Analyse a webhook event without touching chatHistory. Webhook analysis is
+   * a side activity and must not pollute the conversational context reused by
+   * onEmail() and chat(). Never throws.
+   */
+  private async generateAiInsight(prompt: string): Promise<string> {
+    try {
+      const response = await this.env.AI.run(
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
+        {
+          messages: [
+            {
+              role: "system",
+              content:
+                "You analyse inbound webhook events for the CFmail agent. Give a brief summary and any recommended actions.",
+            },
+            { role: "user", content: prompt },
+          ],
+        } as never,
+      );
+      return (
+        (response as { response?: string }).response ??
+        "Webhook received; no analysis generated."
+      );
+    } catch (error) {
+      console.error("Webhook AI analysis failed:", error);
+      return "Webhook received; analysis unavailable.";
+    }
+  }
+
   // ─── Email ──────────────────────────────────────────────────
 
   async onEmail(email: AgentEmail): Promise<void> {
@@ -352,6 +407,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
         from: `agent@${this.env.EMAIL_DOMAIN}`,
         replyTo: `agent@${this.env.EMAIL_DOMAIN}`,
         subject: `Re: ${parsed.subject || "Your email"}`,
+        // Marks this as machine-generated so isAutoReplyEmail() suppresses
+        // auto-responder ping-pong between agents.
+        headers: { "Auto-Submitted": "auto-replied" },
         text: aiResponse,
       });
 
@@ -520,17 +578,153 @@ Do not claim to have completed a payment unless you have received confirmation.`
     };
   }
 
+  /**
+   * Pay an external x402 endpoint, then record the outgoing payment.
+   *
+   * Keeps the original `{ success, status, response }` contract; `txHash` is
+   * additive.
+   *
+   * Spends real funds, so it fails closed on three independent gates:
+   *   1. PAYMENT_PRIVATE_KEY must be configured.
+   *   2. OUTBOUND_PAY_TO_WHITELIST must be a non-empty comma-separated list, and
+   *      the endpoint's advertised `payTo` must appear in it. The check runs
+   *      BEFORE the transfer is signed, so a non-allowlisted endpoint is never paid.
+   *   3. OUTBOUND_MAX_AMOUNT_ATOMIC, when set, caps the requested amount.
+   *
+   * A payment is only written to the ledger when a transaction was actually
+   * broadcast, and it records the terms the endpoint requested rather than
+   * hard-coded values.
+   */
   @callable()
   async payExternalEndpoint(
-    _url: string,
-    _method: string,
-    _body: string | null,
-  ): Promise<{ success: boolean; status: number; response: string }> {
-    return {
-      success: false,
-      status: 403,
-      response: "External payments are disabled.",
-    };
+    url: string,
+    method: string,
+    body: string | null,
+  ): Promise<{
+    success: boolean;
+    status: number;
+    response: string;
+    txHash?: string;
+  }> {
+    if (!this.env.PAYMENT_PRIVATE_KEY) {
+      return {
+        success: false,
+        status: 403,
+        response:
+          "External payments are disabled: PAYMENT_PRIVATE_KEY is not configured.",
+      };
+    }
+
+    const allowedPayTo = new Set(
+      (this.env.OUTBOUND_PAY_TO_WHITELIST ?? "")
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter((entry) => entry.length > 0),
+    );
+
+    if (allowedPayTo.size === 0) {
+      return {
+        success: false,
+        status: 403,
+        response:
+          "External payments are disabled: OUTBOUND_PAY_TO_WHITELIST is empty.",
+      };
+    }
+
+    const maxAmountRaw = this.env.OUTBOUND_MAX_AMOUNT_ATOMIC?.trim();
+    let maxAmount: bigint | undefined;
+    if (maxAmountRaw) {
+      try {
+        maxAmount = BigInt(maxAmountRaw);
+      } catch {
+        return {
+          success: false,
+          status: 403,
+          response:
+            "External payments are disabled: OUTBOUND_MAX_AMOUNT_ATOMIC is not an integer.",
+        };
+      }
+    }
+
+    // Captured by the validator below; only set once a term passed every gate.
+    let approved: X402AcceptedPayment | undefined;
+
+    try {
+      const { response, txHash } = await payX402EndpointWithReceipt(
+        url,
+        method,
+        body,
+        this.env.PAYMENT_PRIVATE_KEY,
+        {},
+        (payment) => {
+          if (!allowedPayTo.has(payment.payTo.toLowerCase())) {
+            throw new Error(
+              `Refusing to pay ${payment.payTo}: not in OUTBOUND_PAY_TO_WHITELIST.`,
+            );
+          }
+          if (maxAmount !== undefined && BigInt(payment.amount) > maxAmount) {
+            throw new Error(
+              `Refusing to pay ${payment.amount}: exceeds OUTBOUND_MAX_AMOUNT_ATOMIC (${maxAmount}).`,
+            );
+          }
+          approved = payment;
+        },
+      );
+
+      const responseText = await response.text();
+
+      // No txHash means the endpoint never issued an x402 challenge, so no
+      // transfer happened and nothing may be recorded.
+      if (!txHash || !approved) {
+        return {
+          success: false,
+          status: 502,
+          response: `No payment was made: ${url} did not return an x402 payment challenge.`,
+        };
+      }
+
+      const record: X402AcceptedPayment = approved;
+
+      // Re-read state after the network round-trip so a concurrent webhook or
+      // email update is not clobbered by a stale snapshot.
+      const latest = this.ensureState();
+
+      const payment: PaymentRecord = {
+        id: generateId(),
+        direction: "sent",
+        amount: record.amount,
+        currency:
+          record.asset.toLowerCase() === "0x0000000000000000000000000000000000000000" ? "ETH" : "USDC",
+        network: record.network,
+        fromAddress: record.fromAddress,
+        toAddress: record.payTo,
+        description: `Payment to ${url}`,
+        status: response.ok ? "confirmed" : "failed",
+        txHash,
+        createdAt: new Date().toISOString(),
+      };
+
+      this.setState({
+        ...latest,
+        payments: [...latest.payments, payment],
+        totalPaymentsSent: latest.totalPaymentsSent + 1,
+      });
+
+      return {
+        success: response.ok,
+        status: response.status,
+        response: responseText,
+        txHash,
+      };
+    } catch (error) {
+      console.error("External payment failed:", error);
+      return {
+        success: false,
+        status: 502,
+        response:
+          error instanceof Error ? error.message : "External payment failed.",
+      };
+    }
   }
 
   // ===========================================================================
@@ -584,6 +778,15 @@ Do not claim to have completed a payment unless you have received confirmation.`
       agentName = String(agentName).toLowerCase().replace(/[^a-z0-9-]/g, "-");
     }
 
+    // AI analysis of the event (non-recording; returns a fallback on failure).
+    const aiInsight = await this.generateAiInsight(
+      `Analyze this ${provider} webhook event (${eventType}):\n${JSON.stringify(
+        payload,
+        null,
+        2,
+      ).slice(0, 2000)}\n\nProvide a brief summary and any recommended actions:`,
+    );
+
     const event: WebhookEvent = {
       id: generateId(),
       provider,
@@ -592,6 +795,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
       payload,
       receivedAt: new Date().toISOString(),
       processed: true,
+      aiInsight,
     };
 
     const state = this.ensureState();
@@ -612,6 +816,19 @@ Do not claim to have completed a payment unless you have received confirmation.`
         );
       } catch (e) {
         console.error("Slack notification for webhook failed:", e);
+      }
+    }
+
+    // When Slack asked us to reply asynchronously, post the analysis back.
+    if (provider === "slack" && isTrustedResponseUrl(payload?.response_url)) {
+      try {
+        await fetch(payload.response_url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: aiInsight }),
+        });
+      } catch (e) {
+        console.error("Failed to post Slack response_url reply:", e);
       }
     }
   }

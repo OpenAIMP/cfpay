@@ -20,6 +20,10 @@ This project uses **GitHub Environments** to manage secrets for CI/CD deployment
 | `GH_WEBHOOK_SECRET` | Secret for verifying incoming GitHub webhook signatures (named `GH_` because GitHub Actions disallows secret names starting with `GITHUB_`; deployed as Worker secret `GITHUB_WEBHOOK_SECRET`) | Set in your GitHub repo's webhook settings |
 | `STRIPE_WEBHOOK_SECRET` | Secret for verifying incoming Stripe webhook signatures | Stripe Dashboard → Developers → Webhooks → your endpoint → Signing secret |
 | `SLACK_WEBHOOK_SECRET` | Signing secret for verifying incoming Slack webhook requests | Slack App → Basic Information → App Credentials → Signing Secret |
+| `SLACK_SIGNING_SECRET` | Signing secret for the Slack Events API endpoint `/slack/events` | Slack App → Basic Information → App Credentials → Signing Secret |
+| `SLACK_BOT_TOKEN` | Bot user OAuth token, used to post messages to Slack | Slack App → OAuth & Permissions → Bot User OAuth Token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | App-level token for Socket Mode connections | Slack App → Basic Information → App-Level Tokens (scope `connections:write`, `xapp-...`) |
+| `SLACK_CLIENT_ID` | OAuth client ID used by the `/slack/install` redirect | Slack App → Basic Information → App Credentials → Client ID |
 
 ### Cloudflare API Token Permissions
 
@@ -33,6 +37,33 @@ Create a token at https://dash.cloudflare.com/profile/api-tokens with:
 1. **New environment** → name it `preview` → **Configure environment**
 2. Add the same `CF_API_TOKEN` and `CF_ACCOUNT_ID` secrets
 3. (Preview deploys don't need wallet/email secrets)
+
+## Optional: Enabling Outbound Payments
+
+The agent can pay external x402 endpoints via the `payExternalEndpoint` RPC method.
+This spends real funds. It stays disabled until `OUTBOUND_PAY_TO_WHITELIST` names at least one address; `OUTBOUND_MAX_AMOUNT_ATOMIC` is an additional, optional ceiling.
+
+| Variable | Purpose |
+|---|---|
+| `OUTBOUND_PAY_TO_WHITELIST` | Comma-separated list of `payTo` addresses the agent is allowed to pay. Checked BEFORE the transfer is signed. |
+| `OUTBOUND_MAX_AMOUNT_ATOMIC` | Optional ceiling, in atomic units of the requested asset, on any single outbound payment. |
+
+With `OUTBOUND_PAY_TO_WHITELIST` unset or empty, every call is refused with `403`
+and no transaction is broadcast.
+
+> **Precondition:** the `/ws` route is currently unauthenticated, and the x402 RPC
+> surface is reachable through it. Secure `/ws` before enabling outbound payments,
+> and always set `OUTBOUND_MAX_AMOUNT_ATOMIC` so a single request cannot drain the wallet.
+
+Set them with:
+
+```
+npx wrangler secret put OUTBOUND_PAY_TO_WHITELIST
+npx wrangler secret put OUTBOUND_MAX_AMOUNT_ATOMIC
+```
+
+A payment is written to the ledger only when a transaction was actually broadcast,
+and it records the terms the endpoint requested (`asset`/`amount`/`network`/`payTo`).
 
 ## Environment Protection Rules (recommended)
 
@@ -51,7 +82,7 @@ Push to main
     → deploy job (PROD environment):
       → uses PROD environment secrets
       → deploys Worker via wrangler-action
-      → sets Worker secrets (PAYMENT_PRIVATE_KEY, EMAIL_SECRET, DASHBOARD_API_KEY, GITHUB_WEBHOOK_SECRET, STRIPE_WEBHOOK_SECRET, SLACK_WEBHOOK_SECRET)
+      → sets Worker secrets (PAYMENT_PRIVATE_KEY, EMAIL_SECRET, DASHBOARD_API_KEY, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN, SLACK_CLIENT_ID, GITHUB_WEBHOOK_SECRET, STRIPE_WEBHOOK_SECRET, SLACK_WEBHOOK_SECRET)
       → Worker live at https://pay.openaimp.com
 
 Pull Request
@@ -64,7 +95,7 @@ Pull Request
 ## First-Time Setup Checklist
 
 1. [ ] Create `PROD` environment in GitHub
-2. [ ] Add all 8 secrets to `PROD` environment
+2. [ ] Add all 12 secrets to `PROD` environment
 3. [ ] Create `preview` environment in GitHub (optional)
 4. [ ] Add 2 secrets to `preview` environment
 5. [ ] Push to `main` → first deploy creates the Worker + custom domain

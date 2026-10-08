@@ -23,6 +23,10 @@ export interface Env {
   SLACK_WEBHOOK_SECRET?: string;
   // Outgoing webhook URLs
   SLACK_WEBHOOK_URL?: string;
+  // Outbound x402 payments (agent spending). Both must be configured before the
+  // agent will send funds; see CfmailAgentSQLite.payExternalEndpoint.
+  OUTBOUND_PAY_TO_WHITELIST?: string;
+  OUTBOUND_MAX_AMOUNT_ATOMIC?: string;
 }
 
 export interface PaymentNetworkConfig {
@@ -99,4 +103,6 @@ export interface WebhookEvent {
   payload: unknown;
   receivedAt: string;
   processed: boolean;
+  /** AI analysis of the event, attached when analysis succeeds. */
+  aiInsight?: string;
 }

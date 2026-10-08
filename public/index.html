@@ -215,6 +215,7 @@
       document.getElementById('login').style.display = 'none';
       document.getElementById('app').style.display = 'block';
       init();
+      window.connectAgent?.();
     }
     async function api(path, method = 'GET', body = null) {
       const opts = { method, headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' } };
@@ -602,25 +603,43 @@
 <script type="module">
   import { AgentClient } from "https://esm.sh/agents@latest/client";
 
-  const agent = new AgentClient({
-    agent: "CfmailAgent",
-    name: "agent",
-    url: "/ws", // Explicitly connect to the /ws route
-    // No auth needed for state sync — the agent's onStateUpdate broadcasts to all
-  });
+  // The /ws upgrade is authenticated. A browser cannot set headers on a
+  // WebSocket handshake, so the same dashboard API key is passed as a query
+  // parameter; the getter is re-evaluated on every (re)connect.
+  //
+  // Nothing is opened until a key exists: a 401 clears the stored key and
+  // reloads, so connecting with an empty token would only produce a retry loop.
+  window.connectAgent = function connectAgent() {
+    if (window.cfmailAgent) {
+      window.cfmailAgent.reconnect();
+      return window.cfmailAgent;
+    }
 
-  agent.onStateUpdate((state) => {
-    console.log("State updated:", state);
-    // Auto-refresh the current tab when new data arrives
-    const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
-    if (activeTab === "emails") loadEmails();
-    if (activeTab === "overview") loadStats();
-    if (activeTab === "slack") loadSlackMessages();
-    if (activeTab === "payments") loadPayments();
-  });
+    const agent = new AgentClient({
+      agent: "CfmailAgent",
+      name: "agent",
+      url: "/ws", // Explicitly connect to the /ws route
+      query: () => ({ token: localStorage.getItem("cfmail_api_key") || "" }),
+    });
 
-  // Make agent available globally for debugging
-  window.cfmailAgent = agent;
+    agent.onStateUpdate((state) => {
+      console.log("State updated:", state);
+      // Auto-refresh the current tab when new data arrives
+      const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
+      if (activeTab === "emails") loadEmails();
+      if (activeTab === "overview") loadStats();
+      if (activeTab === "slack") loadSlackMessages();
+      if (activeTab === "payments") loadPayments();
+    });
+
+    // Make agent available globally for debugging
+    window.cfmailAgent = agent;
+    return agent;
+  };
+
+  if (localStorage.getItem("cfmail_api_key")) {
+    window.connectAgent();
+  }
 </script>
 </body>
 </html>

@@ -7,8 +7,9 @@ export function createApp() {
   const app = new Hono<{ Bindings: Env }>();
 
   function requireAuth(c: any, next: any) {
-    const apiKey = c.req.header("X-API-Key");
-    if (apiKey !== c.env.DASHBOARD_API_KEY) {
+    const presented = c.req.header("X-API-Key") ?? "";
+    // Fail closed: an unset DASHBOARD_API_KEY must never authorize a request.
+    if (!c.env.DASHBOARD_API_KEY || presented !== c.env.DASHBOARD_API_KEY) {
       return c.json({ error: "Unauthorized" }, 401);
     }
     return next();
@@ -350,12 +351,27 @@ export function createApp() {
     return c.json(result);
   });
 
-  // WebSocket endpoint for real-time updates
+  // WebSocket endpoint for real-time updates.
+  //
+  // This hands the raw request to the Durable Object, which exposes the entire
+  // @callable RPC surface — including payExternalEndpoint, which spends real
+  // funds. It must therefore be authenticated. Browsers cannot set headers on a
+  // WebSocket handshake, so the dashboard passes the same DASHBOARD_API_KEY it
+  // already uses for the REST routes as a ?token= query parameter; the header is
+  // accepted too for non-browser clients.
   app.get("/ws", async (c) => {
     const upgradeHeader = c.req.header("Upgrade");
     if (upgradeHeader !== "websocket") {
       return c.text("Expected Upgrade: websocket", 426);
     }
+
+    const presented = c.req.header("X-API-Key") ?? c.req.query("token") ?? "";
+
+    // Fail closed: an unset key must never match an empty presented value.
+    if (!c.env.DASHBOARD_API_KEY || presented !== c.env.DASHBOARD_API_KEY) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+
     const agentId = c.env.CfmailAgent.idFromName("agent");
     const agent = c.env.CfmailAgent.get(agentId) as any;
     return agent.fetch(c.req.raw);
