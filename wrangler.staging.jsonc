@@ -1,47 +1,24 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "cfmail-agent",
+  "name": "cfmail-agent-staging",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-30",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": {
-    "enabled": true
-  },
+  "observability": { "enabled": true },
   "durable_objects": {
-    "bindings": [
-      {
-        "name": "CfmailAgent",
-        "class_name": "CfmailAgentSQLite"
-      }
-    ]
+    "bindings": [{ "name": "CfmailAgent", "class_name": "CfmailAgentSQLite" }]
   },
   "migrations": [
-    { "tag": "v1", "new_classes": ["CfmailAgent"] },
-    { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] }
+    { "tag": "v1", "new_sqlite_classes": ["CfmailAgentSQLite"] }
   ],
-  "send_email": [
-    {
-      "name": "EMAIL",
-      "remote": true
-    }
-  ],
-  "ai": {
-    "binding": "AI"
-  },
-  "assets": {
-    "directory": "./public",
-    "binding": "ASSETS"
-  },
-  "routes": [
-    {
-      "pattern": "pay.openaimp.com",
-      "custom_domain": true
-    }
-  ],
+  "send_email": [{ "name": "EMAIL", "remote": true }],
+  "ai": { "binding": "AI" },
+  "assets": { "directory": "./public", "binding": "ASSETS" },
   "vars": {
     "EMAIL_DOMAIN": "cfmail.openaimp.com",
+    "EMAIL_CAPTURE_MODE": "true",
     "PAYMENT_DESCRIPTION": "Agent service request via cfmail",
-    "STRIPE_CONFIG": "{\"priceId\":\"price_1UOLlHE1XoNBvuWFNifxjkDG\",\"amountCents\":100,\"currency\":\"usd\"}",
+    "STRIPE_CONFIG": "{\"priceId\":\"price_1UOKMaINhMDwCwjcMq5RPZNO\",\"amountCents\":100,\"currency\":\"usd\"}",
     "PAY_TO_ADDRESS": "0xF52231E3f19c3a1f9c14C1cE4d1c962C0eCff462",
     "X402_FACILITATOR_URL": "https://x402.org/facilitator",
     "PAYMENT_CONFIG": "{\"networks\":{\"eip155:8453\":{\"chainId\":\"0x2105\",\"name\":\"Base\",\"usdc\":\"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"},\"eip155:84532\":{\"chainId\":\"0x14a34\",\"name\":\"Base Sepolia\",\"usdc\":\"0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"},\"eip155:11155111\":{\"chainId\":\"0xaa36a7\",\"name\":\"Ethereum Sepolia\",\"usdc\":\"0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"}}}"

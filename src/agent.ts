@@ -305,6 +305,17 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
+  /**
+   * True when this deployment must not deliver outbound email.
+   *
+   * Used by staging so a full payment flow can be exercised without sending real
+   * mail from the production domain. The intended message is still recorded, so
+   * its content can be inspected in the dashboard.
+   */
+  private isEmailCaptureMode(): boolean {
+    return this.env.EMAIL_CAPTURE_MODE === "true";
+  }
+
   // ─── Webhook AI analysis ───────────────────────────
 
   /**
@@ -437,6 +448,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     // Send auto-reply (requires Workers Paid plan for Email Sending)
     try {
+      if (this.isEmailCaptureMode()) {
+        console.log(
+          `[email-capture] auto-reply suppressed: to=${email.from} subject="Re: ${parsed.subject || "Your email"}" bytes=${aiResponse.length}`,
+        );
+        throw new Error("__captured__");
+      }
       await this.env.EMAIL.send({
         to: email.from,
         from: `agent@${this.env.EMAIL_DOMAIN}`,
@@ -495,6 +512,21 @@ Do not claim to have completed a payment unless you have received confirmation.`
     };
 
     try {
+      if (this.isEmailCaptureMode()) {
+        // Record the message without delivering it, then skip the send by
+        // leaving through the same success path.
+        console.log(
+          `[email-capture] outbound suppressed: to=${to} subject="${subject}" bytes=${body.length}`,
+        );
+        console.log("[email-capture] body:\n" + body);
+        this.setState({
+          ...state,
+          emails: [...state.emails, record],
+          totalEmailsSent: this.state.totalEmailsSent + 1,
+        });
+        return { success: true, emailId };
+      }
+
       await this.env.EMAIL.send({
         to,
         from: `agent@${this.env.EMAIL_DOMAIN}`,

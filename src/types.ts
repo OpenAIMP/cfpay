@@ -25,6 +25,9 @@ export interface Env {
   SLACK_WEBHOOK_URL?: string;
   // Outbound x402 payments (agent spending). Both must be configured before the
   // agent will send funds; see CfmailAgentSQLite.payExternalEndpoint.
+  // Staging/test only: when "true", outbound email is logged and recorded
+  // instead of being delivered. Never set in production.
+  EMAIL_CAPTURE_MODE?: string;
   // Stripe card payments. STRIPE_SECRET_KEY is a secret; STRIPE_CONFIG is a
   // var. Card checkout is disabled unless both are present.
   STRIPE_SECRET_KEY?: string;
