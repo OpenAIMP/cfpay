@@ -8,7 +8,11 @@ import {
   payX402EndpointWithReceipt,
   type X402AcceptedPayment,
 } from "./payments";
-import { sendSlackNotification, sendSignedWebhook } from "./webhooks";
+import {
+  sendSlackNotification,
+  sendSlackNotificationDetailed,
+  sendSignedWebhook,
+} from "./webhooks";
 import {
   connectSlackSocketMode,
   sendSlackMessage,
@@ -851,17 +855,19 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // RPC: Send an outgoing Slack notification
   // ===========================================================================
   @callable()
-  async notifySlack(message: string): Promise<{ success: boolean }> {
-    if (!this.env.SLACK_WEBHOOK_URL) {
-      return { success: false };
+  async notifySlack(
+    message: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const { ok, detail } = await sendSlackNotificationDetailed(
+      this.env.SLACK_WEBHOOK_URL ?? "",
+      message,
+    );
+
+    if (!ok) {
+      console.error("Slack notification failed:", detail);
     }
-    try {
-      const ok = await sendSlackNotification(this.env.SLACK_WEBHOOK_URL, message);
-      return { success: ok };
-    } catch (e) {
-      console.error("Slack notification failed:", e);
-      return { success: false };
-    }
+
+    return ok ? { success: true } : { success: false, error: detail };
   }
 
   // ===========================================================================

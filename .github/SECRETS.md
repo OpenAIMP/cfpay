@@ -65,6 +65,24 @@ npx wrangler secret put OUTBOUND_MAX_AMOUNT_ATOMIC
 A payment is written to the ledger only when a transaction was actually broadcast,
 and it records the terms the endpoint requested (`asset`/`amount`/`network`/`payTo`).
 
+## Optional: Outgoing Slack Notifications
+
+`SLACK_WEBHOOK_URL` powers the dashboard's "Send to Slack" button and the
+webhook-received notifications. It is optional — with it unset, the button
+reports that it is not configured.
+
+This is an **incoming webhook URL** from Slack (App → Incoming Webhooks →
+Add New Webhook to Workspace), **not** a signing secret, and it is unrelated to
+`SLACK_WEBHOOK_SECRET` above despite the similar name.
+
+```
+npx wrangler secret put SLACK_WEBHOOK_URL     # deployed Worker
+# or, for local development:
+echo "SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ" >> .dev.vars
+```
+
+Set it as a secret rather than a `wrangler.jsonc` var so the URL is not committed.
+
 ## Environment Protection Rules (recommended)
 
 For the `PROD` environment:

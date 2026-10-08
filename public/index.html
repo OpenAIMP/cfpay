@@ -202,6 +202,16 @@
     </div>
   </div>
   <script>
+    // Escapes text before it is placed in innerHTML. Needed because error
+    // detail can originate from a remote response body, not just our own code.
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
     let apiKey = localStorage.getItem('cfmail_api_key') || '';
     let chatHistory = [];
     let account = null;
@@ -596,7 +606,8 @@
         result.innerHTML = '<div class="status-msg success">Sent to Slack!</div>';
         document.getElementById('slackMessage').value = '';
       } else {
-        result.innerHTML = '<div class="status-msg error">Failed — is SLACK_WEBHOOK_URL configured?</div>';
+        const reason = (res && res.error) || 'Slack notification failed.';
+        result.innerHTML = '<div class="status-msg error">Failed — ' + escapeHtml(reason) + '</div>';
       }
     }
   </script>

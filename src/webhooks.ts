@@ -214,13 +214,67 @@ export async function verifyAndParseWebhook(
 /**
  * Send a Slack incoming-webhook notification.
  */
+/** Text an incoming Slack webhook always answers with. */
+const SLACK_WEBHOOK_OK_BODIES = ["ok"];
+
+/**
+ * Post a message to a Slack incoming webhook.
+ *
+ * Slack answers 200 with a body of "ok" on success, and a non-2xx status with a
+ * reason such as "invalid_token" or "no_service" on failure — so the status code
+ * alone is not enough to call this successful.
+ *
+ * Never throws: a network failure or timeout is reported as ok:false with the
+ * reason, so callers can surface something actionable.
+ */
+export async function sendSlackNotificationDetailed(
+  webhookUrl: string,
+  message: string,
+): Promise<{ ok: boolean; detail: string }> {
+  if (!webhookUrl) {
+    return { ok: false, detail: "SLACK_WEBHOOK_URL is not configured." };
+  }
+
+  let res: Response;
+  let body: string;
+  try {
+    res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: message }),
+    });
+    body = (await res.text()).trim();
+  } catch (err) {
+    return {
+      ok: false,
+      detail: `Could not reach Slack: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  if (!res.ok) {
+    // Slack puts the machine-readable reason in the body; keep it short.
+    const reason = body.slice(0, 200);
+    return {
+      ok: false,
+      detail: reason
+        ? `Slack rejected the message (${res.status}): ${reason}`
+        : `Slack rejected the message (${res.status}).`,
+    };
+  }
+
+  const trimmedLower = body.toLowerCase();
+  const looksOk =
+    trimmedLower.length === 0 || SLACK_WEBHOOK_OK_BODIES.includes(trimmedLower);
+  if (!looksOk) {
+    return { ok: false, detail: `Slack returned an unexpected response: ${body.slice(0, 200)}` };
+  }
+
+  return { ok: true, detail: "" };
+}
+
 export async function sendSlackNotification(webhookUrl: string, message: string): Promise<boolean> {
-  const res = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: message }),
-  });
-  return res.ok;
+  const { ok } = await sendSlackNotificationDetailed(webhookUrl, message);
+  return ok;
 }
 
 /**

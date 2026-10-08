@@ -8,3 +8,10 @@ DASHBOARD_API_KEY=your-dashboard-api-key
 GITHUB_WEBHOOK_SECRET=your-github-webhook-secret
 STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
 SLACK_WEBHOOK_SECRET=your-slack-signing-secret
+
+# Optional: outgoing Slack notifications (the dashboard's "Send to Slack" button
+# and webhook-received notifications). This is an INCOMING WEBHOOK URL from
+# your Slack app, not a signing secret, and is unrelated to SLACK_WEBHOOK_SECRET
+# above despite the similar name. Leave it unset and the button will simply
+# report that it is not configured.
+#   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ

@@ -40,7 +40,6 @@
   ],
   "vars": {
     "EMAIL_DOMAIN": "cfmail.openaimp.com",
-    "SLACK_WEBHOOK_URL": "",
     "PAYMENT_DESCRIPTION": "Agent service request via cfmail",
     "PAY_TO_ADDRESS": "0xF52231E3f19c3a1f9c14C1cE4d1c962C0eCff462",
     "X402_FACILITATOR_URL": "https://x402.org/facilitator",
