@@ -25,6 +25,10 @@ export interface Env {
   SLACK_WEBHOOK_URL?: string;
   // Outbound x402 payments (agent spending). Both must be configured before the
   // agent will send funds; see CfmailAgentSQLite.payExternalEndpoint.
+  // Stripe card payments. STRIPE_SECRET_KEY is a secret; STRIPE_CONFIG is a
+  // var. Card checkout is disabled unless both are present.
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_CONFIG?: string;
   // Webhook email notifications. Off unless WEBHOOK_NOTIFY_EMAIL is set.
   WEBHOOK_NOTIFY_EMAIL?: string;
   WEBHOOK_NOTIFY_PROVIDERS?: string;
@@ -42,6 +46,41 @@ export interface PaymentNetworkConfig {
 
 export interface PaymentConfig {
   networks: Record<string, PaymentNetworkConfig>;
+}
+
+/**
+ * Card pricing. amountCents is the single source of truth for what a card
+ * payment must total: the Stripe Price and this value are compared on the
+ * webhook and a mismatch is rejected rather than fulfilled.
+ */
+export interface StripeConfig {
+  /** Stripe Price id (price_...). */
+  priceId: string;
+  /** Expected total in minor units, e.g. 100 = $1.00. */
+  amountCents: number;
+  /** Lowercase ISO currency, e.g. "usd". */
+  currency: string;
+}
+
+/** Lifecycle of one card checkout, keyed by our own requestId. */
+export type StripeCheckoutStatus =
+  | "awaiting_session"
+  | "session_created"
+  | "fulfilled"
+  | "failed";
+
+export interface StripeCheckout {
+  requestId: string;
+  email: string;
+  /** The user's request text. Held server-side; never trusted from the client. */
+  request: string;
+  status: StripeCheckoutStatus;
+  createdAt: string;
+  sessionId?: string;
+  sessionUrl?: string;
+  fulfilledAt?: string;
+  /** Stripe payment_intent id, recorded on the payment ledger entry. */
+  paymentIntentId?: string;
 }
 
 export interface PaymentClaim {
@@ -90,6 +129,14 @@ export interface AgentState {
   totalPaymentsSent: number;
   webhookEvents?: WebhookEvent[];
   totalWebhooksReceived?: number;
+  /** Card checkouts awaiting or after fulfilment, keyed by requestId. */
+  stripeCheckouts?: Record<string, StripeCheckout>;
+  /**
+   * Stripe event ids already handled. Stripe retries deliveries for up to three
+   * days and may reorder them, so handling must be idempotent regardless of the
+   * checkout state machine.
+   */
+  stripeProcessedEvents?: Record<string, string>;
 }
 
 export interface ChatMessage {

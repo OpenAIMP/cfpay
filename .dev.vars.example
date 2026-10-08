@@ -21,3 +21,9 @@ SLACK_WEBHOOK_SECRET=your-slack-signing-secret
 # comma-separated allowlist (github, stripe, slack).
 #   WEBHOOK_NOTIFY_EMAIL=you@example.com
 #   WEBHOOK_NOTIFY_PROVIDERS=github
+
+# Optional: Stripe card payments. Both must be present to enable card checkout.
+# STRIPE_SECRET_KEY is a server-side key (sk_...); add it to the GitHub PROD
+# environment for production. STRIPE_CONFIG lives in wrangler.jsonc.
+#   STRIPE_SECRET_KEY=sk_test_...
+# For local webhook testing: stripe listen --forward-to localhost:8787/webhooks/stripe

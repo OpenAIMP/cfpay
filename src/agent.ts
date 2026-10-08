@@ -1,7 +1,18 @@
 import { Agent, callable } from "agents";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime from "postal-mime";
-import type { AgentState, ChatMessage, EmailRecord, Env, PaymentClaim, PaymentRecord, WebhookEvent } from "./types";
+import type {
+  AgentState,
+  ChatMessage,
+  EmailRecord,
+  Env,
+  PaymentClaim,
+  PaymentRecord,
+  StripeCheckout,
+  StripeCheckoutStatus,
+  StripeConfig,
+  WebhookEvent,
+} from "./types";
 import {
   formatAmount,
   generateId,
@@ -505,11 +516,19 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
+  /**
+   * Fulfil a paid request and record the payment.
+   *
+   * Two callers: the x402 rail passes a `claim`, while the Stripe webhook passes
+   * a `card` descriptor. Only one may be supplied; without either, the payment
+   * is recorded with the legacy x402 defaults so existing behaviour is unchanged.
+   */
   @callable()
   async processPaidRequest(
     senderEmail: string,
     request: string,
     claim?: PaymentClaim,
+    card?: { amount: string; currency: string; reference: string },
   ): Promise<{ success: boolean; response: string; paymentId: string }> {
     const state = this.ensureState();
     const paymentId = generateId();
@@ -517,14 +536,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const payment: PaymentRecord = {
       id: paymentId,
       direction: "received",
-      amount: claim?.amount || "10000",
-      currency: claim?.asset === "0x0000000000000000000000000000000000000000" ? "ETH" : "USDC",
-      network: claim?.network || "base",
+      amount: card?.amount ?? claim?.amount ?? "10000",
+      currency:
+        card?.currency ??
+        (claim?.asset === "0x0000000000000000000000000000000000000000" ? "ETH" : "USDC"),
+      network: card ? "card" : claim?.network || "base",
       fromAddress: undefined,
       toAddress: this.env.PAY_TO_ADDRESS,
       description: this.env.PAYMENT_DESCRIPTION,
       status: "confirmed",
-      txHash: claim?.txHash,
+      txHash: card?.reference ?? claim?.txHash,
       createdAt: new Date().toISOString(),
     };
 
@@ -549,6 +570,192 @@ Do not claim to have completed a payment unless you have received confirmation.`
       response: aiResponse,
       paymentId,
     };
+  }
+
+  // ===========================================================================
+  // Stripe card payments: checkout state and idempotent fulfilment
+  // ===========================================================================
+
+  /**
+   * Record an intent to pay by card, before any Stripe session exists.
+   * The request text is held server-side so the return path never has to trust
+   * a client-supplied payload.
+   */
+  @callable()
+  async createStripeCheckoutIntent(
+    requestId: string,
+    email: string,
+    request: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const state = this.ensureState();
+    const existing = state.stripeCheckouts?.[requestId];
+    if (existing) {
+      return { ok: false, error: "This request already has a checkout." };
+    }
+
+    const checkout: StripeCheckout = {
+      requestId,
+      email,
+      request,
+      status: "awaiting_session",
+      createdAt: new Date().toISOString(),
+    };
+
+    this.setState({
+      ...state,
+      stripeCheckouts: { ...(state.stripeCheckouts || {}), [requestId]: checkout },
+    });
+
+    return { ok: true };
+  }
+
+  /** Attach the Stripe session to an intent so the return page can report it. */
+  @callable()
+  async attachStripeSession(
+    requestId: string,
+    sessionId: string,
+    sessionUrl: string,
+  ): Promise<{ ok: boolean }> {
+    const state = this.ensureState();
+    const existing = state.stripeCheckouts?.[requestId];
+    if (!existing || existing.status !== "awaiting_session") {
+      return { ok: false };
+    }
+
+    this.setState({
+      ...state,
+      stripeCheckouts: {
+        ...(state.stripeCheckouts || {}),
+        [requestId]: { ...existing, sessionId, sessionUrl, status: "session_created" },
+      },
+    });
+
+    return { ok: true };
+  }
+
+  /** Read-only view for the return page. Never fulfils. */
+  @callable()
+  async getStripeCheckoutStatus(requestId: string): Promise<{
+    found: boolean;
+    status?: StripeCheckoutStatus;
+    email?: string;
+    fulfilledAt?: string;
+  }> {
+    const checkout = this.ensureState().stripeCheckouts?.[requestId];
+    if (!checkout) return { found: false };
+    return {
+      found: true,
+      status: checkout.status,
+      email: checkout.email,
+      fulfilledAt: checkout.fulfilledAt,
+    };
+  }
+
+  /** Mark a checkout failed (e.g. async payment failed). */
+  @callable()
+  async markStripeCheckoutFailed(requestId: string): Promise<{ ok: boolean }> {
+    const state = this.ensureState();
+    const existing = state.stripeCheckouts?.[requestId];
+    if (!existing || existing.status === "fulfilled") return { ok: false };
+
+    this.setState({
+      ...state,
+      stripeCheckouts: {
+        ...(state.stripeCheckouts || {}),
+        [requestId]: { ...existing, status: "failed" },
+      },
+    });
+    return { ok: true };
+  }
+
+  /**
+   * Fulfil a card payment exactly once.
+   *
+   * Called only from the signature-verified Stripe webhook, after the caller has
+   * checked payment_status, mode, currency and amount. Idempotency comes from
+   * three independent guards, because Stripe retries for up to three days and
+   * may deliver events out of order:
+   *   1. the event id must be new,
+   *   2. the checkout must not already be fulfilled,
+   *   3. no payment may already be recorded for this payment reference.
+   */
+  @callable()
+  async fulfilStripeCheckout(params: {
+    eventId: string;
+    requestId: string;
+    paymentReference: string;
+    amount: string;
+    currency: string;
+  }): Promise<{ ok: boolean; duplicate: boolean; paymentId?: string; error?: string }> {
+    const { eventId, requestId, paymentReference, amount, currency } = params;
+    const state = this.ensureState();
+
+    // Guard 1: duplicate delivery of the same event.
+    const processed = state.stripeProcessedEvents || {};
+    if (processed[eventId]) {
+      return { ok: true, duplicate: true };
+    }
+
+    const checkout = state.stripeCheckouts?.[requestId];
+    if (!checkout) {
+      return { ok: false, duplicate: false, error: `Unknown checkout ${requestId}.` };
+    }
+
+    // Guard 2: already fulfilled by an earlier delivery.
+    if (checkout.status === "fulfilled") {
+      return { ok: true, duplicate: true };
+    }
+
+    // Guard 3: the ledger already holds a payment for this reference.
+    const alreadyPaid = state.payments.some(
+      (payment) => payment.txHash === paymentReference,
+    );
+    if (alreadyPaid) {
+      return { ok: true, duplicate: true };
+    }
+
+    const result = await this.processPaidRequest(checkout.email, checkout.request, undefined, {
+      amount,
+      currency,
+      reference: paymentReference,
+    });
+
+    // Re-read: processPaidRequest wrote state while we were awaiting.
+    const latest = this.ensureState();
+    this.setState({
+      ...latest,
+      stripeCheckouts: {
+        ...(latest.stripeCheckouts || {}),
+        [requestId]: {
+          ...checkout,
+          status: "fulfilled",
+          fulfilledAt: new Date().toISOString(),
+          paymentIntentId: paymentReference,
+        },
+      },
+      stripeProcessedEvents: {
+        ...(latest.stripeProcessedEvents || {}),
+        [eventId]: new Date().toISOString(),
+      },
+    });
+
+    return { ok: true, duplicate: false, paymentId: result.paymentId };
+  }
+
+  /** Record that an event was seen but deliberately not acted on. */
+  @callable()
+  async recordStripeEvent(eventId: string): Promise<{ ok: boolean }> {
+    const state = this.ensureState();
+    if (state.stripeProcessedEvents?.[eventId]) return { ok: false };
+
+    this.setState({
+      ...state,
+      stripeProcessedEvents: {
+        ...(state.stripeProcessedEvents || {}),
+        [eventId]: new Date().toISOString(),
+      },
+    });
+    return { ok: true };
   }
 
   @callable()
@@ -806,9 +1013,162 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   // ===========================================================================
+  // Stripe: fulfil a completed card payment
+  // ===========================================================================
+
+  /**
+   * Turn a completed Checkout Session into delivered work.
+   *
+   * Only reached through the signature-verified webhook. Every condition below
+   * is checked BEFORE anything is fulfilled, so an unpaid, partial, wrong-currency
+   * or foreign-account event cannot release work:
+   *   - the event is one of the three completion types we accept,
+   *   - the session is a paid, one-off payment (not a subscription or setup),
+   *   - payment_status is "paid" (async methods report otherwise at this point),
+   *   - currency and amount_total match our own server-side price exactly,
+   *   - and the session carries our own cfmail_request_id marker.
+   *
+   * Idempotency is enforced in fulfilStripeCheckout.
+   */
+  private async handleStripeWebhook(payload: any, eventId: string): Promise<void> {
+    const type = typeof payload?.type === "string" ? payload.type : "";
+    const session = payload?.data?.object;
+
+    const isCompletionType =
+      type === "checkout.session.completed" ||
+      type === "checkout.session.async_payment_succeeded";
+
+    if (!isCompletionType) {
+      // Async failure is worth recording so the dashboard shows it, but it must
+      // never fulfil.
+      if (type === "checkout.session.async_payment_failed") {
+        const failedId = String(session?.metadata?.cfmail_request_id || "");
+        if (failedId) {
+          await this.markStripeCheckoutFailed(failedId);
+        }
+      }
+      await this.recordStripeEvent(eventId);
+      return;
+    }
+
+    const config = this.getStripeConfig();
+    if (!config) {
+      console.error("Stripe event received but STRIPE_CONFIG is unusable; not fulfilling.");
+      return;
+    }
+
+    const requestId = String(session?.metadata?.cfmail_request_id || "");
+    const paymentReference = String(session?.payment_intent || "");
+
+    const rejection = (reason: string) => {
+      console.error(`Stripe fulfilment refused for ${requestId || "unknown"}: ${reason}`);
+    };
+
+    if (!requestId) {
+      rejection("session carries no cfmail_request_id");
+      await this.recordStripeEvent(eventId);
+      return;
+    }
+
+    if (session?.metadata?.cfmail_source !== "cfmail") {
+      rejection("session was not created by this app");
+      await this.recordStripeEvent(eventId);
+      return;
+    }
+
+    if (session?.mode !== "payment") {
+      rejection("session mode is not a one-off payment");
+      await this.recordStripeEvent(eventId);
+      return;
+    }
+
+    if (session?.payment_status !== "paid") {
+      rejection(`payment_status is ${String(session?.payment_status)}, not paid`);
+      // Deliberately not recorded as processed: Stripe may follow up with a
+      // succeeded event, and that one should be allowed to fulfil.
+      return;
+    }
+
+    const sessionCurrency = String(session?.currency || "").toLowerCase();
+    if (sessionCurrency !== config.currency) {
+      rejection(`currency ${sessionCurrency} does not match ${config.currency}`);
+      await this.recordStripeEvent(eventId);
+      return;
+    }
+
+    const amountTotal = Number(session?.amount_total);
+    if (!Number.isInteger(amountTotal) || amountTotal !== config.amountCents) {
+      rejection(
+        `amount_total ${amountTotal} does not match the configured ${config.amountCents}`,
+      );
+      await this.recordStripeEvent(eventId);
+      return;
+    }
+
+    if (!paymentReference) {
+      rejection("session has no payment_intent reference");
+      await this.recordStripeEvent(eventId);
+      return;
+    }
+
+    const result = await this.fulfilStripeCheckout({
+      eventId,
+      requestId,
+      paymentReference,
+      amount: String(amountTotal),
+      currency: sessionCurrency.toUpperCase(),
+    });
+
+    if (!result.ok) {
+      console.error("Stripe fulfilment failed:", result.error);
+    } else if (result.duplicate) {
+      console.log(`Stripe event ${eventId} already handled; no action taken.`);
+    }
+  }
+
+  /** Parse and validate STRIPE_CONFIG, or null when card payments are off. */
+  private getStripeConfig(): StripeConfig | null {
+    const raw = this.env.STRIPE_CONFIG;
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as Partial<StripeConfig>;
+      if (
+        typeof parsed.priceId !== "string" ||
+        parsed.priceId.length === 0 ||
+        typeof parsed.amountCents !== "number" ||
+        !Number.isInteger(parsed.amountCents) ||
+        parsed.amountCents <= 0 ||
+        typeof parsed.currency !== "string" ||
+        parsed.currency.length === 0
+      ) {
+        return null;
+      }
+      return {
+        priceId: parsed.priceId,
+        amountCents: parsed.amountCents,
+        currency: parsed.currency.toLowerCase(),
+      };
+    } catch {
+      return null;
+    }
+  }
+  // ===========================================================================
   // Webhooks: Process a verified webhook event
   // ===========================================================================
   private async processWebhookEvent(provider: "github" | "stripe" | "slack", payload: any) {
+    // Card payment fulfilment runs first. It is idempotent and every condition
+    // is validated internally, so it cannot release work without a paid session.
+    // payload.id is the Stripe event id, which is what duplicate suppression keys on.
+    if (provider === "stripe") {
+      try {
+        await this.handleStripeWebhook(payload, String(payload?.id || generateId()));
+      } catch (error) {
+        // Never let a fulfilment error break the webhook response: Stripe would
+        // retry, and a retry is safe because fulfilment is idempotent.
+        console.error("Stripe webhook handling failed:", error);
+      }
+    }
+
     let eventType = "unknown";
     let agentName = "default";
 

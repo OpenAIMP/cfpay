@@ -1,5 +1,7 @@
 import { Hono } from "hono";
-import type { Env, PaymentClaim } from "./types";
+import Stripe from "stripe";
+import type { Env, PaymentClaim, StripeConfig } from "./types";
+import { renderStripeReturnPage } from "./stripe-return-page";
 import { formatAmount, formatEthAmount, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent } from "./agent";
 
@@ -76,6 +78,55 @@ export function createApp() {
   function getPaymentConfig(env: Env) {
     return parsePaymentConfig(env.PAYMENT_CONFIG);
   }
+
+  /**
+   * Card pricing and credentials. Card checkout is disabled unless both the
+   * secret key and a usable config are present, matching the fail-closed
+   * convention used by the other optional integrations.
+   */
+  function getStripeConfig(env: Env): StripeConfig | null {
+    if (!env.STRIPE_SECRET_KEY || !env.STRIPE_CONFIG) return null;
+    try {
+      const parsed = JSON.parse(env.STRIPE_CONFIG) as Partial<StripeConfig>;
+      if (
+        typeof parsed.priceId !== "string" ||
+        parsed.priceId.length === 0 ||
+        typeof parsed.amountCents !== "number" ||
+        !Number.isInteger(parsed.amountCents) ||
+        parsed.amountCents <= 0 ||
+        typeof parsed.currency !== "string" ||
+        parsed.currency.length === 0
+      ) {
+        return null;
+      }
+      return {
+        priceId: parsed.priceId,
+        amountCents: parsed.amountCents,
+        currency: parsed.currency.toLowerCase(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function getStripe(env: Env): Stripe {
+    // createFetchHttpClient keeps requests on the Workers fetch implementation.
+    return new Stripe(env.STRIPE_SECRET_KEY as string, {
+      httpClient: Stripe.createFetchHttpClient(),
+    });
+  }
+
+  /** Stripe errors can echo request detail; never surface a key. */
+  function safeStripeError(error: unknown): string {
+    const message = error instanceof Error ? error.message : "Unknown Stripe error";
+    return message.replace(/sk_[A-Za-z0-9_]+/g, "sk_[redacted]").slice(0, 300);
+  }
+
+  /** Opaque, unguessable id correlating a checkout with its webhook. */
+  function generateRequestId(): string {
+    return "cfm_" + crypto.randomUUID().replace(/-/g, "");
+  }
+
 
   function buildPaymentChallenge(env: Env, description: string) {
     const config = getPaymentConfig(env);
@@ -233,6 +284,102 @@ export function createApp() {
     return c.json({ status: "ok", service: "cfmail-agent", version: "9.2.0" });
   });
 
+
+  // ---------------------------------------------------------------------------
+  // Stripe card payments
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Create a hosted Checkout Session for one request.
+   *
+   * The amount comes from server config, never from the client. The request
+   * text is held in Durable Object state against a requestId rather than being
+   * passed to Stripe, so the return path never trusts client input.
+   */
+  app.post("/api/stripe/checkout", async (c) => {
+    const config = getStripeConfig(c.env);
+    if (!config) {
+      return c.json(
+        { error: "Card payments are not configured on this deployment." },
+        503,
+      );
+    }
+
+    let body: { email?: unknown; request?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body." }, 400);
+    }
+
+    const email = typeof body.email === "string" ? body.email.trim() : "";
+    const request = typeof body.request === "string" ? body.request.trim() : "";
+
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return c.json({ error: "A valid email address is required." }, 400);
+    }
+    if (!request) {
+      return c.json({ error: "A request description is required." }, 400);
+    }
+    if (request.length > 2000) {
+      return c.json({ error: "Request is too long." }, 400);
+    }
+
+    const requestId = generateRequestId();
+    const agent = getAgent(c);
+
+    const intent = await agent.createStripeCheckoutIntent(requestId, email, request);
+    if (!intent || !intent.ok) {
+      return c.json(
+        { error: (intent && intent.error) || "Could not start a checkout." },
+        409,
+      );
+    }
+
+    try {
+      const stripe = getStripe(c.env);
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        line_items: [{ price: config.priceId, quantity: 1 }],
+        customer_email: email,
+        client_reference_id: requestId,
+        metadata: { cfmail_source: "cfmail", cfmail_request_id: requestId },
+        success_url:
+          "https://pay.openaimp.com/api/stripe/return?request_id=" +
+          requestId +
+          "&session_id={CHECKOUT_SESSION_ID}",
+        cancel_url: "https://pay.openaimp.com/?checkout=cancelled",
+      });
+
+      if (!session.url) {
+        return c.json({ error: "Stripe did not return a checkout URL." }, 502);
+      }
+
+      await agent.attachStripeSession(requestId, session.id, session.url);
+
+      return c.json({ url: session.url, requestId, sessionId: session.id });
+    } catch (error) {
+      console.error("Stripe checkout creation failed:", safeStripeError(error));
+      return c.json({ error: "Could not create the checkout session." }, 502);
+    }
+  });
+
+  /**
+   * Where Stripe sends the browser after payment.
+   *
+   * Display only: it deliberately does NOT fulfil. A browser redirect is not
+   * proof of payment, so the work is done solely by the signed webhook.
+   */
+  app.get("/api/stripe/return", async (c) => {
+    const requestId = c.req.query("request_id") || "";
+    const agent = getAgent(c);
+    const state = requestId ? await agent.getStripeCheckoutStatus(requestId) : null;
+
+    const found = Boolean(state && state.found);
+    const fulfilled = Boolean(found && state && state.status === "fulfilled");
+
+    return c.html(renderStripeReturnPage({ requestId, found, fulfilled }));
+  });
   app.post("/api/process", async (c) => {
     const paymentHeader = c.req.header("PAYMENT-SIGNATURE");
     if (!paymentHeader) {

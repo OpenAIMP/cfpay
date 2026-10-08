@@ -163,6 +163,21 @@ Capabilities that move money or send mail are deliberately **not** exposed, beca
 this endpoint has no authentication yet: `payExternalEndpoint`, `processPaidRequest`,
 `sendOutboundEmail` and `sendWebhook`. Add authentication before widening the tool set.
 
+### Card payments
+
+Alongside x402, users can pay by card. `POST /api/stripe/checkout` creates a
+hosted Stripe Checkout session and stores the request server-side against a
+generated reference; the browser is redirected to Stripe. Fulfilment happens
+**only** in the signature-verified `POST /webhooks/stripe` handler, after
+checking that the session is paid, is a one-off payment, and matches our own
+currency and amount. The browser return page is display-only, so returning
+early or closing the tab cannot lose or duplicate an order.
+
+Fulfilment is idempotent: a Stripe event id is handled once, a checkout can
+only transition to fulfilled once, and a payment reference already on the
+ledger is never recorded twice. Card checkout is disabled unless
+`STRIPE_SECRET_KEY` and `STRIPE_CONFIG` are both configured.
+
 ### Webhook events
 
 A verified webhook delivery is stored, analysed by AI and shown in the Webhooks

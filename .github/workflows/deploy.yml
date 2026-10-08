@@ -78,6 +78,7 @@ jobs:
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           SLACK_WEBHOOK_SECRET: ${{ secrets.SLACK_WEBHOOK_SECRET }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           WEBHOOK_NOTIFY_EMAIL: ${{ secrets.WEBHOOK_NOTIFY_EMAIL }}
         run: |
           printf '%s' "$PAYMENT_PRIVATE_KEY" | npx wrangler@4 secret put PAYMENT_PRIVATE_KEY
@@ -99,6 +100,13 @@ jobs:
             printf '%s' "$SLACK_WEBHOOK_URL" | npx wrangler@4 secret put SLACK_WEBHOOK_URL
           else
             echo "SLACK_WEBHOOK_URL is not set in GitHub secrets - skipping."
+          fi
+
+          # Optional. Card checkout stays disabled when this is unset.
+          if [ -n "$STRIPE_SECRET_KEY" ]; then
+            printf '%s' "$STRIPE_SECRET_KEY" | npx wrangler@4 secret put STRIPE_SECRET_KEY
+          else
+            echo "STRIPE_SECRET_KEY is not set in GitHub secrets - card checkout will be disabled."
           fi
 
   deploy-preview:

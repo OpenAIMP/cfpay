@@ -94,6 +94,45 @@ argument can mangle it in some shells; piping it is safer.
 
 Set it as a secret rather than a `wrangler.jsonc` var so the URL is not committed.
 
+## Optional: Card Payments (Stripe)
+
+Card checkout is **disabled unless both** `STRIPE_SECRET_KEY` and a usable
+`STRIPE_CONFIG` are present. With either missing, `POST /api/stripe/checkout`
+returns 503 and the dashboard shows the reason.
+
+Required in the GitHub `PROD` environment:
+
+| Name | Purpose |
+|---|---|
+| `STRIPE_SECRET_KEY` | Server-side Stripe key (`sk_...`). Pushed to the Worker by the deploy workflow. Never expose it to the browser. |
+| `STRIPE_WEBHOOK_SECRET` | Already present. Signs `/webhooks/stripe`. Must belong to the same Stripe account and mode as the key above. |
+
+`STRIPE_CONFIG` is a `wrangler.jsonc` var, not a secret:
+
+```
+"STRIPE_CONFIG": "{\"priceId\":\"price_...\",\"amountCents\":100,\"currency\":\"usd\"}"
+```
+
+- `priceId` - a Stripe Price. Cards have a **minimum charge of about $0.50**, so
+  the crypto price ($0.01 USDC) is below the card minimum. `amountCents` must be
+  in minor units and must match the Price exactly; a mismatch is **rejected** at
+  fulfilment rather than silently accepted.
+- The key is used only server-side, but it now also powers the webhook check,
+  so keep `STRIPE_WEBHOOK_SECRET` in sync when rotating.
+
+Stripe setup:
+
+1. Create a Price for the per-request fee (Dashboard -> Products).
+2. Put its id in `STRIPE_CONFIG`, and set `amountCents` to the same amount.
+3. Add `STRIPE_SECRET_KEY` to the GitHub `PROD` environment.
+4. Create a webhook endpoint at `https://pay.openaimp.com/webhooks/stripe`
+   for `checkout.session.completed`, `checkout.session.async_payment_succeeded`
+   and `checkout.session.async_payment_failed`; set its signing secret as
+   `STRIPE_WEBHOOK_SECRET`.
+
+Fulfilment is performed **only** by the signed webhook, never by the browser
+return page, and it is idempotent under Stripe's retries.
+
 ## Optional: Email Notification for Webhook Events
 
 Set `WEBHOOK_NOTIFY_EMAIL` to be emailed when a webhook event arrives. Unset by

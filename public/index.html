@@ -85,7 +85,7 @@
       <h3 style="font-size:1.05rem;margin-bottom:0.5rem;">Welcome to PaymentAgent</h3>
       <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.75rem;">PaymentAgent is an AI agent that gets paid before it works. Send it a request, pay with a crypto wallet over the x402 protocol, and it processes the request with AI and emails you the answer. It can also send and receive email and pay other x402-enabled services on its own.</p>
       <ul style="color:var(--muted);font-size:0.8rem;line-height:1.7;padding-left:1.25rem;margin-bottom:1.25rem;">
-        <li><strong style="color:var(--text);">Pay &amp; Process</strong> &mdash; submit a request and pay with MetaMask in ETH or USDC on Base or Ethereum Sepolia. The payment is verified on-chain before the agent starts.</li>
+        <li><strong style="color:var(--text);">Pay &amp; Process</strong> &mdash; submit a request and pay with MetaMask in ETH or USDC on Base or Ethereum Sepolia, or pay by card. The payment is verified before the agent starts.</li>
         <li><strong style="color:var(--text);">Payments</strong> &mdash; a ledger of every payment received and sent, with amounts, status and transaction hashes.</li>
         <li><strong style="color:var(--text);">Emails</strong> &mdash; inbound and outbound mail handled by the agent; replies are delivered to the address you provide.</li>
         <li><strong style="color:var(--text);">Chat</strong> &mdash; talk to the agent directly and send email from the dashboard.</li>
@@ -120,7 +120,7 @@
           <h3 style="font-size:1.1rem;margin-bottom:0.5rem;">Welcome to PaymentAgent</h3>
           <p style="color:var(--muted);font-size:0.9rem;line-height:1.6;margin-bottom:0.75rem;">PaymentAgent is an AI agent that gets paid before it works. Send it a request, pay with a crypto wallet over the x402 protocol, and it processes the request with AI and emails you the answer. It can also send and receive email and pay other x402-enabled services on its own.</p>
           <ul style="color:var(--muted);font-size:0.85rem;line-height:1.7;padding-left:1.25rem;">
-            <li><strong style="color:var(--text);">Pay &amp; Process</strong> &mdash; submit a request and pay with MetaMask in ETH or USDC on Base or Ethereum Sepolia. The payment is verified on-chain before the agent starts.</li>
+            <li><strong style="color:var(--text);">Pay &amp; Process</strong> &mdash; submit a request and pay with MetaMask in ETH or USDC on Base or Ethereum Sepolia, or pay by card. The payment is verified before the agent starts.</li>
             <li><strong style="color:var(--text);">Payments</strong> &mdash; a ledger of every payment received and sent, with amounts, status and transaction hashes.</li>
             <li><strong style="color:var(--text);">Emails</strong> &mdash; inbound and outbound mail handled by the agent; replies are delivered to the address you provide.</li>
             <li><strong style="color:var(--text);">Chat</strong> &mdash; talk to the agent directly and send email from the dashboard.</li>
@@ -172,6 +172,8 @@
             <input type="text" id="payAmount" value="Select network and currency to view amount" readonly aria-describedby="payAmountHelp" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
             <small id="payAmountHelp" style="color:var(--muted);">The amount is set by the payment configuration for your selected network and currency.</small>
           </div>
+          <p style="color:var(--muted);font-size:0.8rem;margin:1.25rem 0 0.5rem;">Or pay by card - no wallet needed.</p>
+          <button class="btn" id="payCardBtn" onclick="payByCard()">Pay by card</button>
           <button class="btn btn-metamask" id="payProcessBtn" onclick="payAndProcess()" disabled>Connect MetaMask First</button>
           <div id="payResult" style="margin-top:1rem;"></div>
         </div>
@@ -308,6 +310,61 @@
       const btn = document.getElementById('payProcessBtn');
       btn.disabled = false; btn.textContent = 'Pay & Process';
     }
+    /**
+     * Card payment. Creates a hosted Stripe Checkout session and hands the
+     * browser to Stripe. Nothing is fulfilled here: the signed webhook does
+     * that once Stripe confirms payment, so closing the tab early is safe.
+     */
+    async function payByCard() {
+      const resultDiv = document.getElementById('payResult');
+      const btn = document.getElementById('payCardBtn');
+
+      // Guard against a double submit creating two sessions (and two charges).
+      if (btn.disabled) return;
+
+      const email = document.getElementById('payEmail').value.trim();
+      const request = document.getElementById('payRequest').value.trim();
+      if (!email || !request) {
+        resultDiv.innerHTML = '<div class="status-msg error">Enter your email and request first.</div>';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Starting checkout...';
+      resultDiv.innerHTML = '<div class="loading">Redirecting to Stripe...</div>';
+
+      try {
+        const res = await fetch('/api/stripe/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+          body: JSON.stringify({ email, request }),
+        });
+
+        if (res.status === 401) {
+          localStorage.removeItem('cfmail_api_key');
+          location.reload();
+          return;
+        }
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data.url) {
+          resultDiv.innerHTML = '<div class="status-msg error">' +
+            escapeHtml(data.error || 'Could not start the card checkout.') + '</div>';
+          btn.disabled = false;
+          btn.textContent = 'Pay by card';
+          return;
+        }
+
+        window.location.href = data.url;
+      } catch (err) {
+        console.error('Card checkout failed:', err);
+        resultDiv.innerHTML = '<div class="status-msg error">Could not reach the server. Please try again.</div>';
+        btn.disabled = false;
+        btn.textContent = 'Pay by card';
+      }
+    }
+
     async function payAndProcess() {
       const resultDiv = document.getElementById('payResult');
       const btn = document.getElementById('payProcessBtn');
