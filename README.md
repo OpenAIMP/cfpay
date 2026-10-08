@@ -164,5 +164,3 @@ this endpoint has no authentication yet: `payExternalEndpoint`, `processPaidRequ
 `sendOutboundEmail` and `sendWebhook`. Add authentication before widening the tool set.
 
 To connect Slack: `api.slack.com/apps` -> your app -> **Features -> MCP Servers**.
-
-
