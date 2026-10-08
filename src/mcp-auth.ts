@@ -214,7 +214,9 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
     }
   }
 
-  return jsonResponse({ error: "Unauthorized" }, 401, {
-    "WWW-Authenticate": 'Bearer realm="cfmail-mcp"',
-  });
+  // Deliberately no WWW-Authenticate header. Emitting one makes MCP clients
+  // treat this as an OAuth-protected resource and attempt a sign-in flow, which
+  // we do not implement. The credential is a plain bearer token instead, so the
+  // client should be configured with an API key rather than OAuth.
+  return jsonResponse({ error: "Unauthorized" }, 401);
 }
