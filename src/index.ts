@@ -7,6 +7,7 @@ import type { Env } from "./types";
 import { createApp } from "./api";
 import { CfmailAgentSQLite } from "./agent";
 import { verifyAndParseWebhook } from "./webhooks";
+import { createCfmailMcpHandler } from "./mcp";
 import {
   verifySlackSignature,
   parseSlackEvent,
@@ -26,6 +27,13 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
+
+    // Remote MCP server (Streamable HTTP, unauthenticated in phase 1). Handled
+    // before the /mcp prefix check below so this exact path wins; the legacy
+    // "/mcp/tools/process" route still falls through to the Hono app.
+    if (url.pathname === "/mcp") {
+      return createCfmailMcpHandler(env)(request, env, ctx);
+    }
 
     // Webhook routes — verify signature, then forward to the agent
     if (request.method === "POST" && url.pathname.startsWith("/webhooks/")) {

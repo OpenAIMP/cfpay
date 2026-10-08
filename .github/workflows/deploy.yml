@@ -77,6 +77,7 @@ jobs:
           GH_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           SLACK_WEBHOOK_SECRET: ${{ secrets.SLACK_WEBHOOK_SECRET }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           printf '%s' "$PAYMENT_PRIVATE_KEY" | npx wrangler@4 secret put PAYMENT_PRIVATE_KEY
           printf '%s' "$EMAIL_SECRET" | npx wrangler@4 secret put EMAIL_SECRET
@@ -88,6 +89,15 @@ jobs:
           printf '%s' "$GH_WEBHOOK_SECRET" | npx wrangler@4 secret put GITHUB_WEBHOOK_SECRET
           printf '%s' "$STRIPE_WEBHOOK_SECRET" | npx wrangler@4 secret put STRIPE_WEBHOOK_SECRET
           printf '%s' "$SLACK_WEBHOOK_SECRET" | npx wrangler@4 secret put SLACK_WEBHOOK_SECRET
+
+          # Optional. Guarded so an unset GitHub secret cannot overwrite a value
+          # already configured on the Worker. The URL is passed on stdin, not as
+          # an argument, so its slashes need no escaping.
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            printf '%s' "$SLACK_WEBHOOK_URL" | npx wrangler@4 secret put SLACK_WEBHOOK_URL
+          else
+            echo "SLACK_WEBHOOK_URL is not set in GitHub secrets - skipping."
+          fi
 
   deploy-preview:
     runs-on: ubuntu-latest

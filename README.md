@@ -124,7 +124,8 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 | `/health` | GET | — | Health check |
 | `/api/process` | POST | x402 ($0.01 USDC) | Process request + send email |
 | `/api/emails` | GET | x402 ($0.01 USDC) | Retrieve email history |
-| `/mcp/tools/process` | POST | x402 ($0.01 USDC) | MCP tool for agent-to-agent calls |
+| `/mcp` | POST/GET | **none (phase 1)** | Remote MCP server (Streamable HTTP). Read-only tools. |
+| `/mcp/tools/process` | POST | x402 ($0.01 USDC) | Legacy paid alias for agent-to-agent calls (not a real MCP server) |
 | `/api/dashboard/*` | GET/POST | API Key | Dashboard endpoints |
 
 ## Documentation References
@@ -134,3 +135,23 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 - [Email Service](https://developers.cloudflare.com/email-service/)
 - [x402 Examples](https://github.com/cloudflare/agents/tree/main/examples)
 - [Cloudflare Wallets](https://blog.cloudflare.com/wallets/)
+
+## Remote MCP Server
+
+The Worker serves a remote MCP server at `https://pay.openaimp.com/mcp` using the
+stateless Streamable HTTP handler from `agents/mcp`, so Slack (or any MCP client)
+can connect with just the URL.
+
+**Phase 1 is unauthenticated and read-only.** The exposed tools are:
+
+| Tool | Returns |
+|---|---|
+| `cfmail_recent_emails` | Recent emails with their AI summary |
+| `cfmail_recent_payments` | Recent x402 payments |
+| `cfmail_recent_webhooks` | Recent webhook events with AI analysis |
+
+Capabilities that move money or send mail are deliberately **not** exposed, because
+this endpoint has no authentication yet: `payExternalEndpoint`, `processPaidRequest`,
+`sendOutboundEmail` and `sendWebhook`. Add authentication before widening the tool set.
+
+To connect Slack: `api.slack.com/apps` -> your app -> **Features -> MCP Servers**.

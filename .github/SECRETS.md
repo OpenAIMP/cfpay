@@ -75,11 +75,22 @@ This is an **incoming webhook URL** from Slack (App → Incoming Webhooks →
 Add New Webhook to Workspace), **not** a signing secret, and it is unrelated to
 `SLACK_WEBHOOK_SECRET` above despite the similar name.
 
+Add it to the GitHub `PROD` environment as **`SLACK_WEBHOOK_URL`**. The deploy
+workflow pushes it to the Worker automatically, and skips it when the GitHub
+secret is unset. To set it directly on the Worker instead:
+
 ```
-npx wrangler secret put SLACK_WEBHOOK_URL     # deployed Worker
-# or, for local development:
-echo "SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ" >> .dev.vars
+read -rs SLACK_URL && printf '%s' "$SLACK_URL" | npx wrangler secret put SLACK_WEBHOOK_URL
 ```
+
+For local development, add it to `.dev.vars` (which is gitignored):
+
+```
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+```
+
+Note: `wrangler secret put SLACK_WEBHOOK_URL <url>` passing the URL as an
+argument can mangle it in some shells; piping it is safer.
 
 Set it as a secret rather than a `wrangler.jsonc` var so the URL is not committed.
 
