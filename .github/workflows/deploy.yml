@@ -56,6 +56,7 @@ jobs:
         run: npm ci
 
       - name: Deploy production Worker
+        if: ${{ secrets.CF_API_TOKEN != '' }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
@@ -64,6 +65,7 @@ jobs:
           command: deploy
 
       - name: Set production Worker secrets
+        if: ${{ secrets.CF_API_TOKEN != '' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
@@ -122,6 +124,7 @@ jobs:
         run: npm ci
 
       - name: Deploy preview Worker
+        if: ${{ secrets.CF_API_TOKEN != '' }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
