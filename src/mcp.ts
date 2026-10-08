@@ -124,5 +124,91 @@ export function createCfmailMcpHandler(env: Env) {
     },
   );
 
+  server.registerTool(
+    "cfmail_projects_catalog",
+    {
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      title: "Projects catalog",
+      description:
+        "List services available for discovery and automated provisioning under the Stripe Projects / Agents-with-Payment protocol.",
+      inputSchema: {},
+    },
+    async () => {
+      const catalog = await agent.getProjectsCatalog();
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(catalog, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "cfmail_projects_provision",
+    {
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      title: "Provision project service",
+      description:
+        "Provision an agent service or resource for a user with identity attestation and payment token/budget under Stripe Projects.",
+      inputSchema: {
+        email: z.string().email().describe("User email address for account attestation."),
+        service: z
+          .string()
+          .describe("Service identifier to provision (e.g., 'cfmail/agent:process', 'cfmail/registrar:domain')."),
+        paymentToken: z
+          .string()
+          .optional()
+          .describe("Optional platform payment token from Stripe Projects."),
+        budgetLimitUsd: z
+          .number()
+          .optional()
+          .describe("Optional monthly spending budget cap in USD (default $100.00)."),
+      },
+    },
+    async ({ email, service, paymentToken, budgetLimitUsd }) => {
+      const result = await agent.provisionProject({
+        user: { email },
+        service,
+        paymentToken,
+        budgetLimitUsd,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "cfmail_projects_status",
+    {
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      title: "Provisioned project accounts",
+      description:
+        "List active provisioned project accounts, services, and monthly spending budgets.",
+      inputSchema: {
+        limit: limitSchema,
+      },
+    },
+    async ({ limit }) => {
+      const accounts = await agent.getProjectAccounts(limit ?? 10);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(accounts, null, 2) }],
+      };
+    },
+  );
+
   return createMcpHandler(server, { route: "/mcp" });
 }

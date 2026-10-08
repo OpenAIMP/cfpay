@@ -81,6 +81,60 @@ export interface PaymentRecord {
   relatedEmailId?: string;
 }
 
+export interface ProjectService {
+  id: string;
+  name: string;
+  description: string;
+  provider: string;
+  category: string;
+  pricing: {
+    type: "per_request" | "subscription" | "usage";
+    amount: string;
+    currency: string;
+  };
+  schema?: Record<string, unknown>;
+}
+
+export interface ProjectCatalogResponse {
+  version: string;
+  protocol: string;
+  services: ProjectService[];
+}
+
+export interface ProjectProvisionRequest {
+  user: {
+    email: string;
+    id?: string;
+    name?: string;
+  };
+  service: string;
+  paymentToken?: string;
+  budgetLimitUsd?: number;
+  options?: Record<string, unknown>;
+}
+
+export interface ProjectProvisionResponse {
+  success: boolean;
+  accountId: string;
+  service: string;
+  apiKey: string;
+  status: "active" | "pending" | "failed";
+  budgetLimit: string;
+  message?: string;
+}
+
+export interface ProjectAccountRecord {
+  id: string;
+  accountId: string;
+  userEmail: string;
+  service: string;
+  apiKey: string;
+  paymentToken?: string;
+  budgetLimit: string;
+  createdAt: string;
+  status: "active" | "suspended";
+}
+
 export interface AgentState {
   emails: EmailRecord[];
   payments: PaymentRecord[];
@@ -90,6 +144,8 @@ export interface AgentState {
   totalPaymentsSent: number;
   webhookEvents?: WebhookEvent[];
   totalWebhooksReceived?: number;
+  projectAccounts?: ProjectAccountRecord[];
+  totalProjectAccounts?: number;
 }
 
 export interface ChatMessage {

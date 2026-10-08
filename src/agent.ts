@@ -1,7 +1,20 @@
 import { Agent, callable } from "agents";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime from "postal-mime";
-import type { AgentState, ChatMessage, EmailRecord, Env, PaymentClaim, PaymentRecord, WebhookEvent } from "./types";
+import type {
+  AgentState,
+  ChatMessage,
+  EmailRecord,
+  Env,
+  PaymentClaim,
+  PaymentRecord,
+  ProjectAccountRecord,
+  ProjectCatalogResponse,
+  ProjectProvisionRequest,
+  ProjectProvisionResponse,
+  ProjectService,
+  WebhookEvent,
+} from "./types";
 import {
   formatAmount,
   generateId,
@@ -29,6 +42,8 @@ const DEFAULT_STATE: AgentState = {
   totalPaymentsSent: 0,
   webhookEvents: [],
   totalWebhooksReceived: 0,
+  projectAccounts: [],
+  totalProjectAccounts: 0,
 };
 
 type AiMessage = {
@@ -98,6 +113,13 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
       ...current,
       emails: Array.isArray(current.emails) ? current.emails : [],
       payments: Array.isArray(current.payments) ? current.payments : [],
+      projectAccounts: Array.isArray(current.projectAccounts)
+        ? current.projectAccounts
+        : [],
+      totalProjectAccounts:
+        typeof current.totalProjectAccounts === "number"
+          ? current.totalProjectAccounts
+          : 0,
       totalEmailsReceived:
         typeof current.totalEmailsReceived === "number"
           ? current.totalEmailsReceived
@@ -119,6 +141,8 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
     const needsMigration =
       current.emails !== next.emails ||
       current.payments !== next.payments ||
+      current.projectAccounts !== next.projectAccounts ||
+      current.totalProjectAccounts !== next.totalProjectAccounts ||
       current.totalEmailsReceived !== next.totalEmailsReceived ||
       current.totalEmailsSent !== next.totalEmailsSent ||
       current.totalPaymentsReceived !== next.totalPaymentsReceived ||
@@ -949,5 +973,150 @@ Do not claim to have completed a payment unless you have received confirmation.`
       console.error("Outgoing webhook failed:", e);
       return { success: false };
     }
+  }
+
+  // ===========================================================================
+  // RPC: Agents-with-Payment (Stripe Projects Protocol)
+  // ===========================================================================
+  @callable()
+  async getProjectsCatalog(): Promise<ProjectCatalogResponse> {
+    const services: ProjectService[] = [
+      {
+        id: "cfmail/agent:process",
+        name: "CFmail Agent AI Request Processing",
+        description:
+          "Process requests with AI and send automated email responses via x402 payments or Stripe Projects.",
+        provider: "cloudflare",
+        category: "ai-agent",
+        pricing: {
+          type: "per_request",
+          amount: "0.01",
+          currency: "USD",
+        },
+        schema: {
+          email: "string",
+          request: "string",
+        },
+      },
+      {
+        id: "cfmail/agent:email",
+        name: "CFmail Outbound & Inbound Email Service",
+        description:
+          "Agent email routing and secure reply processing on cfmail.openaimp.com.",
+        provider: "cloudflare",
+        category: "email",
+        pricing: {
+          type: "usage",
+          amount: "0.001",
+          currency: "USD",
+        },
+      },
+      {
+        id: "cfmail/registrar:domain",
+        name: "Cloudflare Registrar & Custom Domain Provisioning",
+        description:
+          "Provision custom domains, configure DNS routing, and set up TLS certificates for AI agents.",
+        provider: "cloudflare",
+        category: "registrar",
+        pricing: {
+          type: "subscription",
+          amount: "10.00",
+          currency: "USD",
+        },
+      },
+      {
+        id: "cfmail/agent:mcp",
+        name: "Remote MCP Server Integration",
+        description:
+          "Expose agent tools via Model Context Protocol (Streamable HTTP) for coding agents and Slack.",
+        provider: "cloudflare",
+        category: "mcp",
+        pricing: {
+          type: "per_request",
+          amount: "0.00",
+          currency: "USD",
+        },
+      },
+    ];
+
+    return {
+      version: "1.0.0",
+      protocol: "stripe-projects/v1",
+      services,
+    };
+  }
+
+  @callable()
+  async provisionProject(
+    req: ProjectProvisionRequest,
+  ): Promise<ProjectProvisionResponse> {
+    const state = this.ensureState();
+
+    if (!req.user || !req.user.email) {
+      return {
+        success: false,
+        accountId: "",
+        service: req.service || "unknown",
+        apiKey: "",
+        status: "failed",
+        budgetLimit: "$0.00/month",
+        message: "Missing user email in provisioning request.",
+      };
+    }
+
+    const catalog = await this.getProjectsCatalog();
+    const serviceDef = catalog.services.find((s) => s.id === req.service);
+    if (!serviceDef) {
+      return {
+        success: false,
+        accountId: "",
+        service: req.service,
+        apiKey: "",
+        status: "failed",
+        budgetLimit: "$0.00/month",
+        message: `Service '${req.service}' not found in catalog.`,
+      };
+    }
+
+    const accountId = `acc_${generateId()}`;
+    const apiKey = `cfp_${generateId().replace(/-/g, "")}`;
+    const budgetLimitUsd = req.budgetLimitUsd || 100;
+    const budgetLimitStr = `$${budgetLimitUsd.toFixed(2)}/month`;
+
+    const record: ProjectAccountRecord = {
+      id: generateId(),
+      accountId,
+      userEmail: req.user.email,
+      service: req.service,
+      apiKey,
+      paymentToken: req.paymentToken,
+      budgetLimit: budgetLimitStr,
+      createdAt: new Date().toISOString(),
+      status: "active",
+    };
+
+    const projectAccounts = [...(state.projectAccounts || []), record];
+    this.setState({
+      ...state,
+      projectAccounts,
+      totalProjectAccounts: (state.totalProjectAccounts || 0) + 1,
+    });
+
+    return {
+      success: true,
+      accountId,
+      service: req.service,
+      apiKey,
+      status: "active",
+      budgetLimit: budgetLimitStr,
+      message: `Provisioned ${serviceDef.name} for ${req.user.email} under Stripe Projects protocol.`,
+    };
+  }
+
+  @callable()
+  async getProjectAccounts(limit = 50): Promise<ProjectAccountRecord[]> {
+    const state = this.ensureState();
+    const accounts = state.projectAccounts || [];
+    return accounts.slice(-limit).reverse();
   }
 }

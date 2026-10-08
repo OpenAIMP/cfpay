@@ -63,6 +63,8 @@ export default {
     if (
       url.pathname.startsWith("/api") ||
       url.pathname.startsWith("/mcp") ||
+      url.pathname.startsWith("/projects") ||
+      url.pathname.startsWith("/stripe") ||
       url.pathname === "/health" ||
       url.pathname === "/ws"
     ) {

@@ -114,6 +114,7 @@
         <div class="tab" data-tab="chat" onclick="switchTab('chat')">Chat</div>
         <div class="tab" data-tab="slack" onclick="switchTab('slack')">Slack</div>
         <div class="tab" data-tab="webhooks" onclick="switchTab('webhooks')">Webhooks</div>
+        <div class="tab" data-tab="projects" onclick="switchTab('projects')">Stripe Projects</div>
       </div>
       <div id="overview" class="panel active">
         <div class="card">
@@ -199,6 +200,49 @@
           <div id="slackResult" style="margin-top:1rem;"></div>
         </div>
       </div>
+
+      <!-- Stripe Projects (Agents-with-Payment) -->
+      <div id="projects" class="panel">
+        <div class="card">
+          <h3 style="margin-bottom:0.5rem;">Agents with Payment &mdash; Stripe Projects Protocol</h3>
+          <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:1rem;">
+            Stripe Projects enables coding agents to discover, provision, and pay for Cloudflare services autonomously with user identity attestation and spend controls.
+          </p>
+          <div style="background:var(--bg);padding:1rem;border-radius:6px;font-family:monospace;font-size:0.8rem;color:var(--text);margin-bottom:1rem;border:1px solid var(--border);">
+            # Discovery &amp; Provisioning CLI commands:<br>
+            <span style="color:var(--accent);">stripe projects init</span><br>
+            <span style="color:var(--accent);">stripe projects catalog</span><br>
+            <span style="color:var(--accent);">stripe projects add cfmail/agent:process</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Available Services Catalog</h3>
+          <div id="projectsCatalog"><div class="loading">Loading catalog...</div></div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Test Account Provisioning</h3>
+          <div class="form-group"><label>User Email</label><input type="email" id="projUserEmail" placeholder="user@example.com" /></div>
+          <div class="form-group">
+            <label>Service</label>
+            <select id="projServiceSelect" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;">
+              <option value="cfmail/agent:process">cfmail/agent:process (AI Request Processing)</option>
+              <option value="cfmail/agent:email">cfmail/agent:email (Outbound/Inbound Email)</option>
+              <option value="cfmail/registrar:domain">cfmail/registrar:domain (Custom Domain Registrar)</option>
+              <option value="cfmail/agent:mcp">cfmail/agent:mcp (Remote MCP Server)</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Monthly Budget Limit ($ USD)</label><input type="number" id="projBudgetLimit" value="100" /></div>
+          <button class="btn" onclick="provisionProjectService()">Provision Service</button>
+          <div id="provisionResult" style="margin-top:1rem;"></div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Provisioned Project Accounts</h3>
+          <div id="projectAccountsList"><div class="loading">Loading project accounts...</div></div>
+        </div>
+      </div>
     </div>
   </div>
   <script>
@@ -245,6 +289,7 @@
       if (tab === 'payments') loadPayments();
       if (tab === 'pay') checkMetaMask();
       if (tab === 'webhooks') loadWebhooks();
+      if (tab === 'projects') loadProjects();
     }
     async function init() { loadStats(); checkMetaMask(); await loadPaymentOptions(); }
     const NETWORKS = {
@@ -615,6 +660,76 @@
         result.innerHTML = '<div class="status-msg error">Failed — ' + escapeHtml(reason) + '</div>';
       }
     }
+
+    async function loadProjects() {
+      const data = await api('/api/dashboard/projects');
+      const catalogDiv = document.getElementById('projectsCatalog');
+      const accountsDiv = document.getElementById('projectAccountsList');
+
+      if (data.catalog && data.catalog.services) {
+        catalogDiv.innerHTML = data.catalog.services.map(s => `
+          <div class="card" style="margin-bottom:0.75rem;background:var(--bg);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
+              <strong style="color:var(--accent);">${escapeHtml(s.name)}</strong>
+              <span class="badge-github"><code>${escapeHtml(s.id)}</code></span>
+            </div>
+            <p style="font-size:0.8rem;color:var(--muted);margin-bottom:0.5rem;">${escapeHtml(s.description)}</p>
+            <div style="font-size:0.75rem;color:var(--muted);">Pricing: <strong>${escapeHtml(s.pricing.amount)} ${escapeHtml(s.pricing.currency)}</strong> (${escapeHtml(s.pricing.type)})</div>
+          </div>
+        `).join('');
+      } else {
+        catalogDiv.innerHTML = '<div class="empty">Catalog unavailable</div>';
+      }
+
+      if (data.accounts && data.accounts.length > 0) {
+        accountsDiv.innerHTML = data.accounts.map(a => `
+          <div class="card" style="margin-bottom:0.75rem;">
+            <div class="card-header">
+              <div>
+                <span class="badge-confirmed">${escapeHtml(a.status)}</span>
+                <span style="margin-left:0.5rem;font-weight:600;">${escapeHtml(a.service)}</span>
+              </div>
+              <div class="meta">${new Date(a.createdAt).toLocaleString()}</div>
+            </div>
+            <div class="card-body">
+              User: <code>${escapeHtml(a.userEmail)}</code><br>
+              Account ID: <code>${escapeHtml(a.accountId)}</code><br>
+              API Key: <code>${escapeHtml(a.apiKey)}</code><br>
+              Budget Limit: <strong>${escapeHtml(a.budgetLimit)}</strong>
+            </div>
+          </div>
+        `).join('');
+      } else {
+        accountsDiv.innerHTML = '<div class="empty">No provisioned project accounts yet</div>';
+      }
+    }
+
+    async function provisionProjectService() {
+      const email = document.getElementById('projUserEmail').value;
+      const service = document.getElementById('projServiceSelect').value;
+      const budgetLimitUsd = parseFloat(document.getElementById('projBudgetLimit').value) || 100;
+      const resultDiv = document.getElementById('provisionResult');
+
+      if (!email) {
+        resultDiv.innerHTML = '<div class="status-msg error">User email is required.</div>';
+        return;
+      }
+
+      resultDiv.innerHTML = '<div class="loading">Provisioning service...</div>';
+      const res = await api('/projects/provision', 'POST', {
+        user: { email },
+        service,
+        budgetLimitUsd,
+      });
+
+      if (res && res.success) {
+        resultDiv.innerHTML = `<div class="status-msg success">Successfully provisioned!<br>Account ID: <code>${escapeHtml(res.accountId)}</code><br>API Key: <code>${escapeHtml(res.apiKey)}</code><br>Budget: ${escapeHtml(res.budgetLimit)}</div>`;
+        document.getElementById('projUserEmail').value = '';
+        loadProjects();
+      } else {
+        resultDiv.innerHTML = `<div class="status-msg error">Failed to provision: ${escapeHtml(res.message || 'Unknown error')}</div>`;
+      }
+    }
   </script>
 <script type="module">
   import { AgentClient } from "https://esm.sh/agents@latest/client";
@@ -646,6 +761,7 @@
       if (activeTab === "overview") loadStats();
       if (activeTab === "slack") loadSlackMessages();
       if (activeTab === "payments") loadPayments();
+      if (activeTab === "projects") loadProjects();
     });
 
     // Make agent available globally for debugging

@@ -233,6 +233,43 @@ export function createApp() {
     return c.json({ status: "ok", service: "cfmail-agent", version: "9.2.0" });
   });
 
+  // Agents-with-Payment (Stripe Projects Protocol) Endpoints
+  const handleCatalog = async (c: any) => {
+    const agent = getAgent(c);
+    const catalog = await agent.getProjectsCatalog();
+    return c.json(catalog);
+  };
+
+  const handleProvision = async (c: any) => {
+    try {
+      const body = await c.req.json();
+      const agent = getAgent(c);
+      const result = await agent.provisionProject(body);
+      return c.json(result, result.success ? 200 : 400);
+    } catch (error: any) {
+      return c.json(
+        {
+          success: false,
+          accountId: "",
+          service: "",
+          apiKey: "",
+          status: "failed",
+          budgetLimit: "$0.00/month",
+          message: error.message || "Invalid provisioning request format.",
+        },
+        400,
+      );
+    }
+  };
+
+  app.get("/projects/catalog", handleCatalog);
+  app.get("/stripe/projects/catalog", handleCatalog);
+  app.get("/api/projects/catalog", handleCatalog);
+
+  app.post("/projects/provision", handleProvision);
+  app.post("/stripe/projects/provision", handleProvision);
+  app.post("/api/projects/provision", handleProvision);
+
   app.post("/api/process", async (c) => {
     const paymentHeader = c.req.header("PAYMENT-SIGNATURE");
     if (!paymentHeader) {
@@ -430,6 +467,13 @@ export function createApp() {
     const agent = getAgent(c);
     const events = await agent.getWebhookEvents(provider, 100);
     return c.json({ events });
+  });
+
+  app.get("/api/dashboard/projects", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const catalog = await agent.getProjectsCatalog();
+    const accounts = await agent.getProjectAccounts(100);
+    return c.json({ catalog, accounts });
   });
 
   app.post("/api/dashboard/notify-slack", requireAuth, async (c) => {
