@@ -163,4 +163,11 @@ Capabilities that move money or send mail are deliberately **not** exposed, beca
 this endpoint has no authentication yet: `payExternalEndpoint`, `processPaidRequest`,
 `sendOutboundEmail` and `sendWebhook`. Add authentication before widening the tool set.
 
+### Webhook events
+
+A verified webhook delivery is stored, analysed by AI and shown in the Webhooks
+tab. It posts a Slack line when `SLACK_WEBHOOK_URL` is set, and emails a human
+when `WEBHOOK_NOTIFY_EMAIL` is set. Webhooks never create payment records — only
+a verified x402 request does that.
+
 To connect Slack: `api.slack.com/apps` -> your app -> **Features -> MCP Servers**.

@@ -326,6 +326,26 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
+  /**
+   * Decide whether a webhook event should be emailed to a human.
+   *
+   * Guarded twice: never mail the agent's own address (the reply would come
+   * back through onEmail() and generate another auto-reply), and honour an
+   * optional provider allowlist so a high-volume source can be excluded.
+   */
+  private shouldEmailWebhookEvent(provider: string, notifyTo: string): boolean {
+    const ownAddress = `agent@${this.env.EMAIL_DOMAIN}`.toLowerCase();
+    if (notifyTo.toLowerCase() === ownAddress) return false;
+
+    const allowlist = (this.env.WEBHOOK_NOTIFY_PROVIDERS ?? "")
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry.length > 0);
+
+    if (allowlist.length === 0) return true;
+    return allowlist.includes(provider.toLowerCase());
+  }
+
   // ─── Email ──────────────────────────────────────────────────
 
   async onEmail(email: AgentEmail): Promise<void> {
@@ -843,6 +863,30 @@ Do not claim to have completed a payment unless you have received confirmation.`
         );
       } catch (e) {
         console.error("Slack notification for webhook failed:", e);
+      }
+    }
+
+    // Optional: notify a human by email. Off unless WEBHOOK_NOTIFY_EMAIL is
+    // set, so an unconfigured deployment stays silent. Reuses sendOutboundEmail
+    // so the notification is recorded in the Emails tab like any other mail.
+    const notifyTo = this.env.WEBHOOK_NOTIFY_EMAIL?.trim();
+    if (notifyTo && this.shouldEmailWebhookEvent(provider, notifyTo)) {
+      try {
+        await this.sendOutboundEmail(
+          notifyTo,
+          `[webhook] ${provider} ${eventType}${agentName ? ` - ${agentName}` : ""}`,
+          [
+            `Provider: ${provider}`,
+            `Event:    ${eventType}`,
+            `Agent:    ${agentName}`,
+            `Received: ${event.receivedAt}`,
+            "",
+            "AI analysis:",
+            aiInsight,
+          ].join("\n"),
+        );
+      } catch (e) {
+        console.error("Webhook email notification failed:", e);
       }
     }
 

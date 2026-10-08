@@ -25,6 +25,9 @@ export interface Env {
   SLACK_WEBHOOK_URL?: string;
   // Outbound x402 payments (agent spending). Both must be configured before the
   // agent will send funds; see CfmailAgentSQLite.payExternalEndpoint.
+  // Webhook email notifications. Off unless WEBHOOK_NOTIFY_EMAIL is set.
+  WEBHOOK_NOTIFY_EMAIL?: string;
+  WEBHOOK_NOTIFY_PROVIDERS?: string;
   OUTBOUND_PAY_TO_WHITELIST?: string;
   OUTBOUND_MAX_AMOUNT_ATOMIC?: string;
 }

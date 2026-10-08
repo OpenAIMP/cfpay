@@ -15,3 +15,9 @@ SLACK_WEBHOOK_SECRET=your-slack-signing-secret
 # above despite the similar name. Leave it unset and the button will simply
 # report that it is not configured.
 #   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+
+# Optional: email a human when a webhook event arrives. Leave unset to keep
+# webhook events dashboard-only. WEBHOOK_NOTIFY_PROVIDERS is an optional
+# comma-separated allowlist (github, stripe, slack).
+#   WEBHOOK_NOTIFY_EMAIL=you@example.com
+#   WEBHOOK_NOTIFY_PROVIDERS=github

@@ -94,6 +94,29 @@ argument can mangle it in some shells; piping it is safer.
 
 Set it as a secret rather than a `wrangler.jsonc` var so the URL is not committed.
 
+## Optional: Email Notification for Webhook Events
+
+Set `WEBHOOK_NOTIFY_EMAIL` to be emailed when a webhook event arrives. Unset by
+default, in which case webhook events are only stored and shown in the dashboard.
+
+| Variable | Purpose |
+|---|---|
+| `WEBHOOK_NOTIFY_EMAIL` | Recipient address for webhook notifications. Unset disables them. |
+| `WEBHOOK_NOTIFY_PROVIDERS` | Optional comma-separated allowlist (`github`, `stripe`, `slack`). Omit to notify for all providers. |
+
+Each notification reports the provider, event type and the generated AI analysis,
+and is recorded in the Emails tab like any other outbound mail.
+
+Notifications are never sent to the agent's own address (`agent@EMAIL_DOMAIN`),
+because that message would land back in the inbound handler and produce another
+auto-reply. Note that every delivery triggers both an AI analysis and an email, so
+narrow `WEBHOOK_NOTIFY_PROVIDERS` if a provider is high volume.
+
+```
+npx wrangler secret put WEBHOOK_NOTIFY_EMAIL
+npx wrangler secret put WEBHOOK_NOTIFY_PROVIDERS   # optional
+```
+
 ## Environment Protection Rules (recommended)
 
 For the `PROD` environment:
