@@ -90,6 +90,12 @@ export interface AgentState {
   totalPaymentsSent: number;
   webhookEvents?: WebhookEvent[];
   totalWebhooksReceived?: number;
+  /**
+   * Shared conversation transcript: what the chat tab renders and what the
+   * AI uses as context for later turns. Kept in state (not a private field)
+   * so it survives Durable Object restarts and broadcasts to every dashboard.
+   */
+  chatMessages: ChatMessage[];
 }
 
 export interface ChatMessage {

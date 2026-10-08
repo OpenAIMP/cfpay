@@ -213,7 +213,6 @@
         .replace(/'/g, '&#39;');
     }
     let apiKey = localStorage.getItem('cfmail_api_key') || '';
-    let chatHistory = [];
     let account = null;
     let pendingPayment = null;
     let configuredPaymentOptions = [];
@@ -243,6 +242,7 @@
       if (tab === 'emails') loadEmails();
       if (tab === 'slack') loadSlackMessages();
       if (tab === 'payments') loadPayments();
+      if (tab === 'chat') loadChat();
       if (tab === 'pay') checkMetaMask();
       if (tab === 'webhooks') loadWebhooks();
     }
@@ -543,19 +543,51 @@
       if (res.success) { result.innerHTML = '<div class="status-msg success">Email sent successfully!</div>'; document.getElementById('sendTo').value=''; document.getElementById('sendSubject').value=''; document.getElementById('sendBody').value=''; }
       else { result.innerHTML = '<div class="status-msg error">Failed to send email</div>'; }
     }
+    // The chat tab renders the agent's shared transcript from AgentState,
+    // which the WebSocket pushes to every open dashboard and which survives
+    // page loads. window.agentState holds the latest push; the POST response
+    // carries the same list as an authoritative fallback when the socket is
+    // down. Messages are escaped: transcripts can originate from other
+    // clients (and from email/Slack turns), so they are untrusted input.
+    let chatPendingMessage = null; // set while POST /api/dashboard/chat is in flight
+    function renderChat(history) {
+      const container = document.getElementById('chatMessages');
+      container.innerHTML = history.map(m =>
+        `<div class="chat-msg ${m.role === 'user' ? 'user' : 'assistant'}">${escapeHtml(m.content)}</div>`
+      ).join('');
+      container.scrollTop = container.scrollHeight;
+    }
+    function loadChat() {
+      const history = (window.agentState && window.agentState.chatMessages) || [];
+      renderChat(history);
+      // Keep the in-flight exchange visible when an unrelated state push
+      // re-renders the list while a reply is still pending.
+      if (chatPendingMessage !== null) {
+        const container = document.getElementById('chatMessages');
+        container.innerHTML += `<div class="chat-msg user">${escapeHtml(chatPendingMessage)}</div>`;
+        container.innerHTML += `<div class="chat-msg assistant" id="thinking">Thinking...</div>`;
+        container.scrollTop = container.scrollHeight;
+      }
+    }
     async function sendChat() {
       const input = document.getElementById('chatInput');
       const msg = input.value;
       if (!msg) return;
       input.value = '';
-      const container = document.getElementById('chatMessages');
-      container.innerHTML += `<div class="chat-msg user">${msg}</div>`;
-      container.innerHTML += `<div class="chat-msg assistant" id="thinking">Thinking...</div>`;
-      container.scrollTop = container.scrollHeight;
+      chatPendingMessage = msg;
+      loadChat(); // optimistic: transcript so far + our message + "Thinking..."
       const res = await api('/api/dashboard/chat', 'POST', { message: msg });
-      document.getElementById('thinking').remove();
-      container.innerHTML += `<div class="chat-msg assistant">${res.response}</div>`;
-      container.scrollTop = container.scrollHeight;
+      chatPendingMessage = null;
+      if (res && Array.isArray(res.history)) {
+        // Authoritative transcript from the server; the WebSocket broadcast
+        // re-renders the same list for every other connected dashboard.
+        renderChat(res.history);
+      } else if (res && res.response) {
+        document.getElementById('thinking')?.remove();
+        const container = document.getElementById('chatMessages');
+        container.innerHTML += `<div class="chat-msg assistant">${escapeHtml(res.response)}</div>`;
+        container.scrollTop = container.scrollHeight;
+      }
     }
     document.getElementById('chatInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
     if (window.ethereum) {
@@ -656,11 +688,13 @@
       // broadcast afterwards; refresh the tab the user is looking at.
       onStateUpdate: (state) => {
         console.log("State updated:", state);
+        window.agentState = state; // latest snapshot; the chat tab renders from it
         const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
         if (activeTab === "emails") loadEmails();
         if (activeTab === "overview") loadStats();
         if (activeTab === "slack") loadSlackMessages();
         if (activeTab === "payments") loadPayments();
+        if (activeTab === "chat") loadChat();
         if (activeTab === "webhooks") loadWebhooks();
       },
       onStateUpdateError: (error) => console.warn("State update rejected:", error),

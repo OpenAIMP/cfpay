@@ -29,6 +29,7 @@ const DEFAULT_STATE: AgentState = {
   totalPaymentsSent: 0,
   webhookEvents: [],
   totalWebhooksReceived: 0,
+  chatMessages: [],
 };
 
 type AiMessage = {
@@ -68,7 +69,6 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
     payments: [],
   };
 
-  private chatHistory: ChatMessage[] = [];
   private slackSocket: WebSocket | null = null;
 
   async onStart(): Promise<void> {
@@ -114,6 +114,10 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
         typeof current.totalPaymentsSent === "number"
           ? current.totalPaymentsSent
           : 0,
+      // States stored before chatMessages existed arrive without the key.
+      chatMessages: Array.isArray(current.chatMessages)
+        ? current.chatMessages
+        : [],
     };
 
     const needsMigration =
@@ -122,7 +126,8 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
       current.totalEmailsReceived !== next.totalEmailsReceived ||
       current.totalEmailsSent !== next.totalEmailsSent ||
       current.totalPaymentsReceived !== next.totalPaymentsReceived ||
-      current.totalPaymentsSent !== next.totalPaymentsSent;
+      current.totalPaymentsSent !== next.totalPaymentsSent ||
+      current.chatMessages !== next.chatMessages;
 
     if (needsMigration) {
       this.setState(next);
@@ -160,7 +165,6 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
    * Handle a Slack event from either HTTP webhook or Socket Mode.
    */
   async handleSlackEvent(event: SlackEvent): Promise<void> {
-    const state = this.ensureState();
 
     // Check if this is a payment-related request
     const wantsPayment = isPaymentRequest(event.text);
@@ -205,10 +209,13 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
       aiResponse: response,
     };
 
+    // Re-read state: generateAIResponse persisted the chat transcript above,
+    // so a snapshot taken before that call would revert it.
+    const latest = this.ensureState();
     this.setState({
-      ...state,
-      emails: [...state.emails, emailRecord],
-      totalEmailsReceived: state.totalEmailsReceived + 1,
+      ...latest,
+      emails: [...latest.emails, emailRecord],
+      totalEmailsReceived: latest.totalEmailsReceived + 1,
     });
   }
 
@@ -246,15 +253,15 @@ Do not claim to have completed a payment unless you have received confirmation.`
       });
     }
 
-    for (const message of this.chatHistory.slice(-10)) {
+    for (const message of this.ensureState().chatMessages.slice(-10)) {
       messages.push({
         role: message.role as "user" | "assistant",
         content: message.content,
       });
     }
 
+    let text: string;
     try {
-      let text: string;
       try {
         const response = await this.env.AI.run(
           "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
@@ -273,8 +280,21 @@ Do not claim to have completed a payment unless you have received confirmation.`
         );
         text = (fallbackResponse as { response?: string }).response ?? "I could not generate a response.";
       }
+    } catch (error) {
+      console.error("AI generation failed:", error);
+      text = "I received your message but encountered an issue generating an AI response. Your request has been logged.";
+    }
 
-      this.chatHistory.push(
+    // Record the exchange in agent state rather than a private field, so the
+    // transcript survives Durable Object restarts, reaches every dashboard's
+    // chat tab through the state broadcast, and feeds context for later turns.
+    // Recorded even when AI generation fails so what the user actually said
+    // is never dropped from the transcript.
+    const current = this.ensureState();
+    this.setState({
+      ...current,
+      chatMessages: [
+        ...current.chatMessages,
         {
           role: "user",
           content: userMessage,
@@ -285,19 +305,17 @@ Do not claim to have completed a payment unless you have received confirmation.`
           content: text,
           timestamp: new Date().toISOString(),
         },
-      );
+      ],
+    });
 
-      return text;
-    } catch (error) {
-      console.error("AI generation failed:", error);
-      return "I received your message but encountered an issue generating an AI response. Your request has been logged.";
-    }
+    return text;
   }
 
   // ─── Webhook AI analysis ───────────────────────────
 
   /**
-   * Analyse a webhook event without touching chatHistory. Webhook analysis is
+   * Analyse a webhook event without touching the chat transcript. Webhook
+   * analysis is
    * a side activity and must not pollute the conversational context reused by
    * onEmail() and chat(). Never throws.
    */
@@ -358,7 +376,6 @@ Do not claim to have completed a payment unless you have received confirmation.`
       return;
     }
 
-    const state = this.ensureState();
     const raw = await email.getRaw();
     const parsed = await PostalMime.parse(raw);
     const now = new Date().toISOString();
@@ -413,10 +430,13 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     emailRecord.aiResponse = aiResponse;
 
+    // Re-read state: generateAIResponse persisted the chat transcript above,
+    // so a snapshot taken before that call would revert it.
+    const latest = this.ensureState();
     const stateAfterInbound: AgentState = {
-      ...state,
-      emails: [...state.emails, emailRecord],
-      totalEmailsReceived: state.totalEmailsReceived + 1,
+      ...latest,
+      emails: [...latest.emails, emailRecord],
+      totalEmailsReceived: latest.totalEmailsReceived + 1,
     };
 
     this.setState(stateAfterInbound);
@@ -511,7 +531,6 @@ Do not claim to have completed a payment unless you have received confirmation.`
     request: string,
     claim?: PaymentClaim,
   ): Promise<{ success: boolean; response: string; paymentId: string }> {
-    const state = this.ensureState();
     const paymentId = generateId();
 
     const payment: PaymentRecord = {
@@ -538,10 +557,14 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     payment.relatedEmailId = emailResult.emailId;
 
+    // Re-read state: generateAIResponse and sendOutboundEmail both persisted
+    // since this method started; a snapshot taken at entry would revert them
+    // (this also keeps the outbound email record written above).
+    const latest = this.ensureState();
     this.setState({
-      ...state,
-      payments: [...state.payments, payment],
-      totalPaymentsReceived: state.totalPaymentsReceived + 1,
+      ...latest,
+      payments: [...latest.payments, payment],
+      totalPaymentsReceived: latest.totalPaymentsReceived + 1,
     });
 
     return {
@@ -621,7 +644,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const response = await this.generateAIResponse(message);
     return {
       response,
-      history: this.chatHistory,
+      history: this.ensureState().chatMessages,
     };
   }
 
