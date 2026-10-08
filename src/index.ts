@@ -95,12 +95,14 @@ async function handleSlackWebhook(request: Request, env: Env): Promise<Response>
   const timestamp = request.headers.get("X-Slack-Request-Timestamp") || "";
   const signature = request.headers.get("X-Slack-Signature") || "";
 
-  console.log("Slack webhook received:", body);
-
+  // Verify first: the body is unauthenticated at this point and may contain
+  // third-party content that should not reach the logs.
   if (!(await verifySlackSignature(env.SLACK_SIGNING_SECRET, timestamp, body, signature))) {
     console.error("Slack signature verification failed");
     return new Response("Unauthorized", { status: 401 });
   }
+
+  console.log("Slack webhook verified, payload bytes:", body.length);
 
   const parsed = JSON.parse(body);
   console.log("Slack event type:", parsed.type);

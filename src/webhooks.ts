@@ -17,6 +17,15 @@ export interface VerifiedWebhook {
   payload: unknown;
 }
 
+/**
+ * A webhook secret is only usable when it is actually configured. Verifying
+ * against an unset secret would degrade to HMAC keyed on "", which anyone can
+ * compute — so callers must fail closed instead.
+ */
+function isConfiguredSecret(value: string | undefined | null): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // HMAC helpers
 // ---------------------------------------------------------------------------
@@ -99,20 +108,20 @@ async function verifySlack(
   toleranceSeconds = 300,
 ): Promise<boolean> {
   if (!signature || !timestamp) return false;
+  if (!secret) return false;
 
   // Replay protection
   const age = Math.floor(Date.now() / 1000) - parseInt(timestamp, 10);
   if (isNaN(age) || Math.abs(age) > toleranceSeconds) return false;
 
+  // Header format is "v0=<hex>"; the digest itself is hex only, so the prefix
+  // must be stripped before comparing (as verifyGitHub does for "sha256=").
+  if (!/^v0=[0-9a-f]{64}$/i.test(signature)) return false;
+  const hex = signature.slice(3);
+
   // Slack signs "v0:<timestamp>:<rawBody>"
   const basestring = `v0:${timestamp}:${rawBody}`;
-  const expected = toHex(await hmacSha256(secret, basestring));
-  if (expected.length !== signature.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) {
-    diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
-  }
-  return diff === 0;
+  return verifyHexSignature(secret, basestring, hex);
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +144,8 @@ export async function verifyAndParseWebhook(
   // Route based on path
   if (url.pathname === "/webhooks/github") {
     const signature = request.headers.get("X-Hub-Signature-256");
-    if (!(await verifyGitHub(rawBody, signature, env.GITHUB_WEBHOOK_SECRET || ""))) return null;
+    if (!isConfiguredSecret(env.GITHUB_WEBHOOK_SECRET)) return null;
+    if (!(await verifyGitHub(rawBody, signature, env.GITHUB_WEBHOOK_SECRET))) return null;
 
     let payload: any;
     try {
@@ -153,7 +163,8 @@ export async function verifyAndParseWebhook(
 
   if (url.pathname === "/webhooks/stripe") {
     const signature = request.headers.get("Stripe-Signature");
-    if (!(await verifyStripe(rawBody, signature, env.STRIPE_WEBHOOK_SECRET || ""))) return null;
+    if (!isConfiguredSecret(env.STRIPE_WEBHOOK_SECRET)) return null;
+    if (!(await verifyStripe(rawBody, signature, env.STRIPE_WEBHOOK_SECRET))) return null;
 
     let payload: any;
     try {
@@ -171,7 +182,8 @@ export async function verifyAndParseWebhook(
   if (url.pathname === "/webhooks/slack") {
     const signature = request.headers.get("X-Slack-Signature");
     const timestamp = request.headers.get("X-Slack-Request-Timestamp");
-    if (!(await verifySlack(rawBody, signature, timestamp, env.SLACK_WEBHOOK_SECRET || ""))) return null;
+    if (!isConfiguredSecret(env.SLACK_WEBHOOK_SECRET)) return null;
+    if (!(await verifySlack(rawBody, signature, timestamp, env.SLACK_WEBHOOK_SECRET))) return null;
 
     let payload: any;
     try {
