@@ -74,6 +74,9 @@ jobs:
           SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
           SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
           SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
+          GH_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          SLACK_WEBHOOK_SECRET: ${{ secrets.SLACK_WEBHOOK_SECRET }}
         run: |
           printf '%s' "$PAYMENT_PRIVATE_KEY" | npx wrangler@4 secret put PAYMENT_PRIVATE_KEY
           printf '%s' "$EMAIL_SECRET" | npx wrangler@4 secret put EMAIL_SECRET
@@ -82,6 +85,9 @@ jobs:
           printf '%s' "$SLACK_SIGNING_SECRET" | npx wrangler@4 secret put SLACK_SIGNING_SECRET
           printf '%s' "$SLACK_APP_TOKEN" | npx wrangler@4 secret put SLACK_APP_TOKEN
           printf '%s' "$SLACK_CLIENT_ID" | npx wrangler@4 secret put SLACK_CLIENT_ID
+          printf '%s' "$GH_WEBHOOK_SECRET" | npx wrangler@4 secret put GITHUB_WEBHOOK_SECRET
+          printf '%s' "$STRIPE_WEBHOOK_SECRET" | npx wrangler@4 secret put STRIPE_WEBHOOK_SECRET
+          printf '%s' "$SLACK_WEBHOOK_SECRET" | npx wrangler@4 secret put SLACK_WEBHOOK_SECRET
 
   deploy-preview:
     runs-on: ubuntu-latest

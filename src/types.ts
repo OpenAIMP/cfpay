@@ -17,6 +17,12 @@ export interface Env {
   SLACK_SIGNING_SECRET: string;
   SLACK_APP_TOKEN: string;
   SLACK_CLIENT_ID: string;
+  // Webhook secrets (incoming verification)
+  GITHUB_WEBHOOK_SECRET?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  SLACK_WEBHOOK_SECRET?: string;
+  // Outgoing webhook URLs
+  SLACK_WEBHOOK_URL?: string;
 }
 
 export interface PaymentNetworkConfig {
@@ -75,10 +81,22 @@ export interface AgentState {
   totalEmailsSent: number;
   totalPaymentsReceived: number;
   totalPaymentsSent: number;
+  webhookEvents?: WebhookEvent[];
+  totalWebhooksReceived?: number;
 }
 
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
+}
+
+export interface WebhookEvent {
+  id: string;
+  provider: "github" | "stripe" | "slack";
+  eventType: string;
+  agentName: string;
+  payload: unknown;
+  receivedAt: string;
+  processed: boolean;
 }

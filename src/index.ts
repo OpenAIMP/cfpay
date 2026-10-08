@@ -1,4 +1,4 @@
-import { routeAgentEmail } from "agents";
+import { routeAgentEmail, getAgentByName } from "agents";
 import {
   createAddressBasedEmailResolver,
   createSecureReplyEmailResolver,
@@ -6,6 +6,7 @@ import {
 import type { Env } from "./types";
 import { createApp } from "./api";
 import { CfmailAgentSQLite } from "./agent";
+import { verifyAndParseWebhook } from "./webhooks";
 import {
   verifySlackSignature,
   parseSlackEvent,
@@ -25,6 +26,17 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
+
+    // Webhook routes — verify signature, then forward to the agent
+    if (request.method === "POST" && url.pathname.startsWith("/webhooks/")) {
+      const verified = await verifyAndParseWebhook(request.clone(), env);
+      if (!verified) {
+        return new Response("Invalid signature", { status: 401 });
+      }
+      // Slack URL verification or forward to the agent DO
+      const agent = await getAgentByName(env.CfmailAgent as any, verified.agentName);
+      return agent.fetch(request);
+    }
 
     // HTTP webhook endpoint (legacy Slack apps)
     if (url.pathname === "/slack/events") {
@@ -114,7 +126,7 @@ async function handleSlackWebhook(request: Request, env: Env): Promise<Response>
   console.log("Processing Slack message from:", event.user, "text:", event.text);
 
   const agentId = env.CfmailAgent.idFromName("agent");
-  const agent = env.CfmailAgent.get(agentId) as DurableObjectStub<CfmailAgentSQLite>;
+  const agent = env.CfmailAgent.get(agentId) as any;
 
   await agent.handleSlackEvent(event);
 

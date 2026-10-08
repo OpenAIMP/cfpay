@@ -16,7 +16,7 @@ export function createApp() {
 
   function getAgent(c: any) {
     const agentId = c.env.CfmailAgent.idFromName("agent");
-    return c.env.CfmailAgent.get(agentId) as DurableObjectStub<CfmailAgent>;
+    return c.env.CfmailAgent.get(agentId) as any;
   }
 
   const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -357,7 +357,7 @@ export function createApp() {
       return c.text("Expected Upgrade: websocket", 426);
     }
     const agentId = c.env.CfmailAgent.idFromName("agent");
-    const agent = c.env.CfmailAgent.get(agentId) as DurableObjectStub<CfmailAgent>;
+    const agent = c.env.CfmailAgent.get(agentId) as any;
     return agent.fetch(c.req.raw);
   });
 
@@ -408,5 +408,19 @@ export function createApp() {
     return c.json({ messages });
   });
 
+
+  app.get("/api/dashboard/webhooks", requireAuth, async (c) => {
+    const provider = c.req.query("provider") || null;
+    const agent = getAgent(c);
+    const events = await agent.getWebhookEvents(provider, 100);
+    return c.json({ events });
+  });
+
+  app.post("/api/dashboard/notify-slack", requireAuth, async (c) => {
+    const body = await c.req.json<{ message: string }>();
+    const agent = getAgent(c);
+    const result = await agent.notifySlack(body.message);
+    return c.json(result);
+  });
   return app;
 }

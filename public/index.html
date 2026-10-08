@@ -73,6 +73,9 @@
     .status-msg.error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--red); }
     .status-msg.info { background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: var(--blue); }
     .no-metamask { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); border-radius: 6px; padding: 1rem; margin-bottom: 1rem; font-size: 0.85rem; color: var(--red); }
+    .badge-github { background: #333; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .badge-stripe { background: #635bff; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .badge-slack { background: #4a154b; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
   </style>
 </head>
 <body>
@@ -110,6 +113,7 @@
         <div class="tab" data-tab="pay" onclick="switchTab('pay')">Pay & Process</div>
         <div class="tab" data-tab="chat" onclick="switchTab('chat')">Chat</div>
         <div class="tab" data-tab="slack" onclick="switchTab('slack')">Slack</div>
+        <div class="tab" data-tab="webhooks" onclick="switchTab('webhooks')">Webhooks</div>
       </div>
       <div id="overview" class="panel active">
         <div class="card">
@@ -182,6 +186,19 @@
           </div>
         </div>
       </div>
+      <!-- Webhooks -->
+      <div id="webhooks" class="panel">
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Incoming Webhook Events</h3>
+          <div id="webhookList"><div class="loading">Loading webhooks...</div></div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Send Slack Notification</h3>
+          <div class="form-group"><label>Message</label><textarea id="slackMessage" placeholder="Message to send to Slack..."></textarea></div>
+          <button class="btn" onclick="sendSlack()">Send to Slack</button>
+          <div id="slackResult" style="margin-top:1rem;"></div>
+        </div>
+      </div>
     </div>
   </div>
   <script>
@@ -216,6 +233,7 @@
       if (tab === 'slack') loadSlackMessages();
       if (tab === 'payments') loadPayments();
       if (tab === 'pay') checkMetaMask();
+      if (tab === 'webhooks') loadWebhooks();
     }
     async function init() { loadStats(); checkMetaMask(); await loadPaymentOptions(); }
     const NETWORKS = {
@@ -544,6 +562,42 @@
       }, 500);
     }
 
+    async function loadWebhooks() {
+      const data = await api('/api/dashboard/webhooks');
+      const list = document.getElementById('webhookList');
+      if (!data.events || data.events.length === 0) { list.innerHTML = '<div class="empty">No webhook events yet</div>'; return; }
+      list.innerHTML = data.events.map(e => `
+        <div class="card" style="margin-bottom: 0.75rem;">
+          <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <span class="badge-${e.provider}">${e.provider}</span>
+              <span style="margin-left:0.5rem;font-weight:600;">${e.eventType}</span>
+            </div>
+            <div class="meta" style="color:var(--muted);font-size:0.75rem;">${new Date(e.receivedAt).toLocaleString()}</div>
+          </div>
+          <div class="card-body" style="margin-top: 0.5rem;">
+            Agent: <code>${e.agentName}</code><br>
+            <details style="margin-top:0.35rem;">
+              <summary style="cursor:pointer;color:var(--muted);font-size:0.75rem;">Payload</summary>
+              <pre style="margin-top:0.5rem;font-size:0.7rem;overflow-x:auto;color:var(--muted);background:var(--bg-subtle,#161e2e);padding:0.5rem;border-radius:4px;">${JSON.stringify(e.payload, null, 2).replace(/</g,'&lt;')}</pre>
+            </details>
+          </div>
+        </div>`).join('');
+    }
+
+    async function sendSlack() {
+      const message = document.getElementById('slackMessage').value;
+      const result = document.getElementById('slackResult');
+      if (!message) { result.innerHTML = '<div class="status-msg error">Enter a message</div>'; return; }
+      result.innerHTML = '<div class="loading">Sending...</div>';
+      const res = await api('/api/dashboard/notify-slack', 'POST', { message });
+      if (res && res.success) {
+        result.innerHTML = '<div class="status-msg success">Sent to Slack!</div>';
+        document.getElementById('slackMessage').value = '';
+      } else {
+        result.innerHTML = '<div class="status-msg error">Failed — is SLACK_WEBHOOK_URL configured?</div>';
+      }
+    }
   </script>
 <script type="module">
   import { AgentClient } from "https://esm.sh/agents@latest/client";

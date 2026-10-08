@@ -4,3 +4,7 @@
 PAYMENT_PRIVATE_KEY=0xYourWalletPrivateKey
 EMAIL_SECRET=your-random-secret-string-for-secure-replies
 DASHBOARD_API_KEY=your-dashboard-api-key
+# Webhook secrets (for verifying incoming webhook signatures)
+GITHUB_WEBHOOK_SECRET=your-github-webhook-secret
+STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
+SLACK_WEBHOOK_SECRET=your-slack-signing-secret

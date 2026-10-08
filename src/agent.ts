@@ -1,8 +1,9 @@
 import { Agent, callable } from "agents";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime from "postal-mime";
-import type { AgentState, ChatMessage, EmailRecord, Env, PaymentClaim, PaymentRecord } from "./types";
+import type { AgentState, ChatMessage, EmailRecord, Env, PaymentClaim, PaymentRecord, WebhookEvent } from "./types";
 import { formatAmount, generateId } from "./payments";
+import { sendSlackNotification, sendSignedWebhook } from "./webhooks";
 import {
   connectSlackSocketMode,
   sendSlackMessage,
@@ -17,6 +18,8 @@ const DEFAULT_STATE: AgentState = {
   totalEmailsSent: 0,
   totalPaymentsReceived: 0,
   totalPaymentsSent: 0,
+  webhookEvents: [],
+  totalWebhooksReceived: 0,
 };
 
 type AiMessage = {
@@ -528,5 +531,133 @@ Do not claim to have completed a payment unless you have received confirmation.`
       status: 403,
       response: "External payments are disabled.",
     };
+  }
+
+  // ===========================================================================
+  // Webhooks: Incoming webhook handler (onRequest)
+  // ===========================================================================
+  async onRequest(request: Request): Promise<Response> {
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    const rawBody = await request.text();
+    let payload: any;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      return new Response("Invalid payload", { status: 400 });
+    }
+
+    const url = new URL(request.url);
+    const provider = url.pathname.split("/").pop() as "github" | "stripe" | "slack";
+
+    // Slack URL verification challenge
+    if (provider === "slack" && payload?.type === "url_verification" && payload?.challenge) {
+      return new Response(JSON.stringify({ challenge: payload.challenge }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    await this.processWebhookEvent(provider, payload);
+    return new Response("OK");
+  }
+
+  // ===========================================================================
+  // Webhooks: Process a verified webhook event
+  // ===========================================================================
+  private async processWebhookEvent(provider: "github" | "stripe" | "slack", payload: any) {
+    let eventType = "unknown";
+    let agentName = "default";
+
+    if (provider === "github") {
+      eventType = payload.action || payload.event || "push";
+      agentName = payload.repository?.full_name?.toLowerCase().replace(/[^a-z0-9-]/g, "-") || "default";
+    } else if (provider === "stripe") {
+      eventType = payload.type || "event";
+      agentName = payload?.data?.object?.customer || payload?.account || payload?.id || "default";
+      agentName = String(agentName).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    } else if (provider === "slack") {
+      eventType = payload.event?.type || payload.type || "event";
+      agentName = payload.team_id || payload.event?.channel || "default";
+      agentName = String(agentName).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    }
+
+    const event: WebhookEvent = {
+      id: generateId(),
+      provider,
+      eventType,
+      agentName,
+      payload,
+      receivedAt: new Date().toISOString(),
+      processed: true,
+    };
+
+    const state = this.ensureState();
+    const webhookEvents = [...(state.webhookEvents || []), event];
+
+    this.setState({
+      ...state,
+      webhookEvents,
+      totalWebhooksReceived: (state.totalWebhooksReceived || 0) + 1,
+    });
+
+    // Optional: notify via outgoing Slack webhook
+    if (this.env.SLACK_WEBHOOK_URL) {
+      try {
+        await sendSlackNotification(
+          this.env.SLACK_WEBHOOK_URL,
+          `📥 Webhook received: *${provider}* — \`${eventType}\` (agent: ${agentName})`,
+        );
+      } catch (e) {
+        console.error("Slack notification for webhook failed:", e);
+      }
+    }
+  }
+
+  // ===========================================================================
+  // RPC: Get webhook events
+  // ===========================================================================
+  @callable()
+  async getWebhookEvents(provider: string | null, limit: number): Promise<WebhookEvent[]> {
+    const state = this.ensureState();
+    const events = state.webhookEvents || [];
+    let filtered = events;
+    if (provider) {
+      filtered = events.filter((e) => e.provider === provider);
+    }
+    return filtered.slice(-limit).reverse();
+  }
+
+  // ===========================================================================
+  // RPC: Send an outgoing Slack notification
+  // ===========================================================================
+  @callable()
+  async notifySlack(message: string): Promise<{ success: boolean }> {
+    if (!this.env.SLACK_WEBHOOK_URL) {
+      return { success: false };
+    }
+    try {
+      const ok = await sendSlackNotification(this.env.SLACK_WEBHOOK_URL, message);
+      return { success: ok };
+    } catch (e) {
+      console.error("Slack notification failed:", e);
+      return { success: false };
+    }
+  }
+
+  // ===========================================================================
+  // RPC: Send a signed outgoing webhook
+  // ===========================================================================
+  @callable()
+  async sendWebhook(url: string, payload: unknown): Promise<{ success: boolean }> {
+    try {
+      const ok = await sendSignedWebhook(url, payload, this.env.EMAIL_SECRET);
+      return { success: ok };
+    } catch (e) {
+      console.error("Outgoing webhook failed:", e);
+      return { success: false };
+    }
   }
 }
