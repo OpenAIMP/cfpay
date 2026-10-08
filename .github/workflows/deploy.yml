@@ -79,6 +79,8 @@ jobs:
           SLACK_WEBHOOK_SECRET: ${{ secrets.SLACK_WEBHOOK_SECRET }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          MCP_AUTH_TOKEN: ${{ secrets.MCP_AUTH_TOKEN }}
+          MCP_GITHUB_ORG: ${{ secrets.MCP_GITHUB_ORG }}
           WEBHOOK_NOTIFY_PROVIDERS: ${{ secrets.WEBHOOK_NOTIFY_PROVIDERS }}
           OUTBOUND_PAY_TO_WHITELIST: ${{ secrets.OUTBOUND_PAY_TO_WHITELIST }}
           OUTBOUND_MAX_AMOUNT_ATOMIC: ${{ secrets.OUTBOUND_MAX_AMOUNT_ATOMIC }}
@@ -121,6 +123,10 @@ jobs:
               echo "$1 is not set in GitHub secrets - skipping."
             fi
           }
+          # MCP_AUTH_TOKEN is required for /mcp to serve; the guard fails closed
+          # when it is absent, so this must be set before the guard is deployed.
+          push_optional MCP_AUTH_TOKEN             "$MCP_AUTH_TOKEN"
+          push_optional MCP_GITHUB_ORG             "$MCP_GITHUB_ORG"
           push_optional WEBHOOK_NOTIFY_PROVIDERS  "$WEBHOOK_NOTIFY_PROVIDERS"
           push_optional OUTBOUND_PAY_TO_WHITELIST "$OUTBOUND_PAY_TO_WHITELIST"
           push_optional OUTBOUND_MAX_AMOUNT_ATOMIC "$OUTBOUND_MAX_AMOUNT_ATOMIC"

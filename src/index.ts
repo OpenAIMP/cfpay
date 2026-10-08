@@ -8,6 +8,7 @@ import { createApp } from "./api";
 import { CfmailAgentSQLite } from "./agent";
 import { verifyAndParseWebhook } from "./webhooks";
 import { createCfmailMcpHandler } from "./mcp";
+import { authorizeMcpRequest } from "./mcp-auth";
 import {
   verifySlackSignature,
   parseSlackEvent,
@@ -32,6 +33,8 @@ export default {
     // before the /mcp prefix check below so this exact path wins; the legacy
     // "/mcp/tools/process" route still falls through to the Hono app.
     if (url.pathname === "/mcp") {
+      const unauthorized = await authorizeMcpRequest(request, env);
+      if (unauthorized) return unauthorized;
       return createCfmailMcpHandler(env)(request, env, ctx);
     }
 

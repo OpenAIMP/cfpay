@@ -25,6 +25,12 @@ export interface Env {
   SLACK_WEBHOOK_URL?: string;
   // Outbound x402 payments (agent spending). Both must be configured before the
   // agent will send funds; see CfmailAgentSQLite.payExternalEndpoint.
+  // Static bearer token accepted by /mcp. A GitHub token is also accepted and
+  // validated against the GitHub API. With neither this nor MCP_GITHUB_ORG set,
+  // /mcp refuses every request.
+  MCP_AUTH_TOKEN?: string;
+  // When set, a GitHub token must belong to this organisation to be accepted.
+  MCP_GITHUB_ORG?: string;
   // Staging/test only: when "true", outbound email is logged and recorded
   // instead of being delivered. Never set in production.
   EMAIL_CAPTURE_MODE?: string;
