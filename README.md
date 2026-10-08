@@ -136,6 +136,15 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 - [x402 Examples](https://github.com/cloudflare/agents/tree/main/examples)
 - [Cloudflare Wallets](https://blog.cloudflare.com/wallets/)
 
+
+
+
+
+
+
+
+
+
 ## Remote MCP Server
 
 The Worker serves a remote MCP server at `https://pay.openaimp.com/mcp` using the
