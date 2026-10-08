@@ -550,6 +550,29 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return filtered.slice(-limit).reverse();
   }
 
+  /**
+   * Emails only. Slack conversations are stored in the same emails[] array
+   * (from "slack:<user>"), so callers that present mail must exclude them.
+   */
+  @callable()
+  async getEmailsExcludingSlack(
+    direction: string | null,
+    limit: number,
+  ): Promise<EmailRecord[]> {
+    const state = this.ensureState();
+
+    let emails = state.emails.filter(
+      (email) =>
+        !email.from.startsWith("slack:") && !email.to.startsWith("slack:"),
+    );
+
+    if (direction) {
+      emails = emails.filter((email) => email.direction === direction);
+    }
+
+    return emails.slice(-limit).reverse();
+  }
+
   @callable()
   async getPayments(
     direction: string | null,

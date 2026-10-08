@@ -40,9 +40,15 @@ export function createCfmailMcpHandler(env: Env) {
   server.registerTool(
     "cfmail_recent_emails",
     {
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       title: "Recent emails",
       description:
-        "List recent emails handled by the CFmail agent, newest first, with their AI summary when available.",
+        "List recent EMAIL messages handled by the CFmail agent, newest first, with their AI summary when available. Excludes Slack chat, which has its own tool.",
       inputSchema: {
         direction: z
           .enum(["inbound", "outbound"])
@@ -52,7 +58,10 @@ export function createCfmailMcpHandler(env: Env) {
       },
     },
     async ({ direction, limit }) => {
-      const emails = await agent.getEmails(direction ?? null, limit ?? 10);
+      const emails = await agent.getEmailsExcludingSlack(
+        direction ?? null,
+        limit ?? 10,
+      );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(emails, null, 2) }],
       };
@@ -62,6 +71,12 @@ export function createCfmailMcpHandler(env: Env) {
   server.registerTool(
     "cfmail_recent_payments",
     {
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       title: "Recent payments",
       description:
         "List recent x402 payments recorded by the CFmail agent, newest first.",
@@ -84,6 +99,12 @@ export function createCfmailMcpHandler(env: Env) {
   server.registerTool(
     "cfmail_recent_webhooks",
     {
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       title: "Recent webhooks",
       description:
         "List recent inbound webhook events (github, stripe, slack) with their AI analysis, newest first.",

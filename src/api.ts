@@ -326,7 +326,7 @@ export function createApp() {
   app.get("/api/dashboard/emails", requireAuth, async (c) => {
     const direction = c.req.query("direction") || null;
     const agent = getAgent(c);
-    const emails = await agent.getEmails(direction, 100);
+    const emails = await agent.getEmailsExcludingSlack(direction, 100);
     return c.json({ emails });
   });
 
