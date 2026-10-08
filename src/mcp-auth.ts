@@ -146,6 +146,37 @@ function jsonResponse(
   });
 }
 
+/** JSON-RPC methods that only establish a session and expose no data. */
+const HANDSHAKE_METHODS = new Set(["initialize", "notifications/initialized", "ping"]);
+
+/**
+ * True when this request is only the MCP handshake, so it may be answered
+ * without a credential.
+ *
+ * The body is read through request.clone() so the original stream stays intact
+ * for the MCP handler. Non-POST requests, including the GET SSE stream, are not
+ * treated as a handshake.
+ */
+async function isHandshakeOnly(request: Request): Promise<boolean> {
+  if (request.method !== "POST") return false;
+  const contentType = request.headers.get("Content-Type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) return false;
+
+  try {
+    const body = (await request.clone().json()) as { method?: unknown };
+    const method = typeof body?.method === "string" ? body.method : "";
+    return HANDSHAKE_METHODS.has(method);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether an unauthenticated handshake is answered rather than refused. */
+function allowsAnonymousHandshake(env: Env): boolean {
+  // Opt-out only: anything other than an explicit "false" keeps the default.
+  return (env.MCP_ANON_INITIALIZE ?? "").trim().toLowerCase() !== "false";
+}
+
 /** Which credential paths the resolved mode permits. */
 function permittedPaths(mode: McpAuthMode): { static: boolean; github: boolean } {
   switch (mode) {
@@ -214,9 +245,12 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
     }
   }
 
-  // Deliberately no WWW-Authenticate header. Emitting one makes MCP clients
-  // treat this as an OAuth-protected resource and attempt a sign-in flow, which
-  // we do not implement. The credential is a plain bearer token instead, so the
-  // client should be configured with an API key rather than OAuth.
+  // Answer the handshake so clients do not classify this as an OAuth resource.
+  // Nothing beyond initialize/initialized/ping is served without a credential,
+  // and no WWW-Authenticate header is sent, for the same reason.
+  if (allowsAnonymousHandshake(env) && (await isHandshakeOnly(request))) {
+    return null;
+  }
+
   return jsonResponse({ error: "Unauthorized" }, 401);
 }

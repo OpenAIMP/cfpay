@@ -35,6 +35,10 @@ export interface Env {
   // "none". "none" serves without authentication and must be set explicitly; an
   // unset or unrecognised value is not treated as "none".
   MCP_AUTH_MODE?: string;
+  // When "false", every unauthenticated /mcp request is refused, including the
+  // handshake. Anything else (or unset) lets the handshake through so MCP clients
+  // do not mistake this for an OAuth-protected server.
+  MCP_ANON_INITIALIZE?: string;
   // Staging/test only: when "true", outbound email is logged and recorded
   // instead of being delivered. Never set in production.
   EMAIL_CAPTURE_MODE?: string;
