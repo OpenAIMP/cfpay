@@ -41,8 +41,12 @@ export default {
       if (!verified) {
         return new Response("Invalid signature", { status: 401 });
       }
-      // Slack URL verification or forward to the agent DO
-      const agent = await getAgentByName(env.CfmailAgent as any, verified.agentName);
+      // Forward to the canonical agent instance. webhooks.ts derives a
+      // per-provider instance name (repo full_name, Stripe customer id, Slack
+      // team/channel), but the dashboard, REST API and MCP server all read the
+      // "agent" instance — so routing by that derived name recorded verified
+      // events into a Durable Object nothing ever displayed.
+      const agent = await getAgentByName(env.CfmailAgent as any, "agent");
       return agent.fetch(request);
     }
 
