@@ -83,6 +83,7 @@ jobs:
           MCP_GITHUB_ORG: ${{ secrets.MCP_GITHUB_ORG }}
           MCP_AUTH_MODE: ${{ secrets.MCP_AUTH_MODE }}
           MCP_ANON_INITIALIZE: ${{ secrets.MCP_ANON_INITIALIZE }}
+          MCP_OAUTH_DISCOVERY: ${{ secrets.MCP_OAUTH_DISCOVERY }}
           WEBHOOK_NOTIFY_PROVIDERS: ${{ secrets.WEBHOOK_NOTIFY_PROVIDERS }}
           OUTBOUND_PAY_TO_WHITELIST: ${{ secrets.OUTBOUND_PAY_TO_WHITELIST }}
           OUTBOUND_MAX_AMOUNT_ATOMIC: ${{ secrets.OUTBOUND_MAX_AMOUNT_ATOMIC }}
@@ -132,6 +133,7 @@ jobs:
           # Not secret, but keep all /mcp configuration in one place.
           push_optional MCP_AUTH_MODE              "$MCP_AUTH_MODE"
           push_optional MCP_ANON_INITIALIZE        "$MCP_ANON_INITIALIZE"
+          push_optional MCP_OAUTH_DISCOVERY        "$MCP_OAUTH_DISCOVERY"
           push_optional WEBHOOK_NOTIFY_PROVIDERS  "$WEBHOOK_NOTIFY_PROVIDERS"
           push_optional OUTBOUND_PAY_TO_WHITELIST "$OUTBOUND_PAY_TO_WHITELIST"
           push_optional OUTBOUND_MAX_AMOUNT_ATOMIC "$OUTBOUND_MAX_AMOUNT_ATOMIC"

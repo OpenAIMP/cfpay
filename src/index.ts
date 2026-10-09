@@ -9,6 +9,7 @@ import { CfmailAgentSQLite } from "./agent";
 import { verifyAndParseWebhook } from "./webhooks";
 import { createCfmailMcpHandler } from "./mcp";
 import { authorizeMcpRequest } from "./mcp-auth";
+import { handleResourceMetadata } from "./mcp-oauth";
 import {
   verifySlackSignature,
   parseSlackEvent,
@@ -32,6 +33,12 @@ export default {
     // Remote MCP server (Streamable HTTP, unauthenticated in phase 1). Handled
     // before the /mcp prefix check below so this exact path wins; the legacy
     // "/mcp/tools/process" route still falls through to the Hono app.
+    // Protected Resource Metadata for /mcp (RFC 9728). Served only when
+    // MCP_OAUTH_DISCOVERY is enabled; otherwise it 404s.
+    if (url.pathname === "/.well-known/oauth-protected-resource") {
+      return handleResourceMetadata(request, env);
+    }
+
     if (url.pathname === "/mcp") {
       const unauthorized = await authorizeMcpRequest(request, env);
       if (unauthorized) return unauthorized;

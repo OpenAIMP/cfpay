@@ -39,6 +39,13 @@ export interface Env {
   // handshake. Anything else (or unset) lets the handshake through so MCP clients
   // do not mistake this for an OAuth-protected server.
   MCP_ANON_INITIALIZE?: string;
+  // When "true", /mcp publishes RFC 9728 Protected Resource Metadata at
+  // /.well-known/oauth-protected-resource and sends a WWW-Authenticate
+  // challenge pointing at it. Off unless explicitly enabled, because the
+  // challenge changes how MCP clients classify the endpoint.
+  MCP_OAUTH_DISCOVERY?: string;
+  // Origin used in published metadata. Defaults to the request's own origin.
+  MCP_PUBLIC_ORIGIN?: string;
   // Staging/test only: when "true", outbound email is logged and recorded
   // instead of being delivered. Never set in production.
   EMAIL_CAPTURE_MODE?: string;

@@ -1,4 +1,5 @@
 import type { Env } from "./types";
+import { allowsDiscovery, resourceMetadataUrl } from "./mcp-oauth";
 
 /**
  * Authorisation for the /mcp endpoint.
@@ -252,5 +253,14 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
     return null;
   }
 
-  return jsonResponse({ error: "Unauthorized" }, 401);
+  // Advertise the discovery document only when it is actually published, so a
+  // client never follows a pointer to a 404 - which is how the original OAuth
+  // misclassification happened.
+  const challenge: Record<string, string> = allowsDiscovery(env)
+    ? {
+        "WWW-Authenticate": `Bearer resource_metadata="${resourceMetadataUrl(request, env)}"`,
+      }
+    : {};
+
+  return jsonResponse({ error: "Unauthorized" }, 401, challenge);
 }
