@@ -46,6 +46,9 @@ export interface Env {
   MCP_OAUTH_DISCOVERY?: string;
   // Origin used in published metadata. Defaults to the request's own origin.
   MCP_PUBLIC_ORIGIN?: string;
+  // HMAC key for OAuth tokens and client ids. Falls back to MCP_AUTH_TOKEN
+  // when unset; rotating MCP_AUTH_TOKEN therefore invalidates issued tokens.
+  MCP_OAUTH_SIGNING_KEY?: string;
   // Staging/test only: when "true", outbound email is logged and recorded
   // instead of being delivered. Never set in production.
   EMAIL_CAPTURE_MODE?: string;

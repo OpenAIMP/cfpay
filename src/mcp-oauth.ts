@@ -58,6 +58,8 @@ export function buildResourceMetadata(
   const origin = publicOrigin(request, env);
   return {
     resource: origin + "/mcp",
+    // We do implement an authorization server now, so name it here.
+    authorization_servers: [origin],
     bearer_methods_supported: ["header"],
     resource_documentation: origin + "/",
   };

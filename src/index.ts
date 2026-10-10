@@ -11,6 +11,16 @@ import { createCfmailMcpHandler } from "./mcp";
 import { authorizeMcpRequest } from "./mcp-auth";
 import { handleResourceMetadata } from "./mcp-oauth";
 import {
+  AS_METADATA_PATH,
+  AUTHORIZE_PATH,
+  REGISTER_PATH,
+  TOKEN_PATH,
+  handleAsMetadata,
+  handleAuthorize,
+  handleRegister,
+  handleToken,
+} from "./mcp-oauth-server";
+import {
   verifySlackSignature,
   parseSlackEvent,
   sendSlackMessage,
@@ -33,6 +43,20 @@ export default {
     // Remote MCP server (Streamable HTTP, unauthenticated in phase 1). Handled
     // before the /mcp prefix check below so this exact path wins; the legacy
     // "/mcp/tools/process" route still falls through to the Hono app.
+    // OAuth 2.1 authorization server for /mcp (metadata, DCR, authorize,
+    // token). Every path 404s unless MCP_OAUTH_DISCOVERY is enabled.
+    if (url.pathname === AS_METADATA_PATH) {
+      return handleAsMetadata(request, env);
+    }
+    if (url.pathname === REGISTER_PATH) {
+      return handleRegister(request, env);
+    }
+    if (url.pathname === AUTHORIZE_PATH) {
+      return handleAuthorize(request, env);
+    }
+    if (url.pathname === TOKEN_PATH) {
+      return handleToken(request, env);
+    }
     // Protected Resource Metadata for /mcp (RFC 9728). Served only when
     // MCP_OAUTH_DISCOVERY is enabled; otherwise it 404s.
     if (url.pathname === "/.well-known/oauth-protected-resource") {

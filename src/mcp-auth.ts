@@ -1,5 +1,6 @@
 import type { Env } from "./types";
 import { allowsDiscovery, resourceMetadataUrl } from "./mcp-oauth";
+import { isAcceptedAccessToken } from "./mcp-oauth-server";
 
 /**
  * Authorisation for the /mcp endpoint.
@@ -237,7 +238,12 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
       return null;
     }
 
-    // 2) GitHub credential, when permitted. Shape-checked first so stray strings
+    // 2) OAuth access token issued by our own authorization server.
+    if (await isAcceptedAccessToken(presented, env)) {
+      return null;
+    }
+
+    // 3) GitHub credential, when permitted. Shape-checked first so stray strings
     //    never cost an outbound API call.
     if (paths.github && looksLikeGitHubToken(presented)) {
       if (await verifyGitHubToken(presented, requiredOrg || undefined)) {
