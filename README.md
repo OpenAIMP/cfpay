@@ -220,10 +220,33 @@ when `WEBHOOK_NOTIFY_EMAIL` is set. Webhooks never create payment records — on
 a verified x402 request does that.
 
 To connect Slack: `api.slack.com/apps` -> your app -> **Features -> MCP Servers**.
+## Securing the MCP endpoint (`mcp-security/`)
 
+`/mcp` authenticates nothing by default. `mcp-security/` puts a Cloudflare MCP
+Server Portal in front of it — Access policies, an OAuth 2.0 authorization-code
+flow with PKCE and Dynamic Client Registration — and proxies to this Worker
+without changing its code.
 
+| | |
+|---|---|
+| Upstream (this Worker) | `https://pay.openaimp.com/mcp` |
+| Protected endpoint | `https://mcp.openaimp.com/mcp` |
 
+```bash
+cd mcp-security
+cp env.example .env      # CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CF_TEAM_NAME
+./scripts/run-all.sh
+```
 
+`scripts/run-all.sh` runs identity providers, portal creation, Access policies
+and verification in order. Each script is idempotent, so re-running reconciles.
+`scripts/05-protect-direct-url.sh` is optional and blocks access to
+`pay.openaimp.com/mcp` directly — without it the portal is protected but this
+Worker's own endpoint is not.
 
+The GitHub workflow is `workflow_dispatch` only: it mutates live Cloudflare
+state, so it is never applied as a side effect of a push. `legacy/` holds an
+earlier flow from two merged repositories, kept for reference.
 
-
+Note that this Worker's own `/mcp` gate is independent of the portal. See
+`MCP_AUTH_MODE` in `wrangler.jsonc` and `.dev.vars.example`.

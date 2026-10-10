@@ -25,3 +25,9 @@ dist/
 # Agent run artefacts (transcripts, scratch test scripts)
 .zwork/
 .cf-*
+# MCP portal security state (written by mcp-security/scripts)
+# .env holds the Cloudflare API token; the other two hold resource IDs that are
+# specific to one deployment and would be wrong for anyone else.
+mcp-security/.env
+.portal-state
+.idp-ids

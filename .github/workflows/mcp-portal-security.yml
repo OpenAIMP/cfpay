@@ -1,0 +1,114 @@
+# =============================================================================
+# MCP Portal Security — Deploy via GitHub Actions
+# =============================================================================
+# This workflow runs the full setup scripts to secure the MCP server.
+#
+# Prerequisites (GitHub repository secrets):
+#   CLOUDFLARE_ACCOUNT_ID   — Your Cloudflare account ID
+#   CLOUDFLARE_API_TOKEN    — API token with Access + DNS permissions
+#   CF_TEAM_NAME            — Zero Trust team name (subdomain of cloudflareaccess.com)
+#   ALLOWED_EMAILS          — Comma-separated emails/domains (e.g. "openaimp@openaimp.com,@openaimp.com")
+#
+# Optional IdP secrets (omit to skip that IdP):
+#   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+#   GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET
+#   OKTA_CLIENT_ID / OKTA_CLIENT_SECRET / OKTA_ACCOUNT_URL
+#
+# Usage:
+#   - Push to main branch → runs the full setup
+#   - Or trigger manually via "Run workflow" button (workflow_dispatch)
+# =============================================================================
+
+name: Deploy MCP Portal Security
+
+on:
+  # Manual only, deliberately. This workflow mutates live Cloudflare state:
+  # identity providers, a DNS record, the portal, Access policies. Landing it
+  # on main must not apply that as a side effect of an unrelated push. Every
+  # step is idempotent, so re-running is safe.
+  workflow_dispatch:
+    inputs:
+      force_resync:
+        description: 'Force re-sync MCP server after setup'
+        type: boolean
+        default: false
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CF_TEAM_NAME: ${{ secrets.CF_TEAM_NAME }}
+  ZONE_NAME: openaimp.com
+  PORTAL_SUBDOMAIN: mcp
+  PORTAL_HOSTNAME: mcp.openaimp.com
+  UPSTREAM_MCP_URL: https://pay.openaimp.com/mcp
+  PORTAL_NAME: OpenAIMP MCP Portal
+  MCP_SERVER_NAME: OpenAIMP Pay Server
+  ALLOWED_EMAILS: ${{ secrets.ALLOWED_EMAILS }}
+  GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+  GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+  GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+  GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+  OKTA_CLIENT_ID: ${{ secrets.OKTA_CLIENT_ID }}
+  OKTA_CLIENT_SECRET: ${{ secrets.OKTA_CLIENT_SECRET }}
+  OKTA_ACCOUNT_URL: ${{ secrets.OKTA_ACCOUNT_URL }}
+  CI: 'true'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq dnsutils curl
+
+      - name: Verify required secrets
+        run: |
+          for var in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN CF_TEAM_NAME; do
+            if [ -z "$(eval echo \${$var})" ]; then
+              echo "❌ Missing required secret: $var"
+              exit 1
+            fi
+          done
+          echo "✅ All required secrets present"
+
+      - name: Step 1 — Set up identity providers
+        run: bash mcp-security/scripts/01-setup-identity-providers.sh
+
+      - name: Step 2 — Create MCP portal
+        run: bash mcp-security/scripts/02-create-mcp-portal.sh
+
+      - name: Step 3 — Configure Access policies & Managed OAuth
+        run: bash mcp-security/scripts/03-configure-access-policies.sh
+
+      - name: Step 4 — Verify portal
+        run: bash mcp-security/scripts/04-verify-portal.sh
+        continue-on-error: true  # DNS propagation may not be instant
+
+      - name: Step 5 — Force re-sync (if requested)
+        if: ${{ github.event.inputs.force_resync == 'true' }}
+        run: bash mcp-security/scripts/06-sync-server.sh
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "============================================"
+          echo "  MCP Portal Security Deploy Complete"
+          echo "============================================"
+          echo ""
+          echo "  Protected endpoint: https://mcp.openaimp.com/mcp"
+          echo "  Upstream (no changes): https://pay.openaimp.com/mcp"
+          echo ""
+          echo "  Identity providers configured:"
+          echo "    - One-time PIN (OTP)"
+          echo "    - Cloudflare (account members)"
+          [ -n "$GOOGLE_CLIENT_ID" ] && echo "    - Google"
+          [ -n "$GITHUB_CLIENT_ID" ] && echo "    - GitHub"
+          [ -n "$OKTA_CLIENT_ID" ] && echo "    - Okta"
+          echo ""
+          echo "  MCP clients connect to: https://mcp.openaimp.com/mcp"
+          echo "  Auth: OAuth 2.0 (PKCE/DCR) via Cloudflare Access"
+          echo ""

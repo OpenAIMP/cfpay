@@ -1,0 +1,42 @@
+{
+  "//": "MCP Client Configuration — connect to the secured portal",
+  "//": "The portal URL is https://mcp.openaimp.com/mcp",
+  "//": "Managed OAuth (PKCE + DCR) is handled automatically by the portal",
+
+  "claude_desktop": {
+    "mcpServers": {
+      "openaimp-pay": {
+        "command": "npx",
+        "args": ["-y", "mcp-remote@latest", "https://mcp.openaimp.com/mcp"]
+      }
+    }
+  },
+
+  "cursor": {
+    "mcpServers": {
+      "openaimp-pay": {
+        "command": "npx",
+        "args": ["-y", "mcp-remote@latest", "https://mcp.openaimp.com/mcp"]
+      }
+    }
+  },
+
+  "windsurf": {
+    "mcpServers": {
+      "openaimp-pay": {
+        "command": "npx",
+        "args": ["-y", "mcp-remote@latest", "https://mcp.openaimp.com/mcp"]
+      }
+    }
+  },
+
+  "opencode": {
+    "mcp": {
+      "openaimp-pay": {
+        "type": "local",
+        "command": ["npx", "-y", "mcp-remote@latest", "https://mcp.openaimp.com/mcp"],
+        "enabled": true
+      }
+    }
+  }
+}
