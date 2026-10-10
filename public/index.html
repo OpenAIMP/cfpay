@@ -525,30 +525,47 @@
       const paddedAmount = BigInt(amount).toString(16).padStart(64, '0');
       return selector + paddedTo + paddedAmount;
     }
-    async function loadStats() {
+            // Replace a list's markup only when it actually changed.
+    //
+    // The socket fires on every state change, including ones that do not affect
+    // the visible tab. Assigning innerHTML unconditionally tears down and rebuilds
+    // every node even when the result is byte-identical - that is the flicker -
+    // and it also drops scroll position, focus, text selection and any open
+    // <details>. Comparing first makes a no-op refresh a genuine no-op, so tabs
+    // that rebuild the whole list (emails, Slack, payments) stop flashing.
+    function setListHtml(el, html) {
+      if (!el || el.__lastHtml === html) return;
+      el.__lastHtml = html;
+      const elTop = el.scrollTop;
+      const pageY = window.scrollY;
+      el.innerHTML = html;
+      el.scrollTop = elTop;
+      window.scrollTo(0, pageY);
+    }
+async function loadStats() {
       const [stats, config] = await Promise.all([api('/api/dashboard/stats'), api('/api/dashboard/payment-config')]);
-      document.getElementById('statsGrid').innerHTML = `
+      setListHtml(document.getElementById('statsGrid'), `
         <div class="stat-card"><div class="label">Emails Received</div><div class="value blue">${stats.totalEmailsReceived}</div></div>
         <div class="stat-card"><div class="label">Emails Sent</div><div class="value">${stats.totalEmailsSent}</div></div>
         <div class="stat-card"><div class="label">Payments Received</div><div class="value green">${stats.totalPaymentsReceived}</div></div>
-        <div class="stat-card"><div class="label">Payments Sent</div><div class="value">${stats.totalPaymentsSent}</div></div>`;
-      document.getElementById('paymentInfo').innerHTML = `
+        <div class="stat-card"><div class="label">Payments Sent</div><div class="value">${stats.totalPaymentsSent}</div></div>`);
+      setListHtml(document.getElementById('paymentInfo'), `
         <div class="item"><div class="key">Wallet</div><div class="val">${config.payTo}</div></div>
         <div class="item"><div class="key">Networks</div><div class="val">${config.accepts.map(option => option.network).filter((network, index, all) => all.indexOf(network) === index).join(', ')}</div></div>
         <div class="item"><div class="key">Assets</div><div class="val">${config.accepts.map(option => option.label).filter((label, index, all) => all.indexOf(label) === index).join(', ')}</div></div>
-        <div class="item"><div class="key">Amounts</div><div class="val">${config.accepts.map(option => option.network + ': ' + option.formatted).join('<br>')}</div></div>`;
+        <div class="item"><div class="key">Amounts</div><div class="val">${config.accepts.map(option => option.network + ': ' + option.formatted).join('<br>')}</div></div>`);
     }
-    async function loadEmails() {
+        async function loadEmails() {
       const data = await api('/api/dashboard/emails');
       const list = document.getElementById('emailList');
-      if (!data.emails || data.emails.length === 0) { list.innerHTML = '<div class="empty">No emails yet</div>'; return; }
-      list.innerHTML = data.emails.map(e => `
+      if (!data.emails || data.emails.length === 0) { setListHtml(list, '<div class="empty">No emails yet</div>'); return; }
+      setListHtml(list, data.emails.map(e => `
         <div class="card">
           <div class="card-header"><div><span class="badge-${e.direction}">${e.direction}</span><span class="subject" style="margin-left:0.5rem;">${e.subject}</span></div><div class="meta">${e.direction === 'inbound' ? 'From: ' + e.from : 'To: ' + e.to}<br>${new Date(e.receivedAt).toLocaleString()}</div></div>
           <div class="card-body">${(e.body || '').substring(0, 300)}${e.body && e.body.length > 300 ? '...' : ''}</div>
           ${e.aiSummary ? `<div class="ai-box"><div class="ai-label">AI Summary</div>${e.aiSummary}</div>` : ''}
           ${e.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${(e.aiResponse || '').substring(0, 300)}...</div>` : ''}
-        </div>`).join('');
+        </div>`).join(''));
     }
 
     // Slack messages are stored with "slack:<id>" in the from/to fields; strip
@@ -556,13 +573,12 @@
     function slackLabel(value) {
       return escapeHtml(String(value || '').replace(/^slack:/, ''));
     }
-    async function loadSlackMessages() {
+        async function loadSlackMessages() {
       const listDiv = document.getElementById('slackList');
-      listDiv.innerHTML = '<div class="loading">Loading Slack messages...</div>';
       try {
         const data = await api('/api/dashboard/slack');
         if (data.messages && data.messages.length > 0) {
-          listDiv.innerHTML = data.messages.map(m => `
+          setListHtml(listDiv, data.messages.map(m => `
             <div class="card">
               <div class="card-header">
                 <div>
@@ -574,23 +590,23 @@
               <div class="card-body">${escapeHtml(m.body)}</div>
               ${m.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${escapeHtml(m.aiResponse)}</div>` : ''}
             </div>
-          `).join('');
+          `).join(''));
         } else {
-          listDiv.innerHTML = '<div class="empty">No Slack messages yet</div>';
+          setListHtml(listDiv, '<div class="empty">No Slack messages yet</div>');
         }
       } catch (err) {
-        listDiv.innerHTML = '<div class="empty">Failed to load Slack messages</div>';
+        setListHtml(listDiv, '<div class="empty">Failed to load Slack messages</div>');
       }
     }
-    async function loadPayments() {
+        async function loadPayments() {
       const data = await api('/api/dashboard/payments');
       const list = document.getElementById('paymentList');
-      if (!data.payments || data.payments.length === 0) { list.innerHTML = '<div class="empty">No payments yet</div>'; return; }
-      list.innerHTML = data.payments.map(p => `
+      if (!data.payments || data.payments.length === 0) { setListHtml(list, '<div class="empty">No payments yet</div>'); return; }
+      setListHtml(list, data.payments.map(p => `
         <div class="card">
           <div class="card-header"><div><span class="badge-${p.direction}">${p.direction}</span><span class="badge-${p.status}" style="margin-left:0.5rem;">${p.status}</span><span style="margin-left:0.5rem;font-weight:600;">${p.amount} ${p.currency}</span></div><div class="meta">${new Date(p.createdAt).toLocaleString()}</div></div>
           <div class="card-body">${p.description}<br><span style="font-family:monospace;font-size:0.75rem;">To: ${p.toAddress}</span><br><span style="font-family:monospace;font-size:0.75rem;">Network: ${p.network}</span>${p.txHash ? `<br><span style="font-family:monospace;font-size:0.75rem;">Transaction: ${p.txHash}</span>` : ''}</div>
-        </div>`).join('');
+        </div>`).join(''));
     }
     async function sendEmail() {
       const to = document.getElementById('sendTo').value, subject = document.getElementById('sendSubject').value, body = document.getElementById('sendBody').value;
@@ -635,11 +651,11 @@
       }, 500);
     }
 
-    async function loadWebhooks() {
+        async function loadWebhooks() {
       const data = await api('/api/dashboard/webhooks');
       const list = document.getElementById('webhookList');
-      if (!data.events || data.events.length === 0) { list.innerHTML = '<div class="empty">No webhook events yet</div>'; return; }
-      list.innerHTML = data.events.map(e => `
+      if (!data.events || data.events.length === 0) { setListHtml(list, '<div class="empty">No webhook events yet</div>'); return; }
+      setListHtml(list, data.events.map(e => `
         <div class="card" style="margin-bottom: 0.75rem;">
           <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
             <div>
@@ -655,7 +671,7 @@
               <pre style="margin-top:0.5rem;font-size:0.7rem;overflow-x:auto;color:var(--muted);background:var(--bg-subtle,#161e2e);padding:0.5rem;border-radius:4px;">${JSON.stringify(e.payload, null, 2).replace(/</g,'&lt;')}</pre>
             </details>
           </div>
-        </div>`).join('');
+        </div>`).join(''));
     }
 
     async function sendSlack() {
