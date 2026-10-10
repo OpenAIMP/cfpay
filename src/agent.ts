@@ -537,8 +537,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // Webhooks: Incoming webhook handler (onRequest)
   // ===========================================================================
   async onRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // Provider identified by the X-Webhook-Provider header set by the Worker
+    // when forwarding verified webhooks, or by the /webhooks/<provider> path.
+    const headerProvider = request.headers.get("X-Webhook-Provider");
+    const pathProvider = url.pathname.startsWith("/webhooks/")
+      ? url.pathname.split("/").pop()
+      : null;
+
+    // Direct agent requests (via routeAgentRequest) get a status summary.
     if (request.method !== "POST") {
-      return new Response("Method not allowed", { status: 405 });
+      return this.statusResponse();
     }
 
     const rawBody = await request.text();
@@ -549,8 +559,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
       return new Response("Invalid payload", { status: 400 });
     }
 
-    const url = new URL(request.url);
-    const provider = url.pathname.split("/").pop() as "github" | "stripe" | "slack";
+    const provider = (headerProvider || pathProvider) as "github" | "stripe" | "slack" | null;
+    if (!provider) {
+      return this.statusResponse();
+    }
 
     // Slack URL verification challenge
     if (provider === "slack" && payload?.type === "url_verification" && payload?.challenge) {
@@ -561,7 +573,49 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
 
     await this.processWebhookEvent(provider, payload);
+
+    // AI analysis of the event
+    const aiInsight = await this.generateAIResponse(
+      `Analyze this ${provider} webhook event:\n${JSON.stringify(payload, null, 2).slice(0, 2000)}\n\nProvide a brief summary and any recommended actions:`,
+    );
+
+    // Slack: post the analysis to the payload's response_url (slash commands,
+    // interactive payloads, app_home events)
+    if (provider === "slack" && typeof payload?.response_url === "string" && payload.response_url) {
+      try {
+        await fetch(payload.response_url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: aiInsight }),
+        });
+      } catch (err) {
+        console.error("Failed to send Slack response_url reply:", err);
+      }
+    }
+
+    // Slack slash commands expect the reply as the immediate HTTP response
+    if (provider === "slack" && payload?.command) {
+      return new Response(JSON.stringify({ text: aiInsight }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     return new Response("OK");
+  }
+
+  /** Status summary returned for direct agent requests. */
+  private statusResponse(): Response {
+    const state = this.ensureState();
+    return new Response(
+      JSON.stringify({
+        status: "ok",
+        agent: "cfmail-agent",
+        emails: state.emails.length,
+        payments: state.payments.length,
+        webhookEvents: (state.webhookEvents || []).length,
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
   }
 
   // ===========================================================================
@@ -576,12 +630,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
       agentName = payload.repository?.full_name?.toLowerCase().replace(/[^a-z0-9-]/g, "-") || "default";
     } else if (provider === "stripe") {
       eventType = payload.type || "event";
-      agentName = payload?.data?.object?.customer || payload?.account || payload?.id || "default";
-      agentName = String(agentName).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+      const customerId = payload?.data?.object?.customer || payload?.account || payload?.id || "default";
+      agentName = `stripe-${customerId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
     } else if (provider === "slack") {
       eventType = payload.event?.type || payload.type || "event";
-      agentName = payload.team_id || payload.event?.channel || "default";
-      agentName = String(agentName).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+      const channelId = payload.channel_id ?? payload.team_id ?? payload.event?.channel ?? "default";
+      agentName = `slack-${channelId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
     }
 
     const event: WebhookEvent = {

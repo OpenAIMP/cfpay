@@ -8,6 +8,8 @@ A production-grade, fully agentic solution that:
 - **Built on the Agents SDK** with Durable Objects for stateful, persistent state
 - **Web dashboard** at `https://pay.openaimp.com` — view emails, payments, send emails, chat with agent, pay via MetaMask
 - **CI/CD via GitHub Actions** with GitHub Environments — auto-deploys on push to `main`
+- **Webhooks** — GitHub (HMAC-SHA256), Stripe (HMAC-SHA256 + timestamp), and Slack (HMAC-SHA256 + timestamp) incoming webhooks with per-entity agent instances and AI-powered event analysis
+- **Routing** — `routeAgentRequest` with `onBeforeConnect`/`onBeforeRequest` authentication hooks for agent routes
 
 ## Architecture
 
@@ -43,6 +45,34 @@ A production-grade, fully agentic solution that:
   x402 v2 + facilitator  Email Service       Workers AI
   ETH / USDC on 3 EVM networks (outbound email) (AI responses)
 ```
+
+## Webhook Setup
+
+### GitHub
+1. Repo → Settings → Webhooks → Add webhook
+2. Payload URL: `https://pay.openaimp.com/webhooks/github`
+3. Content type: `application/json`
+4. Secret: your `GITHUB_WEBHOOK_SECRET`
+
+### Stripe
+1. Stripe Dashboard → Developers → Webhooks → Add endpoint
+2. URL: `https://pay.openaimp.com/webhooks/stripe`
+3. Copy signing secret → `STRIPE_WEBHOOK_SECRET`
+
+### Slack
+1. Slack API → Your App → Event Subscriptions
+2. Request URL: `https://pay.openaimp.com/webhooks/slack`
+3. Uses `SLACK_WEBHOOK_SECRET`, falling back to `SLACK_SIGNING_SECRET`
+
+Webhooks are verified by signature before being forwarded to a per-entity agent Durable Object (one agent per GitHub repo, Stripe customer, or Slack channel). The agent records the event, generates an AI analysis, and — for Slack slash commands and `response_url` payloads — replies with the analysis.
+
+## Routing & Authentication
+
+Agent routes (`/agents/*`) are protected by authentication hooks:
+- **`onBeforeConnect`** — Verifies `token` query parameter (WebSocket connections)
+- **`onBeforeRequest`** — Verifies `Authorization: Bearer <token>` or `X-API-Key` header (HTTP requests)
+
+Both validate against `DASHBOARD_API_KEY`.
 
 ## Troubleshooting & Custom Domain Setup
 
@@ -126,6 +156,10 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 | `/api/emails` | GET | x402 ($0.01 USDC) | Retrieve email history |
 | `/mcp/tools/process` | POST | x402 ($0.01 USDC) | MCP tool for agent-to-agent calls |
 | `/api/dashboard/*` | GET/POST | API Key | Dashboard endpoints |
+| `/agents/*` | GET/POST/WS | Token or API Key | Agent routes (guarded by auth hooks) |
+| `/webhooks/github` | POST | Signature | GitHub webhook (HMAC-SHA256) |
+| `/webhooks/stripe` | POST | Signature | Stripe webhook (HMAC-SHA256 + timestamp) |
+| `/webhooks/slack` | POST | Signature | Slack webhook (HMAC-SHA256 + timestamp) |
 
 ## Documentation References
 

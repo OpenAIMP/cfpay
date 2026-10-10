@@ -127,7 +127,12 @@ async function verifySlack(
  */
 export async function verifyAndParseWebhook(
   request: Request,
-  env: { GITHUB_WEBHOOK_SECRET?: string; STRIPE_WEBHOOK_SECRET?: string; SLACK_WEBHOOK_SECRET?: string },
+  env: {
+    GITHUB_WEBHOOK_SECRET?: string;
+    STRIPE_WEBHOOK_SECRET?: string;
+    SLACK_WEBHOOK_SECRET?: string;
+    SLACK_SIGNING_SECRET?: string;
+  },
 ): Promise<VerifiedWebhook | null> {
   const url = new URL(request.url);
   const rawBody = await request.text();
@@ -162,16 +167,19 @@ export async function verifyAndParseWebhook(
       return null;
     }
 
-    // Derive agent name from the Stripe customer or account ID
+    // Derive agent name from the Stripe customer or account ID (prefixed per provider)
     const customerId = payload?.data?.object?.customer || payload?.account || payload?.id || "default";
-    const agentName = String(customerId).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const agentName = `stripe-${customerId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
     return { provider: "stripe", agentName, payload };
   }
 
   if (url.pathname === "/webhooks/slack") {
     const signature = request.headers.get("X-Slack-Signature");
     const timestamp = request.headers.get("X-Slack-Request-Timestamp");
-    if (!(await verifySlack(rawBody, signature, timestamp, env.SLACK_WEBHOOK_SECRET || ""))) return null;
+    // Verify with SLACK_WEBHOOK_SECRET, falling back to the standard Slack
+    // signing secret (SLACK_SIGNING_SECRET) used by the rest of the app.
+    const slackSecret = env.SLACK_WEBHOOK_SECRET || env.SLACK_SIGNING_SECRET || "";
+    if (!(await verifySlack(rawBody, signature, timestamp, slackSecret))) return null;
 
     let payload: any;
     try {
@@ -186,9 +194,9 @@ export async function verifyAndParseWebhook(
       return { provider: "slack", agentName: "_url_verification", payload };
     }
 
-    // Derive agent name from the Slack team ID or channel ID
-    const teamId = payload?.team_id || payload?.event?.channel || "default";
-    const agentName = String(teamId).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    // Derive agent name from the Slack channel, team, or event channel (prefixed per provider)
+    const channelId = payload?.channel_id ?? payload?.team_id ?? payload?.event?.channel ?? "default";
+    const agentName = `slack-${channelId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
     return { provider: "slack", agentName, payload };
   }
 

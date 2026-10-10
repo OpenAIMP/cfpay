@@ -229,7 +229,7 @@ export function createApp() {
   }
 
   app.get("/health", (c) => {
-    return c.json({ status: "ok", service: "cfmail-agent", version: "9.2.0" });
+    return c.json({ status: "ok", service: "cfmail-agent", version: "10.0.0" });
   });
 
   app.post("/api/process", async (c) => {

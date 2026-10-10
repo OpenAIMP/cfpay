@@ -8,3 +8,8 @@ DASHBOARD_API_KEY=your-dashboard-api-key
 GITHUB_WEBHOOK_SECRET=your-github-webhook-secret
 STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
 SLACK_WEBHOOK_SECRET=your-slack-signing-secret
+# Slack secrets (used for signature verification, Socket Mode, and OAuth)
+SLACK_SIGNING_SECRET=your-slack-signing-secret
+SLACK_BOT_TOKEN=xoxb-your-bot-token
+SLACK_APP_TOKEN=xapp-your-app-token
+SLACK_CLIENT_ID=your-slack-client-id

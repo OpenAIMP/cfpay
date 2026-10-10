@@ -1,4 +1,4 @@
-import { routeAgentEmail, getAgentByName } from "agents";
+import { routeAgentEmail, getAgentByName, routeAgentRequest } from "agents";
 import {
   createAddressBasedEmailResolver,
   createSecureReplyEmailResolver,
@@ -33,9 +33,18 @@ export default {
       if (!verified) {
         return new Response("Invalid signature", { status: 401 });
       }
+      // Add provider header so the agent can identify the webhook source
+      const headers = new Headers(request.headers);
+      headers.set("X-Webhook-Provider", verified.provider);
+      const forwardedRequest = new Request(request.url, {
+        method: request.method,
+        headers,
+        body: request.body,
+      });
+
       // Slack URL verification or forward to the agent DO
       const agent = await getAgentByName(env.CfmailAgent as any, verified.agentName);
-      return agent.fetch(request);
+      return agent.fetch(forwardedRequest);
     }
 
     // HTTP webhook endpoint (legacy Slack apps)
@@ -55,6 +64,33 @@ export default {
       url.pathname === "/ws"
     ) {
       return app.fetch(request, env, ctx);
+    }
+
+    // Agent routes (/agents/*) with authentication hooks.
+    // onBeforeConnect: verifies `token` query parameter (WebSocket connections)
+    // onBeforeRequest: verifies `Authorization: Bearer <token>` or `X-API-Key` header
+    // Both validate against DASHBOARD_API_KEY.
+    const agentResponse = await routeAgentRequest(request, env, {
+      onBeforeConnect: async (req: Request) => {
+        const token = new URL(req.url).searchParams.get("token");
+        if (!token || token !== env.DASHBOARD_API_KEY) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+      },
+      onBeforeRequest: async (req: Request) => {
+        const auth = req.headers.get("Authorization");
+        const apiKey = req.headers.get("X-API-Key");
+        const token = auth?.replace("Bearer ", "");
+        if (
+          (!token || token !== env.DASHBOARD_API_KEY) &&
+          (!apiKey || apiKey !== env.DASHBOARD_API_KEY)
+        ) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+      },
+    });
+    if (agentResponse) {
+      return agentResponse;
     }
 
     return env.ASSETS.fetch(request);
