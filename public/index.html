@@ -694,6 +694,24 @@
   //
   // Nothing is opened until a key exists: a 401 clears the stored key and
   // reloads, so connecting with an empty token would only produce a retry loop.
+  //
+  // Re-fetch the visible tab when the agent broadcasts a state change, so new
+  // mail, Slack messages, webhooks and payments appear without a manual reload.
+  // onStateUpdate is a constructor OPTION in the pinned client, not a method.
+  function refreshActiveTab(state) {
+    console.log("State updated:", state);
+    const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
+    switch (activeTab) {
+      case "overview": loadStats(); break;
+      case "emails": loadEmails(); break;
+      case "slack": loadSlackMessages(); break;
+      case "payments": loadPayments(); break;
+      case "webhooks": loadWebhooks(); break;
+      default: break;
+    }
+  }
+
+
   window.connectAgent = function connectAgent() {
     if (window.cfmailAgent) {
       window.cfmailAgent.reconnect();
@@ -704,17 +722,13 @@
       agent: "CfmailAgent",
       name: "agent",
       query: () => ({ token: localStorage.getItem("cfmail_api_key") || "" }),
-    });
-
-    agent.onStateUpdate((state) => {
-      console.log("State updated:", state);
-      // Auto-refresh the current tab when new data arrives
-      const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
-      if (activeTab === "emails") loadEmails();
-      if (activeTab === "overview") loadStats();
-      if (activeTab === "slack") loadSlackMessages();
-      if (activeTab === "payments") loadPayments();
-      if (activeTab === "webhooks") loadWebhooks();
+      // onStateUpdate is a constructor OPTION in the pinned client, not a
+      // method: AgentClient declares no such method, so the previous
+      // `agent.onStateUpdate(fn)` threw a TypeError and no handler was ever
+      // registered. Pass it here so the state frame is delivered.
+      onStateUpdate: (state) => refreshActiveTab(state),
+      onStateUpdateError: (err) => console.warn("State update failed:", err),
+      onIdentity: (name, agentName) => console.log("Connected:", agentName, name),
     });
 
     // Make agent available globally for debugging
