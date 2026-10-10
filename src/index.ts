@@ -27,12 +27,48 @@ export default {
   ): Promise<Response> {
     const url = new URL(request.url);
 
-    // Webhook routes — verify signature, then forward to the agent
+    // Webhook routes — verify signature, then mirror centrally + handle per-entity
     if (request.method === "POST" && url.pathname.startsWith("/webhooks/")) {
       const verified = await verifyAndParseWebhook(request.clone(), env);
       if (!verified) {
         return new Response("Invalid signature", { status: 401 });
       }
+
+      // Slack's URL verification challenge is answered by the per-entity agent.
+      const isUrlVerification = verified.agentName === "_url_verification";
+
+      // The dashboard (Webhooks tab + live state-sync WebSocket) reads the
+      // central "agent" instance, so mirror every verified event there.
+      const centralAgent = await getAgentByName(env.CfmailAgent as any, "agent");
+      if (!isUrlVerification) {
+        try {
+          await (centralAgent as any).recordWebhookEvent(
+            verified.provider,
+            verified.agentName,
+            verified.payload,
+          );
+        } catch (err) {
+          console.error("Failed to mirror webhook event to central agent:", err);
+        }
+      }
+
+      // Slack message events are handled by the central instance so the message
+      // is stored and broadcast where the dashboard listens — it appears
+      // without a page refresh.
+      if (verified.provider === "slack" && !isUrlVerification) {
+        const slackEvent = parseSlackEvent(verified.payload);
+        if (slackEvent && !slackEvent.bot_id && slackEvent.text) {
+          try {
+            await (centralAgent as any).handleSlackEvent(slackEvent);
+          } catch (err) {
+            console.error("Failed to handle Slack message event:", err);
+          }
+          return new Response("OK");
+        }
+        // Non-message Slack payloads (slash commands, interactivity) fall
+        // through to the per-entity agent, which replies via response_url.
+      }
+
       // Add provider header so the agent can identify the webhook source
       const headers = new Headers(request.headers);
       headers.set("X-Webhook-Provider", verified.provider);

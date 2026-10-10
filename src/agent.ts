@@ -140,29 +140,36 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
 
     let response: string;
 
-    if (wantsPayment) {
-      // Pre-fill the payment page with the user's request
-      const encodedRequest = encodeURIComponent(event.text);
-      const paymentUrl = `https://pay.openaimp.com?request=${encodedRequest}`;
-      
-      await sendSlackMessageWithButton(
-        this.env.SLACK_BOT_TOKEN,
-        event.channel,
-        "To process your request, please complete the payment below:",
-        "Pay & Process",
-        paymentUrl,
-        event.thread_ts || event.ts,
-      );
-      response = "Payment button sent. Please complete the payment at https://pay.openaimp.com to proceed.";
-    } else {
-      // Generate AI response for non-payment messages
-      response = await this.generateAIResponse(event.text);
-      await sendSlackMessage(
-        this.env.SLACK_BOT_TOKEN,
-        event.channel,
-        response,
-        event.thread_ts || event.ts,
-      );
+    // Reply failures must never prevent the message from being recorded —
+    // the dashboard's live state sync depends on the record being written.
+    try {
+      if (wantsPayment) {
+        // Pre-fill the payment page with the user's request
+        const encodedRequest = encodeURIComponent(event.text);
+        const paymentUrl = `https://pay.openaimp.com?request=${encodedRequest}`;
+        
+        await sendSlackMessageWithButton(
+          this.env.SLACK_BOT_TOKEN,
+          event.channel,
+          "To process your request, please complete the payment below:",
+          "Pay & Process",
+          paymentUrl,
+          event.thread_ts || event.ts,
+        );
+        response = "Payment button sent. Please complete the payment at https://pay.openaimp.com to proceed.";
+      } else {
+        // Generate AI response for non-payment messages
+        response = await this.generateAIResponse(event.text);
+        await sendSlackMessage(
+          this.env.SLACK_BOT_TOKEN,
+          event.channel,
+          response,
+          event.thread_ts || event.ts,
+        );
+      }
+    } catch (err) {
+      console.error("Failed to reply to Slack message:", err);
+      response = "Thanks for your message — I'll get back to you shortly.";
     }
 
     // Store as email-like record
@@ -621,7 +628,13 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // ===========================================================================
   // Webhooks: Process a verified webhook event
   // ===========================================================================
-  private async processWebhookEvent(provider: "github" | "stripe" | "slack", payload: any) {
+  /**
+   * Derive the event type and per-entity agent name from a webhook payload.
+   */
+  private deriveWebhookMeta(
+    provider: "github" | "stripe" | "slack",
+    payload: any,
+  ): { eventType: string; agentName: string } {
     let eventType = "unknown";
     let agentName = "default";
 
@@ -637,6 +650,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
       const channelId = payload.channel_id ?? payload.team_id ?? payload.event?.channel ?? "default";
       agentName = `slack-${channelId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
     }
+
+    return { eventType, agentName };
+  }
+
+  private async processWebhookEvent(provider: "github" | "stripe" | "slack", payload: any) {
+    const { eventType, agentName } = this.deriveWebhookMeta(provider, payload);
 
     const event: WebhookEvent = {
       id: generateId(),
@@ -656,8 +675,42 @@ Do not claim to have completed a payment unless you have received confirmation.`
       webhookEvents,
       totalWebhooksReceived: (state.totalWebhooksReceived || 0) + 1,
     });
+    // The outgoing Slack notification is sent by recordWebhookEvent on the
+    // central instance so each event notifies exactly once.
+  }
 
-    // Optional: notify via outgoing Slack webhook
+  /**
+   * Record a verified webhook event on the central "agent" instance.
+   *
+   * The dashboard's Webhooks tab and the live state-sync WebSocket both read
+   * this instance, so every verified webhook is mirrored here via RPC from the
+   * Worker's fetch handler. The optional outgoing Slack notification is sent
+   * from here as the single notification point.
+   */
+  async recordWebhookEvent(
+    provider: "github" | "stripe" | "slack",
+    agentName: string,
+    payload: unknown,
+  ): Promise<void> {
+    const { eventType } = this.deriveWebhookMeta(provider, payload);
+
+    const event: WebhookEvent = {
+      id: generateId(),
+      provider,
+      eventType,
+      agentName,
+      payload,
+      receivedAt: new Date().toISOString(),
+      processed: true,
+    };
+
+    const state = this.ensureState();
+    this.setState({
+      ...state,
+      webhookEvents: [...(state.webhookEvents || []), event],
+      totalWebhooksReceived: (state.totalWebhooksReceived || 0) + 1,
+    });
+
     if (this.env.SLACK_WEBHOOK_URL) {
       try {
         await sendSlackNotification(

@@ -99,6 +99,9 @@ async function verifySlack(
   toleranceSeconds = 300,
 ): Promise<boolean> {
   if (!signature || !timestamp) return false;
+  // Header format is "v0=<hex>" — compare against the hex digest only.
+  if (!signature.startsWith("v0=")) return false;
+  const provided = signature.slice(3);
 
   // Replay protection
   const age = Math.floor(Date.now() / 1000) - parseInt(timestamp, 10);
@@ -107,10 +110,10 @@ async function verifySlack(
   // Slack signs "v0:<timestamp>:<rawBody>"
   const basestring = `v0:${timestamp}:${rawBody}`;
   const expected = toHex(await hmacSha256(secret, basestring));
-  if (expected.length !== signature.length) return false;
+  if (expected.length !== provided.length) return false;
   let diff = 0;
   for (let i = 0; i < expected.length; i++) {
-    diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+    diff |= expected.charCodeAt(i) ^ provided.charCodeAt(i);
   }
   return diff === 0;
 }

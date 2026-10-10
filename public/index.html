@@ -215,6 +215,8 @@
       document.getElementById('login').style.display = 'none';
       document.getElementById('app').style.display = 'block';
       init();
+      // Start the live state-sync WebSocket (defined by the module script below)
+      if (window.connectAgentSync) window.connectAgentSync();
     }
     async function api(path, method = 'GET', body = null) {
       const opts = { method, headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' } };
@@ -602,25 +604,38 @@
 <script type="module">
   import { AgentClient } from "https://esm.sh/agents@latest/client";
 
-  const agent = new AgentClient({
-    agent: "CfmailAgent",
-    name: "agent",
-    url: "/ws", // Explicitly connect to the /ws route
-    // No auth needed for state sync — the agent's onStateUpdate broadcasts to all
-  });
+  // Live state sync with the central "agent" Durable Object.
+  // The agents SDK builds the path /agents/<agent>/<name> itself (PartySocket
+  // ignores any custom `url` option), and the Worker's onBeforeConnect hook
+  // requires ?token=<DASHBOARD_API_KEY> — the same key used to log into the
+  // dashboard, stored in localStorage as cfmail_api_key.
+  window.connectAgentSync = function connectAgentSync() {
+    if (window.cfmailAgent) return;
+    const token = localStorage.getItem("cfmail_api_key");
+    if (!token) return;
+    const agent = new AgentClient({
+      agent: "CfmailAgent",
+      name: "agent",
+      query: () => ({ token }),
+    });
 
-  agent.onStateUpdate((state) => {
-    console.log("State updated:", state);
-    // Auto-refresh the current tab when new data arrives
-    const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
-    if (activeTab === "emails") loadEmails();
-    if (activeTab === "overview") loadStats();
-    if (activeTab === "slack") loadSlackMessages();
-    if (activeTab === "payments") loadPayments();
-  });
+    agent.onStateUpdate((state) => {
+      console.log("State updated:", state);
+      // Auto-refresh the current tab when new data arrives
+      const activeTab = document.querySelector(".tab.active")?.getAttribute("data-tab");
+      if (activeTab === "emails") loadEmails();
+      if (activeTab === "overview") loadStats();
+      if (activeTab === "slack") loadSlackMessages();
+      if (activeTab === "payments") loadPayments();
+      if (activeTab === "webhooks") loadWebhooks();
+    });
 
-  // Make agent available globally for debugging
-  window.cfmailAgent = agent;
+    // Make agent available globally for debugging
+    window.cfmailAgent = agent;
+  };
+
+  // Connect now if the user is already logged in (login() connects otherwise)
+  if (localStorage.getItem("cfmail_api_key")) window.connectAgentSync();
 </script>
 </body>
 </html>
