@@ -1,6 +1,5 @@
 import { routeAgentEmail, getAgentByName, routeAgentRequest } from "agents";
 import {
-  createAddressBasedEmailResolver,
   createSecureReplyEmailResolver,
 } from "agents/email";
 import type { Env } from "./types";
@@ -168,13 +167,24 @@ export default {
       },
     );
 
-    const addressResolver = createAddressBasedEmailResolver("CfmailAgent");
-
+    // Every inbound message is handled by the canonical "agent" instance: the
+    // one the dashboard, REST API and MCP server all read, and the only instance
+    // whose state-sync socket the dashboard listens on.
+    //
+    // This used to fall back to createAddressBasedEmailResolver("CfmailAgent"),
+    // which routes on the local part (info@cfmail... -> instance "info"). Mail
+    // was stored durably on that instance and the reply went out normally, but
+    // nothing broadcast to the dashboard, so new mail only appeared after a
+    // manual reload. The secure-reply path is kept: it validates a signed
+    // header and is how an agent-initiated thread returns to its instance.
+    // A message with no signed header cannot be routed to a specific instance,
+    // so it goes to the canonical one rather than being dropped.
     await routeAgentEmail(message, env, {
       resolver: async (email) => {
         const secureResult = await secureReplyResolver(email, env);
         if (secureResult) return secureResult;
-        return addressResolver(email, env);
+
+        return { agentName: "CfmailAgent", agentId: "agent" };
       },
     });
   },
