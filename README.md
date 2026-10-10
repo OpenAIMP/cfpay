@@ -221,3 +221,9 @@ a verified x402 request does that.
 
 To connect Slack: `api.slack.com/apps` -> your app -> **Features -> MCP Servers**.
 
+
+
+
+
+
+
