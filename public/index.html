@@ -689,8 +689,8 @@
   // handshake, so the same dashboard API key is passed as a query parameter; the
   // getter is re-evaluated on every (re)connect. The SDK builds the path itself
   // (/agents/<agent>/<name>), and the Worker's onBeforeConnect hook accepts the
-  // same ?token= there. Do not pass `url`: it is ignored by the underlying
-  // PartySocket, and relying on it masked the path mismatch this fixes.
+  // (/agents/<agent>/<name>), and the Worker's onBeforeConnect hook accepts the
+  // same ?token= there.
   //
   // Nothing is opened until a key exists: a 401 clears the stored key and
   // reloads, so connecting with an empty token would only produce a retry loop.
@@ -719,6 +719,11 @@
     }
 
     const agent = new AgentClient({
+      // PartySocket requires an explicit host: it destructures `host` and calls
+      // host.replace(...) while building the URL, and has no default and no `url`
+      // option. Without this the AgentClient constructor throws before the socket
+      // opens, so the dashboard silently fell back to manual reloads.
+      host: window.location.host,
       agent: "CfmailAgent",
       name: "agent",
       query: () => ({ token: localStorage.getItem("cfmail_api_key") || "" }),
