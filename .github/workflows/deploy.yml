@@ -77,6 +77,17 @@ jobs:
           GH_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           SLACK_WEBHOOK_SECRET: ${{ secrets.SLACK_WEBHOOK_SECRET }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          MCP_AUTH_TOKEN: ${{ secrets.MCP_AUTH_TOKEN }}
+          MCP_GITHUB_ORG: ${{ secrets.MCP_GITHUB_ORG }}
+          MCP_AUTH_MODE: ${{ secrets.MCP_AUTH_MODE }}
+          MCP_ANON_INITIALIZE: ${{ secrets.MCP_ANON_INITIALIZE }}
+          MCP_OAUTH_DISCOVERY: ${{ secrets.MCP_OAUTH_DISCOVERY }}
+          WEBHOOK_NOTIFY_PROVIDERS: ${{ secrets.WEBHOOK_NOTIFY_PROVIDERS }}
+          OUTBOUND_PAY_TO_WHITELIST: ${{ secrets.OUTBOUND_PAY_TO_WHITELIST }}
+          OUTBOUND_MAX_AMOUNT_ATOMIC: ${{ secrets.OUTBOUND_MAX_AMOUNT_ATOMIC }}
+          WEBHOOK_NOTIFY_EMAIL: ${{ secrets.WEBHOOK_NOTIFY_EMAIL }}
         run: |
           printf '%s' "$PAYMENT_PRIVATE_KEY" | npx wrangler@4 secret put PAYMENT_PRIVATE_KEY
           printf '%s' "$EMAIL_SECRET" | npx wrangler@4 secret put EMAIL_SECRET
@@ -88,6 +99,44 @@ jobs:
           printf '%s' "$GH_WEBHOOK_SECRET" | npx wrangler@4 secret put GITHUB_WEBHOOK_SECRET
           printf '%s' "$STRIPE_WEBHOOK_SECRET" | npx wrangler@4 secret put STRIPE_WEBHOOK_SECRET
           printf '%s' "$SLACK_WEBHOOK_SECRET" | npx wrangler@4 secret put SLACK_WEBHOOK_SECRET
+          printf '%s' "$WEBHOOK_NOTIFY_EMAIL" | npx wrangler@4 secret put WEBHOOK_NOTIFY_EMAIL
+
+          # Optional. Guarded so an unset GitHub secret cannot overwrite a value
+          # already configured on the Worker. The URL is passed on stdin, not as
+          # an argument, so its slashes need no escaping.
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            printf '%s' "$SLACK_WEBHOOK_URL" | npx wrangler@4 secret put SLACK_WEBHOOK_URL
+          else
+            echo "SLACK_WEBHOOK_URL is not set in GitHub secrets - skipping."
+          fi
+
+          # Optional. Card checkout stays disabled when this is unset.
+          if [ -n "$STRIPE_SECRET_KEY" ]; then
+            printf '%s' "$STRIPE_SECRET_KEY" | npx wrangler@4 secret put STRIPE_SECRET_KEY
+          else
+            echo "STRIPE_SECRET_KEY is not set in GitHub secrets - card checkout will be disabled."
+          fi
+
+          # Optional knobs. Each is skipped when unset so it cannot overwrite a
+          # value configured directly on the Worker.
+          push_optional() {
+            if [ -n "$2" ]; then
+              printf '%s' "$2" | npx wrangler@4 secret put "$1"
+            else
+              echo "$1 is not set in GitHub secrets - skipping."
+            fi
+          }
+          # MCP_AUTH_TOKEN is required for /mcp to serve; the guard fails closed
+          # when it is absent, so this must be set before the guard is deployed.
+          push_optional MCP_AUTH_TOKEN             "$MCP_AUTH_TOKEN"
+          push_optional MCP_GITHUB_ORG             "$MCP_GITHUB_ORG"
+          # Not secret, but keep all /mcp configuration in one place.
+          push_optional MCP_AUTH_MODE              "$MCP_AUTH_MODE"
+          push_optional MCP_ANON_INITIALIZE        "$MCP_ANON_INITIALIZE"
+          push_optional MCP_OAUTH_DISCOVERY        "$MCP_OAUTH_DISCOVERY"
+          push_optional WEBHOOK_NOTIFY_PROVIDERS  "$WEBHOOK_NOTIFY_PROVIDERS"
+          push_optional OUTBOUND_PAY_TO_WHITELIST "$OUTBOUND_PAY_TO_WHITELIST"
+          push_optional OUTBOUND_MAX_AMOUNT_ATOMIC "$OUTBOUND_MAX_AMOUNT_ATOMIC"
 
   deploy-preview:
     runs-on: ubuntu-latest

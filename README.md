@@ -154,7 +154,8 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 | `/health` | GET | — | Health check |
 | `/api/process` | POST | x402 ($0.01 USDC) | Process request + send email |
 | `/api/emails` | GET | x402 ($0.01 USDC) | Retrieve email history |
-| `/mcp/tools/process` | POST | x402 ($0.01 USDC) | MCP tool for agent-to-agent calls |
+| `/mcp` | POST/GET | **none (phase 1)** | Remote MCP server (Streamable HTTP). Read-only tools. |
+| `/mcp/tools/process` | POST | x402 ($0.01 USDC) | Legacy paid alias for agent-to-agent calls (not a real MCP server) |
 | `/api/dashboard/*` | GET/POST | API Key | Dashboard endpoints |
 | `/agents/*` | GET/POST/WS | Token or API Key | Agent routes (guarded by auth hooks) |
 | `/webhooks/github` | POST | Signature | GitHub webhook (HMAC-SHA256) |
@@ -168,3 +169,55 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 - [Email Service](https://developers.cloudflare.com/email-service/)
 - [x402 Examples](https://github.com/cloudflare/agents/tree/main/examples)
 - [Cloudflare Wallets](https://blog.cloudflare.com/wallets/)
+
+
+
+
+
+
+
+
+
+
+## Remote MCP Server
+
+The Worker serves a remote MCP server at `https://pay.openaimp.com/mcp` using the
+stateless Streamable HTTP handler from `agents/mcp`, so Slack (or any MCP client)
+can connect with just the URL.
+
+**Phase 1 is unauthenticated and read-only.** The exposed tools are:
+
+| Tool | Returns |
+|---|---|
+| `cfmail_recent_emails` | Recent emails with their AI summary |
+| `cfmail_recent_payments` | Recent x402 payments |
+| `cfmail_recent_webhooks` | Recent webhook events with AI analysis |
+
+Capabilities that move money or send mail are deliberately **not** exposed, because
+this endpoint has no authentication yet: `payExternalEndpoint`, `processPaidRequest`,
+`sendOutboundEmail` and `sendWebhook`. Add authentication before widening the tool set.
+
+### Card payments
+
+Alongside x402, users can pay by card. `POST /api/stripe/checkout` creates a
+hosted Stripe Checkout session and stores the request server-side against a
+generated reference; the browser is redirected to Stripe. Fulfilment happens
+**only** in the signature-verified `POST /webhooks/stripe` handler, after
+checking that the session is paid, is a one-off payment, and matches our own
+currency and amount. The browser return page is display-only, so returning
+early or closing the tab cannot lose or duplicate an order.
+
+Fulfilment is idempotent: a Stripe event id is handled once, a checkout can
+only transition to fulfilled once, and a payment reference already on the
+ledger is never recorded twice. Card checkout is disabled unless
+`STRIPE_SECRET_KEY` and `STRIPE_CONFIG` are both configured.
+
+### Webhook events
+
+A verified webhook delivery is stored, analysed by AI and shown in the Webhooks
+tab. It posts a Slack line when `SLACK_WEBHOOK_URL` is set, and emails a human
+when `WEBHOOK_NOTIFY_EMAIL` is set. Webhooks never create payment records — only
+a verified x402 request does that.
+
+To connect Slack: `api.slack.com/apps` -> your app -> **Features -> MCP Servers**.
+

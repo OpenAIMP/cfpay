@@ -19,13 +19,11 @@ This project uses **GitHub Environments** to manage secrets for CI/CD deployment
 | `DASHBOARD_API_KEY` | API key for dashboard authentication | Generate: `openssl rand -hex 32` |
 | `GH_WEBHOOK_SECRET` | Secret for verifying incoming GitHub webhook signatures (named `GH_` because GitHub Actions disallows secret names starting with `GITHUB_`; deployed as Worker secret `GITHUB_WEBHOOK_SECRET`) | Set in your GitHub repo's webhook settings |
 | `STRIPE_WEBHOOK_SECRET` | Secret for verifying incoming Stripe webhook signatures | Stripe Dashboard → Developers → Webhooks → your endpoint → Signing secret |
-| `SLACK_WEBHOOK_SECRET` | Signing secret for verifying incoming Slack webhook requests (falls back to `SLACK_SIGNING_SECRET` if unset) | Slack App → Basic Information → App Credentials → Signing Secret |
-| `SLACK_SIGNING_SECRET` | Slack signing secret — verifies Slack HTTP events, Socket Mode, and OAuth | Slack API → Your App → Basic Information → Signing Secret |
-| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) — posts messages to channels | Slack API → Your App → OAuth & Permissions |
-| `SLACK_APP_TOKEN` | Slack app token (`xapp-...`) — Socket Mode connections | Slack API → Your App → Basic Information → App-Level Tokens |
-| `SLACK_CLIENT_ID` | Slack client ID — OAuth install flow (`/slack/install`) | Slack API → Your App → Basic Information |
-
-> **Note:** GitHub Actions secrets cannot start with `GITHUB`, so `GH_WEBHOOK_SECRET` is deployed as the Worker secret `GITHUB_WEBHOOK_SECRET`. All other secrets map to Worker secrets with the same name.
+| `SLACK_WEBHOOK_SECRET` | Signing secret for verifying incoming Slack webhook requests | Slack App → Basic Information → App Credentials → Signing Secret |
+| `SLACK_SIGNING_SECRET` | Signing secret for the Slack Events API endpoint `/slack/events` | Slack App → Basic Information → App Credentials → Signing Secret |
+| `SLACK_BOT_TOKEN` | Bot user OAuth token, used to post messages to Slack | Slack App → OAuth & Permissions → Bot User OAuth Token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | App-level token for Socket Mode connections | Slack App → Basic Information → App-Level Tokens (scope `connections:write`, `xapp-...`) |
+| `SLACK_CLIENT_ID` | OAuth client ID used by the `/slack/install` redirect | Slack App → Basic Information → App Credentials → Client ID |
 
 ### Cloudflare API Token Permissions
 
@@ -39,6 +37,124 @@ Create a token at https://dash.cloudflare.com/profile/api-tokens with:
 1. **New environment** → name it `preview` → **Configure environment**
 2. Add the same `CF_API_TOKEN` and `CF_ACCOUNT_ID` secrets
 3. (Preview deploys don't need wallet/email secrets)
+
+## Optional: Enabling Outbound Payments
+
+The agent can pay external x402 endpoints via the `payExternalEndpoint` RPC method.
+This spends real funds. It stays disabled until `OUTBOUND_PAY_TO_WHITELIST` names at least one address; `OUTBOUND_MAX_AMOUNT_ATOMIC` is an additional, optional ceiling.
+
+| Variable | Purpose |
+|---|---|
+| `OUTBOUND_PAY_TO_WHITELIST` | Comma-separated list of `payTo` addresses the agent is allowed to pay. Checked BEFORE the transfer is signed. |
+| `OUTBOUND_MAX_AMOUNT_ATOMIC` | Optional ceiling, in atomic units of the requested asset, on any single outbound payment. |
+
+With `OUTBOUND_PAY_TO_WHITELIST` unset or empty, every call is refused with `403`
+and no transaction is broadcast.
+
+> **Precondition:** the `/ws` route is currently unauthenticated, and the x402 RPC
+> surface is reachable through it. Secure `/ws` before enabling outbound payments,
+> and always set `OUTBOUND_MAX_AMOUNT_ATOMIC` so a single request cannot drain the wallet.
+
+Set them with:
+
+```
+npx wrangler secret put OUTBOUND_PAY_TO_WHITELIST
+npx wrangler secret put OUTBOUND_MAX_AMOUNT_ATOMIC
+```
+
+A payment is written to the ledger only when a transaction was actually broadcast,
+and it records the terms the endpoint requested (`asset`/`amount`/`network`/`payTo`).
+
+## Optional: Outgoing Slack Notifications
+
+`SLACK_WEBHOOK_URL` powers the dashboard's "Send to Slack" button and the
+webhook-received notifications. It is optional — with it unset, the button
+reports that it is not configured.
+
+This is an **incoming webhook URL** from Slack (App → Incoming Webhooks →
+Add New Webhook to Workspace), **not** a signing secret, and it is unrelated to
+`SLACK_WEBHOOK_SECRET` above despite the similar name.
+
+Add it to the GitHub `PROD` environment as **`SLACK_WEBHOOK_URL`**. The deploy
+workflow pushes it to the Worker automatically, and skips it when the GitHub
+secret is unset. To set it directly on the Worker instead:
+
+```
+read -rs SLACK_URL && printf '%s' "$SLACK_URL" | npx wrangler secret put SLACK_WEBHOOK_URL
+```
+
+For local development, add it to `.dev.vars` (which is gitignored):
+
+```
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+```
+
+Note: `wrangler secret put SLACK_WEBHOOK_URL <url>` passing the URL as an
+argument can mangle it in some shells; piping it is safer.
+
+Set it as a secret rather than a `wrangler.jsonc` var so the URL is not committed.
+
+## Optional: Card Payments (Stripe)
+
+Card checkout is **disabled unless both** `STRIPE_SECRET_KEY` and a usable
+`STRIPE_CONFIG` are present. With either missing, `POST /api/stripe/checkout`
+returns 503 and the dashboard shows the reason.
+
+Required in the GitHub `PROD` environment:
+
+| Name | Purpose |
+|---|---|
+| `STRIPE_SECRET_KEY` | Server-side Stripe key (`sk_...`). Pushed to the Worker by the deploy workflow. Never expose it to the browser. |
+| `STRIPE_WEBHOOK_SECRET` | Already present. Signs `/webhooks/stripe`. Must belong to the same Stripe account and mode as the key above. |
+
+`STRIPE_CONFIG` is a `wrangler.jsonc` var, not a secret:
+
+```
+"STRIPE_CONFIG": "{\"priceId\":\"price_...\",\"amountCents\":100,\"currency\":\"usd\"}"
+```
+
+- `priceId` - a Stripe Price. Cards have a **minimum charge of about $0.50**, so
+  the crypto price ($0.01 USDC) is below the card minimum. `amountCents` must be
+  in minor units and must match the Price exactly; a mismatch is **rejected** at
+  fulfilment rather than silently accepted.
+- The key is used only server-side, but it now also powers the webhook check,
+  so keep `STRIPE_WEBHOOK_SECRET` in sync when rotating.
+
+Stripe setup:
+
+1. Create a Price for the per-request fee (Dashboard -> Products).
+2. Put its id in `STRIPE_CONFIG`, and set `amountCents` to the same amount.
+3. Add `STRIPE_SECRET_KEY` to the GitHub `PROD` environment.
+4. Create a webhook endpoint at `https://pay.openaimp.com/webhooks/stripe`
+   for `checkout.session.completed`, `checkout.session.async_payment_succeeded`
+   and `checkout.session.async_payment_failed`; set its signing secret as
+   `STRIPE_WEBHOOK_SECRET`.
+
+Fulfilment is performed **only** by the signed webhook, never by the browser
+return page, and it is idempotent under Stripe's retries.
+
+## Optional: Email Notification for Webhook Events
+
+Set `WEBHOOK_NOTIFY_EMAIL` to be emailed when a webhook event arrives. Unset by
+default, in which case webhook events are only stored and shown in the dashboard.
+
+| Variable | Purpose |
+|---|---|
+| `WEBHOOK_NOTIFY_EMAIL` | Recipient address for webhook notifications. Unset disables them. |
+| `WEBHOOK_NOTIFY_PROVIDERS` | Optional comma-separated allowlist (`github`, `stripe`, `slack`). Omit to notify for all providers. |
+
+Each notification reports the provider, event type and the generated AI analysis,
+and is recorded in the Emails tab like any other outbound mail.
+
+Notifications are never sent to the agent's own address (`agent@EMAIL_DOMAIN`),
+because that message would land back in the inbound handler and produce another
+auto-reply. Note that every delivery triggers both an AI analysis and an email, so
+narrow `WEBHOOK_NOTIFY_PROVIDERS` if a provider is high volume.
+
+```
+npx wrangler secret put WEBHOOK_NOTIFY_EMAIL
+npx wrangler secret put WEBHOOK_NOTIFY_PROVIDERS   # optional
+```
 
 ## Environment Protection Rules (recommended)
 
@@ -57,7 +173,7 @@ Push to main
     → deploy job (PROD environment):
       → uses PROD environment secrets
       → deploys Worker via wrangler-action
-      → sets Worker secrets (PAYMENT_PRIVATE_KEY, EMAIL_SECRET, DASHBOARD_API_KEY, GITHUB_WEBHOOK_SECRET, STRIPE_WEBHOOK_SECRET, SLACK_WEBHOOK_SECRET, SLACK_SIGNING_SECRET, SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_CLIENT_ID)
+      → sets Worker secrets (PAYMENT_PRIVATE_KEY, EMAIL_SECRET, DASHBOARD_API_KEY, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN, SLACK_CLIENT_ID, GITHUB_WEBHOOK_SECRET, STRIPE_WEBHOOK_SECRET, SLACK_WEBHOOK_SECRET)
       → Worker live at https://pay.openaimp.com
 
 Pull Request

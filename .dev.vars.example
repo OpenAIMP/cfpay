@@ -13,3 +13,22 @@ SLACK_SIGNING_SECRET=your-slack-signing-secret
 SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_APP_TOKEN=xapp-your-app-token
 SLACK_CLIENT_ID=your-slack-client-id
+
+# Optional: outgoing Slack notifications (the dashboard's "Send to Slack" button
+# and webhook-received notifications). This is an INCOMING WEBHOOK URL from
+# your Slack app, not a signing secret, and is unrelated to SLACK_WEBHOOK_SECRET
+# above despite the similar name. Leave it unset and the button will simply
+# report that it is not configured.
+#   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+
+# Optional: email a human when a webhook event arrives. Leave unset to keep
+# webhook events dashboard-only. WEBHOOK_NOTIFY_PROVIDERS is an optional
+# comma-separated allowlist (github, stripe, slack).
+#   WEBHOOK_NOTIFY_EMAIL=you@example.com
+#   WEBHOOK_NOTIFY_PROVIDERS=github
+
+# Optional: Stripe card payments. Both must be present to enable card checkout.
+# STRIPE_SECRET_KEY is a server-side key (sk_...); add it to the GitHub PROD
+# environment for production. STRIPE_CONFIG lives in wrangler.jsonc.
+#   STRIPE_SECRET_KEY=sk_test_...
+# For local webhook testing: stripe listen --forward-to localhost:8787/webhooks/stripe

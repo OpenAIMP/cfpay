@@ -14,6 +14,19 @@ type X402Challenge = {
   accepts: X402Accept[];
 };
 
+/**
+ * The payment term the endpoint asked for, reported to the caller's validator
+ * BEFORE any transfer is broadcast so the caller can veto it.
+ */
+export type X402AcceptedPayment = {
+  asset: string;
+  payTo: string;
+  amount: string;
+  network: string;
+  /** Address funds would be sent from, derived from the supplied private key. */
+  fromAddress: string;
+};
+
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 const TESTNET_RPC: Record<string, { url: string; chainId: string }> = {
@@ -230,6 +243,9 @@ export function createWallet(privateKey: string, network = "eip155:8453") {
   return { account, client };
 }
 
+/**
+ * Backwards-compatible wrapper: identical signature and return value as before.
+ */
 export async function payX402Endpoint(
   url: string,
   method: string,
@@ -237,6 +253,33 @@ export async function payX402Endpoint(
   privateKey: string,
   headers: Record<string, string> = {},
 ): Promise<Response> {
+  const { response } = await payX402EndpointWithReceipt(
+    url,
+    method,
+    body,
+    privateKey,
+    headers,
+  );
+  return response;
+}
+
+/**
+ * Same behaviour as payX402Endpoint, but also surfaces the settled txHash so
+ * callers can persist an outgoing payment receipt. The 402 challenge handling,
+ * validation and on-chain transfer logic are unchanged.
+ */
+export async function payX402EndpointWithReceipt(
+  url: string,
+  method: string,
+  body: string | null,
+  privateKey: string,
+  headers: Record<string, string> = {},
+  /**
+   * Inspect the requested payment term and throw to abort. Runs before the
+   * transfer is broadcast, so a rejecting validator means no funds move.
+   */
+  onAccepted?: (payment: X402AcceptedPayment) => void,
+): Promise<{ response: Response; txHash?: Hex }> {
   const initialResponse = await fetch(url, {
     method,
     headers: {
@@ -247,7 +290,7 @@ export async function payX402Endpoint(
   });
 
   if (initialResponse.status !== 402) {
-    return initialResponse;
+    return { response: initialResponse };
   }
 
   const paymentRequired =
@@ -301,6 +344,16 @@ export async function payX402Endpoint(
   const { account, client } = createWallet(privateKey, accept.network);
   const isNativeETH = usdcContract.toLowerCase() === ZERO_ADDRESS;
 
+  // Give the caller a chance to veto the requested payment before we sign or
+  // broadcast anything. A throwing validator aborts with no funds moved.
+  onAccepted?.({
+    asset: accept.asset,
+    payTo: accept.payTo,
+    amount: accept.amount,
+    network: accept.network,
+    fromAddress: account.address,
+  });
+
   let txHash: Hex;
 
   if (isNativeETH) {
@@ -335,7 +388,7 @@ export async function payX402Endpoint(
     }),
   );
 
-  return fetch(url, {
+  const paidResponse = await fetch(url, {
     method,
     headers: {
       "Content-Type": "application/json",
@@ -344,6 +397,8 @@ export async function payX402Endpoint(
     },
     body,
   });
+
+  return { response: paidResponse, txHash };
 }
 
 export function formatAmount(atomicUnits: string): string {

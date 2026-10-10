@@ -7,6 +7,19 @@ import type { Env } from "./types";
 import { createApp } from "./api";
 import { CfmailAgentSQLite } from "./agent";
 import { verifyAndParseWebhook } from "./webhooks";
+import { createCfmailMcpHandler } from "./mcp";
+import { authorizeMcpRequest } from "./mcp-auth";
+import { handleResourceMetadata } from "./mcp-oauth";
+import {
+  AS_METADATA_PATH,
+  AUTHORIZE_PATH,
+  REGISTER_PATH,
+  TOKEN_PATH,
+  handleAsMetadata,
+  handleAuthorize,
+  handleRegister,
+  handleToken,
+} from "./mcp-oauth-server";
 import {
   verifySlackSignature,
   parseSlackEvent,
@@ -27,60 +40,68 @@ export default {
   ): Promise<Response> {
     const url = new URL(request.url);
 
-    // Webhook routes — verify signature, then mirror centrally + handle per-entity
+    // Remote MCP server (Streamable HTTP, unauthenticated in phase 1). Handled
+    // before the /mcp prefix check below so this exact path wins; the legacy
+    // "/mcp/tools/process" route still falls through to the Hono app.
+    // OAuth 2.1 authorization server for /mcp (metadata, DCR, authorize,
+    // token). Every path 404s unless MCP_OAUTH_DISCOVERY is enabled.
+    if (url.pathname === AS_METADATA_PATH) {
+      return handleAsMetadata(request, env);
+    }
+    if (url.pathname === REGISTER_PATH) {
+      return handleRegister(request, env);
+    }
+    if (url.pathname === AUTHORIZE_PATH) {
+      return handleAuthorize(request, env);
+    }
+    if (url.pathname === TOKEN_PATH) {
+      return handleToken(request, env);
+    }
+    // Protected Resource Metadata for /mcp (RFC 9728). Served only when
+    // MCP_OAUTH_DISCOVERY is enabled; otherwise it 404s.
+    if (url.pathname === "/.well-known/oauth-protected-resource") {
+      return handleResourceMetadata(request, env);
+    }
+
+    if (url.pathname === "/mcp") {
+      const unauthorized = await authorizeMcpRequest(request, env);
+      if (unauthorized) return unauthorized;
+      return createCfmailMcpHandler(env)(request, env, ctx);
+    }
+
+    // Webhook routes — verified events are handled on the canonical central
+    // instance (plus Slack conversation routing below).
     if (request.method === "POST" && url.pathname.startsWith("/webhooks/")) {
       const verified = await verifyAndParseWebhook(request.clone(), env);
       if (!verified) {
         return new Response("Invalid signature", { status: 401 });
       }
 
-      // Slack's URL verification challenge is answered by the per-entity agent.
-      const isUrlVerification = verified.agentName === "_url_verification";
+      // Forward to the canonical agent instance. webhooks.ts derives a
+      // per-provider instance name (repo full_name, Stripe customer id, Slack
+      // team/channel), but the dashboard, REST API and MCP server all read the
+      // "agent" instance — so routing by that derived name recorded verified
+      // events into a Durable Object nothing ever displayed.
+      const agent = await getAgentByName(env.CfmailAgent as any, "agent");
 
-      // The dashboard (Webhooks tab + live state-sync WebSocket) reads the
-      // central "agent" instance, so mirror every verified event there.
-      const centralAgent = await getAgentByName(env.CfmailAgent as any, "agent");
-      if (!isUrlVerification) {
-        try {
-          await (centralAgent as any).recordWebhookEvent(
-            verified.provider,
-            verified.agentName,
-            verified.payload,
-          );
-        } catch (err) {
-          console.error("Failed to mirror webhook event to central agent:", err);
-        }
-      }
-
-      // Slack message events are handled by the central instance so the message
-      // is stored and broadcast where the dashboard listens — it appears
-      // without a page refresh.
-      if (verified.provider === "slack" && !isUrlVerification) {
+      // Slack message events also become a conversation in the Slack tab:
+      // handleSlackEvent records them on this same central instance (which the
+      // live state sync broadcasts to the dashboard without a reload) and
+      // replies in the channel. Slash commands, interactivity and
+      // url_verification payloads skip this and are handled by the agent's
+      // onRequest → processWebhookEvent (which replies via response_url).
+      if (verified.provider === "slack") {
         const slackEvent = parseSlackEvent(verified.payload);
         if (slackEvent && !slackEvent.bot_id && slackEvent.text) {
           try {
-            await (centralAgent as any).handleSlackEvent(slackEvent);
+            await (agent as any).handleSlackEvent(slackEvent);
           } catch (err) {
             console.error("Failed to handle Slack message event:", err);
           }
-          return new Response("OK");
         }
-        // Non-message Slack payloads (slash commands, interactivity) fall
-        // through to the per-entity agent, which replies via response_url.
       }
 
-      // Add provider header so the agent can identify the webhook source
-      const headers = new Headers(request.headers);
-      headers.set("X-Webhook-Provider", verified.provider);
-      const forwardedRequest = new Request(request.url, {
-        method: request.method,
-        headers,
-        body: request.body,
-      });
-
-      // Slack URL verification or forward to the agent DO
-      const agent = await getAgentByName(env.CfmailAgent as any, verified.agentName);
-      return agent.fetch(forwardedRequest);
+      return agent.fetch(request);
     }
 
     // HTTP webhook endpoint (legacy Slack apps)
@@ -167,12 +188,14 @@ async function handleSlackWebhook(request: Request, env: Env): Promise<Response>
   const timestamp = request.headers.get("X-Slack-Request-Timestamp") || "";
   const signature = request.headers.get("X-Slack-Signature") || "";
 
-  console.log("Slack webhook received:", body);
-
+  // Verify first: the body is unauthenticated at this point and may contain
+  // third-party content that should not reach the logs.
   if (!(await verifySlackSignature(env.SLACK_SIGNING_SECRET, timestamp, body, signature))) {
     console.error("Slack signature verification failed");
     return new Response("Unauthorized", { status: 401 });
   }
+
+  console.log("Slack webhook verified, payload bytes:", body.length);
 
   const parsed = JSON.parse(body);
   console.log("Slack event type:", parsed.type);

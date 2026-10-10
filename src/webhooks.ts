@@ -17,6 +17,15 @@ export interface VerifiedWebhook {
   payload: unknown;
 }
 
+/**
+ * A webhook secret is only usable when it is actually configured. Verifying
+ * against an unset secret would degrade to HMAC keyed on "", which anyone can
+ * compute — so callers must fail closed instead.
+ */
+function isConfiguredSecret(value: string | undefined | null): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // HMAC helpers
 // ---------------------------------------------------------------------------
@@ -99,23 +108,20 @@ async function verifySlack(
   toleranceSeconds = 300,
 ): Promise<boolean> {
   if (!signature || !timestamp) return false;
-  // Header format is "v0=<hex>" — compare against the hex digest only.
-  if (!signature.startsWith("v0=")) return false;
-  const provided = signature.slice(3);
+  if (!secret) return false;
 
   // Replay protection
   const age = Math.floor(Date.now() / 1000) - parseInt(timestamp, 10);
   if (isNaN(age) || Math.abs(age) > toleranceSeconds) return false;
 
+  // Header format is "v0=<hex>"; the digest itself is hex only, so the prefix
+  // must be stripped before comparing (as verifyGitHub does for "sha256=").
+  if (!/^v0=[0-9a-f]{64}$/i.test(signature)) return false;
+  const hex = signature.slice(3);
+
   // Slack signs "v0:<timestamp>:<rawBody>"
   const basestring = `v0:${timestamp}:${rawBody}`;
-  const expected = toHex(await hmacSha256(secret, basestring));
-  if (expected.length !== provided.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) {
-    diff |= expected.charCodeAt(i) ^ provided.charCodeAt(i);
-  }
-  return diff === 0;
+  return verifyHexSignature(secret, basestring, hex);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +149,8 @@ export async function verifyAndParseWebhook(
   // Route based on path
   if (url.pathname === "/webhooks/github") {
     const signature = request.headers.get("X-Hub-Signature-256");
-    if (!(await verifyGitHub(rawBody, signature, env.GITHUB_WEBHOOK_SECRET || ""))) return null;
+    if (!isConfiguredSecret(env.GITHUB_WEBHOOK_SECRET)) return null;
+    if (!(await verifyGitHub(rawBody, signature, env.GITHUB_WEBHOOK_SECRET))) return null;
 
     let payload: any;
     try {
@@ -161,7 +168,8 @@ export async function verifyAndParseWebhook(
 
   if (url.pathname === "/webhooks/stripe") {
     const signature = request.headers.get("Stripe-Signature");
-    if (!(await verifyStripe(rawBody, signature, env.STRIPE_WEBHOOK_SECRET || ""))) return null;
+    if (!isConfiguredSecret(env.STRIPE_WEBHOOK_SECRET)) return null;
+    if (!(await verifyStripe(rawBody, signature, env.STRIPE_WEBHOOK_SECRET))) return null;
 
     let payload: any;
     try {
@@ -179,10 +187,8 @@ export async function verifyAndParseWebhook(
   if (url.pathname === "/webhooks/slack") {
     const signature = request.headers.get("X-Slack-Signature");
     const timestamp = request.headers.get("X-Slack-Request-Timestamp");
-    // Verify with SLACK_WEBHOOK_SECRET, falling back to the standard Slack
-    // signing secret (SLACK_SIGNING_SECRET) used by the rest of the app.
-    const slackSecret = env.SLACK_WEBHOOK_SECRET || env.SLACK_SIGNING_SECRET || "";
-    if (!(await verifySlack(rawBody, signature, timestamp, slackSecret))) return null;
+    if (!isConfiguredSecret(env.SLACK_WEBHOOK_SECRET)) return null;
+    if (!(await verifySlack(rawBody, signature, timestamp, env.SLACK_WEBHOOK_SECRET))) return null;
 
     let payload: any;
     try {
@@ -213,13 +219,67 @@ export async function verifyAndParseWebhook(
 /**
  * Send a Slack incoming-webhook notification.
  */
+/** Text an incoming Slack webhook always answers with. */
+const SLACK_WEBHOOK_OK_BODIES = ["ok"];
+
+/**
+ * Post a message to a Slack incoming webhook.
+ *
+ * Slack answers 200 with a body of "ok" on success, and a non-2xx status with a
+ * reason such as "invalid_token" or "no_service" on failure — so the status code
+ * alone is not enough to call this successful.
+ *
+ * Never throws: a network failure or timeout is reported as ok:false with the
+ * reason, so callers can surface something actionable.
+ */
+export async function sendSlackNotificationDetailed(
+  webhookUrl: string,
+  message: string,
+): Promise<{ ok: boolean; detail: string }> {
+  if (!webhookUrl) {
+    return { ok: false, detail: "SLACK_WEBHOOK_URL is not configured." };
+  }
+
+  let res: Response;
+  let body: string;
+  try {
+    res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: message }),
+    });
+    body = (await res.text()).trim();
+  } catch (err) {
+    return {
+      ok: false,
+      detail: `Could not reach Slack: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  if (!res.ok) {
+    // Slack puts the machine-readable reason in the body; keep it short.
+    const reason = body.slice(0, 200);
+    return {
+      ok: false,
+      detail: reason
+        ? `Slack rejected the message (${res.status}): ${reason}`
+        : `Slack rejected the message (${res.status}).`,
+    };
+  }
+
+  const trimmedLower = body.toLowerCase();
+  const looksOk =
+    trimmedLower.length === 0 || SLACK_WEBHOOK_OK_BODIES.includes(trimmedLower);
+  if (!looksOk) {
+    return { ok: false, detail: `Slack returned an unexpected response: ${body.slice(0, 200)}` };
+  }
+
+  return { ok: true, detail: "" };
+}
+
 export async function sendSlackNotification(webhookUrl: string, message: string): Promise<boolean> {
-  const res = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: message }),
-  });
-  return res.ok;
+  const { ok } = await sendSlackNotificationDetailed(webhookUrl, message);
+  return ok;
 }
 
 /**

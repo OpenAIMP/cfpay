@@ -85,7 +85,7 @@
       <h3 style="font-size:1.05rem;margin-bottom:0.5rem;">Welcome to PaymentAgent</h3>
       <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.75rem;">PaymentAgent is an AI agent that gets paid before it works. Send it a request, pay with a crypto wallet over the x402 protocol, and it processes the request with AI and emails you the answer. It can also send and receive email and pay other x402-enabled services on its own.</p>
       <ul style="color:var(--muted);font-size:0.8rem;line-height:1.7;padding-left:1.25rem;margin-bottom:1.25rem;">
-        <li><strong style="color:var(--text);">Pay &amp; Process</strong> &mdash; submit a request and pay with MetaMask in ETH or USDC on Base or Ethereum Sepolia. The payment is verified on-chain before the agent starts.</li>
+        <li><strong style="color:var(--text);">Pay &amp; Process</strong> &mdash; submit a request and pay with MetaMask in ETH or USDC on Base or Ethereum Sepolia, or pay by card. The payment is verified before the agent starts.</li>
         <li><strong style="color:var(--text);">Payments</strong> &mdash; a ledger of every payment received and sent, with amounts, status and transaction hashes.</li>
         <li><strong style="color:var(--text);">Emails</strong> &mdash; inbound and outbound mail handled by the agent; replies are delivered to the address you provide.</li>
         <li><strong style="color:var(--text);">Chat</strong> &mdash; talk to the agent directly and send email from the dashboard.</li>
@@ -120,7 +120,7 @@
           <h3 style="font-size:1.1rem;margin-bottom:0.5rem;">Welcome to PaymentAgent</h3>
           <p style="color:var(--muted);font-size:0.9rem;line-height:1.6;margin-bottom:0.75rem;">PaymentAgent is an AI agent that gets paid before it works. Send it a request, pay with a crypto wallet over the x402 protocol, and it processes the request with AI and emails you the answer. It can also send and receive email and pay other x402-enabled services on its own.</p>
           <ul style="color:var(--muted);font-size:0.85rem;line-height:1.7;padding-left:1.25rem;">
-            <li><strong style="color:var(--text);">Pay &amp; Process</strong> &mdash; submit a request and pay with MetaMask in ETH or USDC on Base or Ethereum Sepolia. The payment is verified on-chain before the agent starts.</li>
+            <li><strong style="color:var(--text);">Pay &amp; Process</strong> &mdash; submit a request and pay with MetaMask in ETH or USDC on Base or Ethereum Sepolia, or pay by card. The payment is verified before the agent starts.</li>
             <li><strong style="color:var(--text);">Payments</strong> &mdash; a ledger of every payment received and sent, with amounts, status and transaction hashes.</li>
             <li><strong style="color:var(--text);">Emails</strong> &mdash; inbound and outbound mail handled by the agent; replies are delivered to the address you provide.</li>
             <li><strong style="color:var(--text);">Chat</strong> &mdash; talk to the agent directly and send email from the dashboard.</li>
@@ -172,6 +172,8 @@
             <input type="text" id="payAmount" value="Select network and currency to view amount" readonly aria-describedby="payAmountHelp" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
             <small id="payAmountHelp" style="color:var(--muted);">The amount is set by the payment configuration for your selected network and currency.</small>
           </div>
+          <p style="color:var(--muted);font-size:0.8rem;margin:1.25rem 0 0.5rem;">Or pay by card - no wallet needed.</p>
+          <button class="btn" id="payCardBtn" onclick="payByCard()">Pay by card</button>
           <button class="btn btn-metamask" id="payProcessBtn" onclick="payAndProcess()" disabled>Connect MetaMask First</button>
           <div id="payResult" style="margin-top:1rem;"></div>
         </div>
@@ -202,6 +204,16 @@
     </div>
   </div>
   <script>
+    // Escapes text before it is placed in innerHTML. Needed because error
+    // detail can originate from a remote response body, not just our own code.
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
     let apiKey = localStorage.getItem('cfmail_api_key') || '';
     let chatHistory = [];
     let account = null;
@@ -215,8 +227,7 @@
       document.getElementById('login').style.display = 'none';
       document.getElementById('app').style.display = 'block';
       init();
-      // Start the live state-sync WebSocket (defined by the module script below)
-      if (window.connectAgentSync) window.connectAgentSync();
+      window.connectAgent?.();
     }
     async function api(path, method = 'GET', body = null) {
       const opts = { method, headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' } };
@@ -299,6 +310,61 @@
       const btn = document.getElementById('payProcessBtn');
       btn.disabled = false; btn.textContent = 'Pay & Process';
     }
+    /**
+     * Card payment. Creates a hosted Stripe Checkout session and hands the
+     * browser to Stripe. Nothing is fulfilled here: the signed webhook does
+     * that once Stripe confirms payment, so closing the tab early is safe.
+     */
+    async function payByCard() {
+      const resultDiv = document.getElementById('payResult');
+      const btn = document.getElementById('payCardBtn');
+
+      // Guard against a double submit creating two sessions (and two charges).
+      if (btn.disabled) return;
+
+      const email = document.getElementById('payEmail').value.trim();
+      const request = document.getElementById('payRequest').value.trim();
+      if (!email || !request) {
+        resultDiv.innerHTML = '<div class="status-msg error">Enter your email and request first.</div>';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Starting checkout...';
+      resultDiv.innerHTML = '<div class="loading">Redirecting to Stripe...</div>';
+
+      try {
+        const res = await fetch('/api/stripe/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+          body: JSON.stringify({ email, request }),
+        });
+
+        if (res.status === 401) {
+          localStorage.removeItem('cfmail_api_key');
+          location.reload();
+          return;
+        }
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data.url) {
+          resultDiv.innerHTML = '<div class="status-msg error">' +
+            escapeHtml(data.error || 'Could not start the card checkout.') + '</div>';
+          btn.disabled = false;
+          btn.textContent = 'Pay by card';
+          return;
+        }
+
+        window.location.href = data.url;
+      } catch (err) {
+        console.error('Card checkout failed:', err);
+        resultDiv.innerHTML = '<div class="status-msg error">Could not reach the server. Please try again.</div>';
+        btn.disabled = false;
+        btn.textContent = 'Pay by card';
+      }
+    }
+
     async function payAndProcess() {
       const resultDiv = document.getElementById('payResult');
       const btn = document.getElementById('payProcessBtn');
@@ -485,23 +551,28 @@
         </div>`).join('');
     }
 
+    // Slack messages are stored with "slack:<id>" in the from/to fields; strip
+    // that for display so the tab reads as a conversation, not raw IDs.
+    function slackLabel(value) {
+      return escapeHtml(String(value || '').replace(/^slack:/, ''));
+    }
     async function loadSlackMessages() {
       const listDiv = document.getElementById('slackList');
       listDiv.innerHTML = '<div class="loading">Loading Slack messages...</div>';
       try {
-        const response = await fetch('/api/dashboard/slack', {
-          headers: { 'X-API-Key': localStorage.getItem('cfmail_api_key') }
-        });
-        const data = await response.json();
+        const data = await api('/api/dashboard/slack');
         if (data.messages && data.messages.length > 0) {
           listDiv.innerHTML = data.messages.map(m => `
             <div class="card">
               <div class="card-header">
-                <span class="subject">${m.subject || '(no text)'}</span>
-                <span class="meta">${m.from} - ${new Date(m.receivedAt).toLocaleString()}</span>
+                <div>
+                  <span class="badge-${m.direction || 'inbound'}">${m.direction || 'inbound'}</span>
+                  <span class="subject" style="margin-left:0.5rem;">${slackLabel(m.subject) || '(no text)'}</span>
+                </div>
+                <div class="meta">User: ${slackLabel(m.from)}<br>Channel: ${slackLabel(m.to)}<br>${new Date(m.receivedAt).toLocaleString()}</div>
               </div>
-              <div class="card-body">${m.body}</div>
-              ${m.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${m.aiResponse}</div>` : ''}
+              <div class="card-body">${escapeHtml(m.body)}</div>
+              ${m.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${escapeHtml(m.aiResponse)}</div>` : ''}
             </div>
           `).join('');
         } else {
@@ -597,26 +668,34 @@
         result.innerHTML = '<div class="status-msg success">Sent to Slack!</div>';
         document.getElementById('slackMessage').value = '';
       } else {
-        result.innerHTML = '<div class="status-msg error">Failed — is SLACK_WEBHOOK_URL configured?</div>';
+        const reason = (res && res.error) || 'Slack notification failed.';
+        result.innerHTML = '<div class="status-msg error">Failed — ' + escapeHtml(reason) + '</div>';
       }
     }
   </script>
 <script type="module">
   import { AgentClient } from "https://esm.sh/agents@latest/client";
 
-  // Live state sync with the central "agent" Durable Object.
-  // The agents SDK builds the path /agents/<agent>/<name> itself (PartySocket
-  // ignores any custom `url` option), and the Worker's onBeforeConnect hook
-  // requires ?token=<DASHBOARD_API_KEY> — the same key used to log into the
-  // dashboard, stored in localStorage as cfmail_api_key.
-  window.connectAgentSync = function connectAgentSync() {
-    if (window.cfmailAgent) return;
-    const token = localStorage.getItem("cfmail_api_key");
-    if (!token) return;
+  // The /ws upgrade is authenticated. A browser cannot set headers on a
+  // WebSocket handshake, so the same dashboard API key is passed as a query
+  // parameter; the getter is re-evaluated on every (re)connect. Note that the
+  // agents SDK builds its own path (/agents/<agent>/<name> — a custom `url`
+  // option is ignored by PartySocket), and the Worker's onBeforeConnect hook
+  // accepts the same ?token= there, so both paths are covered.
+  //
+  // Nothing is opened until a key exists: a 401 clears the stored key and
+  // reloads, so connecting with an empty token would only produce a retry loop.
+  window.connectAgent = function connectAgent() {
+    if (window.cfmailAgent) {
+      window.cfmailAgent.reconnect();
+      return window.cfmailAgent;
+    }
+
     const agent = new AgentClient({
       agent: "CfmailAgent",
       name: "agent",
-      query: () => ({ token }),
+      url: "/ws", // Explicitly connect to the /ws route
+      query: () => ({ token: localStorage.getItem("cfmail_api_key") || "" }),
     });
 
     agent.onStateUpdate((state) => {
@@ -632,10 +711,12 @@
 
     // Make agent available globally for debugging
     window.cfmailAgent = agent;
+    return agent;
   };
 
-  // Connect now if the user is already logged in (login() connects otherwise)
-  if (localStorage.getItem("cfmail_api_key")) window.connectAgentSync();
+  if (localStorage.getItem("cfmail_api_key")) {
+    window.connectAgent();
+  }
 </script>
 </body>
 </html>

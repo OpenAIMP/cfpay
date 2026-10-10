@@ -18,3 +18,10 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+# Build output / logs
+dist/
+*.log
+
+# Agent run artefacts (transcripts, scratch test scripts)
+.zwork/
+.cf-*

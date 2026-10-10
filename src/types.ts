@@ -23,6 +23,44 @@ export interface Env {
   SLACK_WEBHOOK_SECRET?: string;
   // Outgoing webhook URLs
   SLACK_WEBHOOK_URL?: string;
+  // Outbound x402 payments (agent spending). Both must be configured before the
+  // agent will send funds; see CfmailAgentSQLite.payExternalEndpoint.
+  // Static bearer token accepted by /mcp. A GitHub token is also accepted and
+  // validated against the GitHub API. With neither this nor MCP_GITHUB_ORG set,
+  // /mcp refuses every request.
+  MCP_AUTH_TOKEN?: string;
+  // When set, a GitHub token must belong to this organisation to be accepted.
+  MCP_GITHUB_ORG?: string;
+  // Which credentials /mcp accepts: "either" (default), "static", "github" or
+  // "none". "none" serves without authentication and must be set explicitly; an
+  // unset or unrecognised value is not treated as "none".
+  MCP_AUTH_MODE?: string;
+  // When "false", every unauthenticated /mcp request is refused, including the
+  // handshake. Anything else (or unset) lets the handshake through so MCP clients
+  // do not mistake this for an OAuth-protected server.
+  MCP_ANON_INITIALIZE?: string;
+  // When "true", /mcp publishes RFC 9728 Protected Resource Metadata at
+  // /.well-known/oauth-protected-resource and sends a WWW-Authenticate
+  // challenge pointing at it. Off unless explicitly enabled, because the
+  // challenge changes how MCP clients classify the endpoint.
+  MCP_OAUTH_DISCOVERY?: string;
+  // Origin used in published metadata. Defaults to the request's own origin.
+  MCP_PUBLIC_ORIGIN?: string;
+  // HMAC key for OAuth tokens and client ids. Falls back to MCP_AUTH_TOKEN
+  // when unset; rotating MCP_AUTH_TOKEN therefore invalidates issued tokens.
+  MCP_OAUTH_SIGNING_KEY?: string;
+  // Staging/test only: when "true", outbound email is logged and recorded
+  // instead of being delivered. Never set in production.
+  EMAIL_CAPTURE_MODE?: string;
+  // Stripe card payments. STRIPE_SECRET_KEY is a secret; STRIPE_CONFIG is a
+  // var. Card checkout is disabled unless both are present.
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_CONFIG?: string;
+  // Webhook email notifications. Off unless WEBHOOK_NOTIFY_EMAIL is set.
+  WEBHOOK_NOTIFY_EMAIL?: string;
+  WEBHOOK_NOTIFY_PROVIDERS?: string;
+  OUTBOUND_PAY_TO_WHITELIST?: string;
+  OUTBOUND_MAX_AMOUNT_ATOMIC?: string;
 }
 
 export interface PaymentNetworkConfig {
@@ -35,6 +73,41 @@ export interface PaymentNetworkConfig {
 
 export interface PaymentConfig {
   networks: Record<string, PaymentNetworkConfig>;
+}
+
+/**
+ * Card pricing. amountCents is the single source of truth for what a card
+ * payment must total: the Stripe Price and this value are compared on the
+ * webhook and a mismatch is rejected rather than fulfilled.
+ */
+export interface StripeConfig {
+  /** Stripe Price id (price_...). */
+  priceId: string;
+  /** Expected total in minor units, e.g. 100 = $1.00. */
+  amountCents: number;
+  /** Lowercase ISO currency, e.g. "usd". */
+  currency: string;
+}
+
+/** Lifecycle of one card checkout, keyed by our own requestId. */
+export type StripeCheckoutStatus =
+  | "awaiting_session"
+  | "session_created"
+  | "fulfilled"
+  | "failed";
+
+export interface StripeCheckout {
+  requestId: string;
+  email: string;
+  /** The user's request text. Held server-side; never trusted from the client. */
+  request: string;
+  status: StripeCheckoutStatus;
+  createdAt: string;
+  sessionId?: string;
+  sessionUrl?: string;
+  fulfilledAt?: string;
+  /** Stripe payment_intent id, recorded on the payment ledger entry. */
+  paymentIntentId?: string;
 }
 
 export interface PaymentClaim {
@@ -83,6 +156,14 @@ export interface AgentState {
   totalPaymentsSent: number;
   webhookEvents?: WebhookEvent[];
   totalWebhooksReceived?: number;
+  /** Card checkouts awaiting or after fulfilment, keyed by requestId. */
+  stripeCheckouts?: Record<string, StripeCheckout>;
+  /**
+   * Stripe event ids already handled. Stripe retries deliveries for up to three
+   * days and may reorder them, so handling must be idempotent regardless of the
+   * checkout state machine.
+   */
+  stripeProcessedEvents?: Record<string, string>;
 }
 
 export interface ChatMessage {
@@ -99,4 +180,6 @@ export interface WebhookEvent {
   payload: unknown;
   receivedAt: string;
   processed: boolean;
+  /** AI analysis of the event, attached when analysis succeeds. */
+  aiInsight?: string;
 }
