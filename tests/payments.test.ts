@@ -3,7 +3,8 @@
  * PAYMENT_CONFIG parsing and amount formatting.
  */
 import { describe, it, expect } from "vitest";
-import { parsePaymentConfig, formatAmount, formatEthAmount } from "../src/payments";
+import { parsePaymentConfig, parsePaymentClaim, ZERO_ADDRESS, formatAmount, formatEthAmount } from "../src/payments";
+import type { Env } from "../src/types";
 
 const VALID_CONFIG = JSON.stringify({
   networks: {
@@ -96,5 +97,72 @@ describe("formatEthAmount", () => {
     expect(formatEthAmount("1000000000000000000")).toBe("1");
     expect(formatEthAmount("1500000000000000000")).toBe("1.5");
     expect(formatEthAmount("1000000000000000")).toBe("0.001");
+  });
+});
+
+describe("parsePaymentClaim", () => {
+  const PAY_TO = "0x1234567890123456789012345678901234567890";
+  const ENV = { PAY_TO_ADDRESS: PAY_TO, PAYMENT_CONFIG: VALID_CONFIG } as unknown as Env;
+  const TX = "0x" + "ab".repeat(32);
+  const headerOf = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString("base64");
+  const validClaim = {
+    asset: ZERO_ADDRESS,
+    payTo: PAY_TO,
+    amount: "1000000000000000",
+    network: "eip155:8453",
+    txHash: TX,
+  };
+
+  it("accepts a valid native (ETH) claim", () => {
+    expect(parsePaymentClaim(headerOf(validClaim), ENV)).toEqual(validClaim);
+  });
+
+  it("accepts a valid USDC claim", () => {
+    const usdc = {
+      ...validClaim,
+      asset: "0xabababababababababababababababababababab",
+      amount: "10000",
+    };
+    expect(parsePaymentClaim(headerOf(usdc), ENV).asset).toBe(usdc.asset);
+  });
+
+  it("rejects invalid base64", () => {
+    expect(() => parsePaymentClaim("!!!not-base64!!!", ENV)).toThrow(/base64/);
+  });
+
+  it("rejects a claim missing txHash", () => {
+    const { txHash, ...rest } = validClaim;
+    expect(() => parsePaymentClaim(headerOf(rest), ENV)).toThrow(/valid payment details/);
+  });
+
+  it("rejects a malformed txHash", () => {
+    expect(() => parsePaymentClaim(headerOf({ ...validClaim, txHash: "0x123" }), ENV)).toThrow(
+      /valid payment details/,
+    );
+  });
+
+  it("rejects a wrong recipient", () => {
+    const other = "0x9999999999999999999999999999999999999999";
+    expect(() => parsePaymentClaim(headerOf({ ...validClaim, payTo: other }), ENV)).toThrow(
+      /configured network or recipient/,
+    );
+  });
+
+  it("rejects an unconfigured network", () => {
+    expect(() =>
+      parsePaymentClaim(headerOf({ ...validClaim, network: "eip155:1" }), ENV),
+    ).toThrow(/configured network or recipient/);
+  });
+
+  it("rejects a wrong amount", () => {
+    expect(() => parsePaymentClaim(headerOf({ ...validClaim, amount: "1" }), ENV)).toThrow(
+      /not configured for this network/,
+    );
+  });
+
+  it("rejects a zero amount", () => {
+    expect(() => parsePaymentClaim(headerOf({ ...validClaim, amount: "0" }), ENV)).toThrow(
+      /valid payment details/,
+    );
   });
 });

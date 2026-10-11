@@ -48,6 +48,9 @@ export interface Env {
   MCP_OAUTH_DISCOVERY?: string;
   // Origin used in published metadata. Defaults to the request's own origin.
   MCP_PUBLIC_ORIGIN?: string;
+  // Base URL for absolute links the worker hands out (Stripe success/cancel
+  // URLs). Defaults to the request's own origin when unset.
+  APP_BASE_URL?: string;
   // HMAC key for OAuth tokens and client ids. Falls back to MCP_AUTH_TOKEN
   // when unset; rotating MCP_AUTH_TOKEN therefore invalidates issued tokens.
   MCP_OAUTH_SIGNING_KEY?: string;
