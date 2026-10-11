@@ -252,6 +252,20 @@
               <div id="publicModelNote" style="max-width:36rem;margin-top:0.4rem;color:var(--muted);font-size:0.75rem;line-height:1.65;"></div>
             </div>
           </div>
+        <!-- Question library. Grouped by what the question is for, so a proposal
+             can be traced back to the strategy it came from. Each one is written to
+             force the model through the tools: it must name the strategy, give the
+             legs, and price it, rather than describe the strategy generically. -->
+        <div class="card" id="publicQuestionCard">
+          <h3 style="font-size:1.1rem;margin-bottom:0.35rem;">Strategy questions</h3>
+          <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.5rem;">
+            One click sends the prompt to the chat below. Each asks the agent to compare
+            specific instruments and price the legs, so the answers come from Public.com
+            data rather than description. Expand a group to see its questions.
+          </p>
+          <div id="publicQuestions"></div>
+        </div>
+
         <div class="card" id="publicChatCard" style="display:none;">
           <h3 style="margin-bottom:1rem;">Ask about an instrument</h3>
           <div class="chat-container" id="publicMessages"></div>
@@ -722,6 +736,96 @@ async function loadStats() {
       container.scrollTop = container.scrollHeight;
     }
     // ---------------------------------------------------------------------
+    // Question library.
+    //
+    // The questions live in src/questions.json and are served by
+    // /api/public/questions. Each contains {symbol} and is rendered against the
+    // context chosen here, so one question works for any instrument. Clicking one
+    // fills the chat input and sends it, so the conversation history shows the
+    // exact prompt that produced the answer.
+    // ---------------------------------------------------------------------
+    let publicQuestions = null;
+    let publicContextSymbol = '';
+
+    function fillQuestion(text) {
+      const ctx = publicQuestions && publicQuestions.contexts
+        ? publicQuestions.contexts.filter(c => c.symbol === publicContextSymbol)[0]
+        : null;
+      const symbol = (ctx && ctx.symbol) || publicContextSymbol || 'SPY';
+      return text.replace(/\{symbol\}/g, symbol);
+    }
+
+    function renderQuestions() {
+      const host = document.getElementById('publicQuestions');
+      if (!host) return;
+      if (!publicQuestions || !Array.isArray(publicQuestions.groups)) {
+        host.innerHTML = '<div class="loading">Loading questions...</div>';
+        return;
+      }
+
+      const contexts = publicQuestions.contexts || [];
+      if (!publicContextSymbol && contexts.length) publicContextSymbol = contexts[0].symbol;
+
+      const ctxPicker = ''
+        + '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem;">'
+        + '<label for="publicContext" style="color:var(--muted);font-size:0.78rem;">Instrument</label>'
+        + '<select id="publicContext" onchange="selectPublicContext(this.value)"'
+        + ' style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.45rem;color:var(--text);font-size:0.8rem;">'
+        + contexts.map(c => '<option value="' + escapeHtml(c.symbol) + '"'
+            + (c.symbol === publicContextSymbol ? ' selected' : '') + '>'
+            + escapeHtml(c.label) + ' (' + escapeHtml(c.symbol) + ')</option>').join('')
+        + '</select>'
+        + '<span style="color:var(--muted);font-size:0.72rem;">'
+        + escapeHtml((contexts.filter(c => c.symbol === publicContextSymbol)[0] || {}).note || '')
+        + '</span></div>';
+
+      const groups = publicQuestions.groups.map(g => {
+        const items = g.questions.map(q => ''
+          + '<button class="btn" onclick="askQuestion(\'' + escapeHtml(q.id) + '\')"'
+          + ' title="' + escapeHtml(fillQuestion(q.question).slice(0, 200)) + '"'
+          + ' style="display:block;width:100%;text-align:left;margin-top:0.4rem;padding:0.55rem 0.7rem;'
+          + 'background:var(--bg);border:1px solid var(--border);color:var(--text);font-weight:500;font-size:0.8rem;">'
+          + escapeHtml(q.label) + '</button>').join('');
+        return ''
+          + '<details style="margin-top:0.6rem;">'
+          + '<summary style="cursor:pointer;font-size:0.85rem;color:var(--text);">'
+          + escapeHtml(g.label) + ' <span style="color:var(--muted);font-size:0.72rem;">('
+          + g.questions.length + ')</span></summary>'
+          + (g.intro ? '<div style="color:var(--muted);font-size:0.75rem;margin-top:0.35rem;">' + escapeHtml(g.intro) + '</div>' : '')
+          + items
+          + '</details>';
+      }).join('');
+
+      host.innerHTML = ctxPicker + groups;
+    }
+
+    function selectPublicContext(symbol) {
+      publicContextSymbol = symbol;
+      renderQuestions();
+    }
+
+    async function loadPublicQuestions() {
+      const host = document.getElementById('publicQuestions');
+      if (!host || publicQuestions) return;
+      try {
+        publicQuestions = await api('/api/public/questions');
+        renderQuestions();
+      } catch (err) {
+        host.innerHTML = '<div class="status-msg error">Could not load questions: ' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    // Send a library question by id, so the exact text is resolved in one place.
+    function askQuestion(id) {
+      if (!publicQuestions || !Array.isArray(publicQuestions.groups)) return;
+      for (const g of publicQuestions.groups) {
+        for (const q of g.questions) {
+          if (q.id === id) return sendPublic(fillQuestion(q.question));
+        }
+      }
+    }
+
+    // ---------------------------------------------------------------------
     // Public.com chat.
     //
     // The access token is POSTed once and kept server-side; the browser never
@@ -741,6 +845,7 @@ async function loadStats() {
           publicConnectedCount = null;
         }
         if (!connected) loadPublicModels();
+        loadPublicQuestions();
         if (connected) {
           document.getElementById('publicTokenHint').textContent =
             s.method === 'oauth' ? 'signed in with Public' : (s.tokenHint ? 'token ' + s.tokenHint : '');
@@ -917,10 +1022,12 @@ async function loadStats() {
         + rows + '</div>';
     }
 
-    async function sendPublic() {
+    // `preset` lets a question-library button send a prepared prompt without
+    // going through the text box.
+    async function sendPublic(preset) {
       const input = document.getElementById('publicInput');
       const container = document.getElementById('publicMessages');
-      const msg = input.value.trim();
+      const msg = (typeof preset === 'string' ? preset : input.value).trim();
       if (!msg) return;
       input.value = '';
       container.innerHTML += '<div class="chat-msg user">' + escapeHtml(msg) + '</div>';

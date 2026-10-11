@@ -25,6 +25,7 @@ import {
   stateMatches,
 } from "./public-oauth";
 import { defaultModelId, listModels, resolveModelId } from "./models";
+import questionLibrary from "./questions.json";
 
 /**
  * Best-effort per-IP rate limiter for the unauthenticated /api/stripe/checkout
@@ -336,6 +337,12 @@ export function createApp() {
     const agent = getAgent(c);
     await agent.setPublicModel(chosen);
     return c.json({ ok: true, model: chosen, isDefault: false });
+  });
+
+  // The question library, so the UI can render it without duplicating the text
+  // and so it can be edited in one place. Read-only, no credentials involved.
+  app.get("/api/public/questions", requireAuth, async (c) => {
+    return c.json(questionLibrary);
   });
 
   app.post("/api/public/chat", requireAuth, async (c) => {

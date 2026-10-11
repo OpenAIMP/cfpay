@@ -1,0 +1,170 @@
+{
+  "$comment": [
+    "Question library for the Public.com tab.",
+    "",
+    "Each question is written to force the agent through the tools rather than",
+    "answer from general knowledge. The pattern is: name the instruments, ask for",
+    "the legs, ask for pricing, ask what would make it wrong. A question that only",
+    "asks 'what is a bull call spread' will produce a definition; one that asks",
+    "'price a bull call spread on SMH at the 30-delta strikes' produces tool calls.",
+    "",
+    "Context and price are placeholders: the UI substitutes them from the two",
+    "selectors so the same question works against any symbol or account."
+  ],
+  "contexts": [
+    { "id": "semis", "label": "Semiconductors", "symbol": "SMH", "note": "sector ETF, liquid options" },
+    { "id": "broad", "label": "S&P 500", "symbol": "SPY", "note": "most liquid options market" },
+    { "id": "nasdaq", "label": "Nasdaq 100", "symbol": "QQQ", "note": "mega-cap tech tilt" },
+    { "id": "energy", "label": "Energy", "symbol": "XLE", "note": "cyclical, dividend-heavy" },
+    { "id": "gold", "label": "Gold miners", "symbol": "GDX", "note": "volatile, event-driven" }
+  ],
+  "groups": [
+    {
+      "id": "covered",
+      "label": "Covered & cash-secured",
+      "intro": "Income trades against stock or cash you already hold.",
+      "questions": [
+        {
+          "id": "cc-30d",
+          "label": "Covered call, 30 delta, ~30 days",
+          "question": "On my {symbol} position, price a covered call at the 30-delta strike expiring in about 30 days. Use get_option_expirations then get_option_chain for that expiry, and get_strategy_quote for the combination. Give the exact strike and expiry, the premium, the annualised yield if it expires worthless, and the upside I give up. Say what would make this the wrong choice."
+        },
+        {
+          "id": "cc-ladder",
+          "label": "Covered call ladder across 3 expiries",
+          "question": "Price a covered call ladder on {symbol} at 30, 60 and 90 days. Pull each expiry's chain and quote the 30-delta strike for each, then use get_strategy_quote. Compare the premium per day of risk, and say which rung is the best value and why. Note anything unusual in the term structure."
+        },
+        {
+          "id": "covered-strangle",
+          "label": "Covered strangle on a held position",
+          "question": "For my {symbol} holding, price a covered strangle: a call above and a put below the current price at the nearest expiries, sized so the put is cash-secured. Quote both legs and the combination. Tell me the total premium, the range I stay profitable in, and the real risk if it gaps below the put strike."
+        }
+      ]
+    },
+    {
+      "id": "vertical",
+      "label": "Vertical spreads",
+      "intro": "Defined risk, one direction, two legs.",
+      "questions": [
+        {
+          "id": "bull-call",
+          "label": "Bull call spread vs long call",
+          "question": "Compare a bull call spread against a straight long call on {symbol} for a bullish view. Get quotes, the option chain and the greeks, then price both with get_strategy_quote. Give max profit, max loss, breakeven, and the implied move each needs. Say which is better value on the current skew and why."
+        },
+        {
+          "id": "bear-put",
+          "label": "Bear put spread as a hedge",
+          "question": "Price a bear put spread on {symbol} as a hedge against a position I already hold: buy the near-the-money put, sell one about 10% lower, nearest expiry with at least 30 days. Quote both legs and the combination, and state the cost as a percentage of the position it protects alongside the protection it actually provides."
+        },
+        {
+          "id": "debit-widths",
+          "label": "Same view at three strike widths",
+          "question": "For the same bullish view on {symbol}, price three bull call spreads at different widths - about 2%, 5% and 10% of spot - all the same expiry. Use get_option_chain and get_strategy_quote for each. Compare return on risk and probability of profit implied by the deltas, and say which width is most efficient and why."
+        }
+      ]
+    },
+    {
+      "id": "credit",
+      "label": "Credit spreads & iron condors",
+      "intro": "Collect premium, defined risk, want the range to hold.",
+      "questions": [
+        {
+          "id": "put-credit",
+          "label": "Put credit spread at 30 delta",
+          "question": "Price a put credit spread on {symbol}: sell roughly the 30-delta put and buy one 5% lower, expiry about 35 days out. Use get_option_expirations, get_option_chain, get_option_greeks and get_strategy_quote. Give credit received, max loss, breakeven, and the capital at risk. State the annualised return on risk and what has to happen for it to be a loss."
+        },
+        {
+          "id": "iron-condor",
+          "label": "Iron condor around the expected move",
+          "question": "Build an iron condor on {symbol} expiring in about 45 days with the short strikes set just outside the expected move implied by the options. Price it with get_strategy_quote and tell me the credit, the width, max loss, and the breakevens. Compare the credit to the actual expected move and say whether the market is pricing enough for this to be worth doing."
+        },
+        {
+          "id": "condor-skew",
+          "label": "Is the skew worth trading?",
+          "question": "On {symbol}, compare the implied volatility of puts and calls at the same distance from spot and the same expiry using get_option_chain and get_option_greeks. Tell me which side is richer, by how much, and whether that makes a credit spread on one side materially better than the mirrored spread on the other. Show the numbers you compared."
+        }
+      ]
+    },
+    {
+      "id": "volatility",
+      "label": "Volatility & earnings",
+      "intro": "Trades where the view is on movement, not direction.",
+      "questions": [
+        {
+          "id": "straddle",
+          "label": "Straddle vs the expected move",
+          "question": "Price an at-the-money straddle on {symbol} for the nearest expiry beyond the next 30 days. Get the chain and use get_strategy_quote. Give the cost, and compare it with the expected move implied by the options. Tell me whether the market is pricing more or less movement than the recent realised range, and what that implies for buying versus selling this straddle."
+        },
+        {
+          "id": "strangle-vs-straddle",
+          "label": "Strangle against straddle",
+          "question": "Compare an at-the-money straddle with a 20-delta strangle on {symbol}, same expiry, using get_option_chain, get_option_greeks and get_strategy_quote for both. Give cost, breakevens, and the move required for each to profit. Say which is the better expression of a large-move view and why."
+        },
+        {
+          "id": "earnings-if-known",
+          "label": "Positioning into an event",
+          "question": "For {symbol}, identify the next expiry that spans an earnings date if get_option_expirations shows one prominently priced, and compare front-expiry implied movement with the following expiry. Quote both with get_strategy_quote and tell me whether the event looks over- or under-priced, and which structure that favours."
+        }
+      ]
+    },
+    {
+      "id": "combos",
+      "label": "Strategy combinations",
+      "intro": "Layered structures for a view that has more than one part.",
+      "questions": [
+        {
+          "id": "diagonal",
+          "label": "Poor man's covered call",
+          "question": "Price a poor man's covered call on {symbol}: buy a deep in-the-money call around 80 delta in a longer expiry, and sell a 30-delta call in a nearer one. Use get_option_chain and get_option_greeks to pick both legs, then get_strategy_quote. Give the net debit, the risk if the underlying falls, and how this compares with owning the shares and selling a covered call."
+        },
+        {
+          "id": "calendar",
+          "label": "Calendar spread into an event",
+          "question": "Price a calendar spread on {symbol}: sell the near-dated at-the-money option and buy the same strike in the next expiry out. Quote both and the combination with get_strategy_quote. Explain where this makes money - the term structure and time decay - and what the risk is if the underlying moves sharply."
+        },
+        {
+          "id": "collar",
+          "label": "Collar: hedge at low cost",
+          "question": "For a {symbol} holding, construct a zero-cost or near-zero-cost collar: buy a put about 10% below spot and sell a call above, both same expiry, using get_option_chain and get_strategy_quote. Give the net cost or credit, the capped upside, the protected downside, and compare this with simply selling the position."
+        },
+        {
+          "id": "layered",
+          "label": "Layer income over a core hedge",
+          "question": "Design a layered position on {symbol} for a modestly bullish view: a core long or a deep call, a protective put funded by a credit spread, and an overwrite on part of the position. Price every leg with get_strategy_quote and combine them. Show the net debit or credit, the payoff at three points - down 15%, flat, up 15% - and say what this structure gives up compared with the simpler alternative."
+        },
+        {
+          "id": "combo-rank",
+          "label": "Rank the structures for one view",
+          "question": "For a moderately bullish view on {symbol} over the next 60 days, price and rank these on the same expiry where possible: long call, bull call spread, bull put spread, covered call, and a risk reversal. Use get_quotes, get_option_chain, get_option_greeks and get_strategy_quote for each. Present them in one table with cost, max profit, max loss, breakeven and the move required, then say which you would choose and the specific reason."
+        }
+      ]
+    },
+    {
+      "id": "patterns",
+      "label": "Patterns & screening",
+      "intro": "Let the data pick the candidates instead of naming them up front.",
+      "questions": [
+        {
+          "id": "screen-holdings",
+          "label": "Best covered call from my holdings",
+          "question": "Look at my holdings with get_portfolio and get_tax_lots, then for the largest positions pull quotes and option chains. Identify which holding offers the best covered call right now on premium relative to risk, and price that specific one with get_strategy_quote. Show which instruments you compared and the premium each offered."
+        },
+        {
+          "id": "screen-iv",
+          "label": "Which of these has the richest options?",
+          "question": "Compare {symbol} against the other large sector ETFs on option richness: pull quotes and chains for each and compare implied volatility relative to recent price movement using get_price_history. Tell me which has the richest options for selling premium, with the numbers, and which single credit structure you would use on it."
+        },
+        {
+          "id": "screen-range",
+          "label": "Range-bound candidates",
+          "question": "Using get_price_history, assess whether {symbol} has been ranging or trending over the last few months, and what the realised range has been. Then price an iron condor sized to sit outside that range, and say whether the premium available is adequate compensation for the risk of the range breaking."
+        },
+        {
+          "id": "screen-overwrite",
+          "label": "Where is the skew richest?",
+          "question": "Across the positions in my account, compare the implied volatility of calls versus puts on the nearest sensible expiry using get_option_chain and get_option_greeks. Identify which instrument has the richest calls relative to puts, since that is where an overwrite is best paid, and price that specific covered call."
+        }
+      ]
+    }
+  ]
+}
