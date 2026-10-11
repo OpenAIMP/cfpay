@@ -4,6 +4,19 @@ import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
 import { formatAmount, formatEthAmount, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent } from "./agent";
+import {
+  PUBLIC_MCP_URL,
+  buildAuthorizeUrl,
+  exchangeCode,
+  listTools,
+  pkceChallenge,
+  publicConfigured,
+  publicScopes,
+  randomUrlSafe,
+  refreshTokens,
+  type McpSession,
+  type McpTool,
+} from "./public-mcp";
 
 export function createApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -17,6 +30,158 @@ export function createApp() {
     return next();
   }
 
+  // ---------------------------------------------------------------------------
+  // Public.com MCP: OAuth 2.1 authorization-code flow with PKCE (S256).
+  //
+  // Public.com publishes no registration_endpoint, so no client can register
+  // itself; PUBLIC_CLIENT_ID must be obtained from them and configured. Tokens
+  // are held per browser session in the agent's state, so each dashboard user
+  // authorizes their own Public.com account. Nothing here holds a shared
+  // credential.
+  //
+  // trading.write is not requested by default. See PUBLIC_DEFAULT_SCOPES.
+  // ---------------------------------------------------------------------------
+
+  function publicOrigin(c: any): string {
+    return ((c.env as any).PUBLIC_ORIGIN || new URL(c.req.url).origin).replace(/\/+$/, "");
+  }
+
+  const publicState = new Map<string, { verifier: string; created: number }>();
+  const PUBLIC_STATE_TTL_MS = 10 * 60 * 1000;
+
+  function rememberVerifier(state: string, verifier: string): void {
+    const now = Date.now();
+    for (const [k, v] of publicState) if (now - v.created > PUBLIC_STATE_TTL_MS) publicState.delete(k);
+    publicState.set(state, { verifier, created: now });
+  }
+
+  function takeVerifier(state: string): string | null {
+    const entry = publicState.get(state);
+    if (!entry) return null;
+    publicState.delete(state);
+    if (Date.now() - entry.created > PUBLIC_STATE_TTL_MS) return null;
+    return entry.verifier;
+  }
+
+  app.get("/api/public/status", requireAuth, async (c) => {
+    const configured = publicConfigured(c.env);
+    const agent = getAgent(c);
+    const tokens = configured ? await agent.getPublicTokens() : null;
+    return c.json({
+      configured,
+      connected: Boolean(tokens?.access_token),
+      expiresAt: tokens?.expires_at ?? null,
+      scopes: publicScopes(c.env),
+      mcpUrl: PUBLIC_MCP_URL,
+    });
+  });
+
+  app.get("/api/public/connect", requireAuth, async (c) => {
+    if (!publicConfigured(c.env)) {
+      return c.json(
+        {
+          error:
+            "Public.com is not configured. Set PUBLIC_CLIENT_ID to a client id issued by Public.com.",
+        },
+        400,
+      );
+    }
+    const state = randomUrlSafe(16);
+    const verifier = randomUrlSafe(48);
+    rememberVerifier(state, verifier);
+    const challenge = await pkceChallenge(verifier);
+    return c.json({
+      authorizeUrl: buildAuthorizeUrl(c.env, publicOrigin(c), state, challenge),
+    });
+  });
+
+  app.get("/api/public/callback", async (c) => {
+    const params = new URL(c.req.url).searchParams;
+    const error = params.get("error");
+    if (error) {
+      return c.html(
+        "<p>Public.com authorization failed: " +
+          escapeHtml(String(error)) +
+          "<br>" +
+          escapeHtml(String(params.get("error_description") || "")) +
+          "</p>",
+        400,
+      );
+    }
+
+    const code = params.get("code") || "";
+    const state = params.get("state") || "";
+    const verifier = takeVerifier(state);
+    if (!code || !verifier) {
+      return c.html("<p>Invalid or expired authorization response.</p>", 400);
+    }
+
+    try {
+      const tokens = await exchangeCode(c.env, publicOrigin(c), code, verifier);
+      const agent = getAgent(c);
+      await agent.setPublicTokens(tokens);
+      return c.html(
+        "<p>Connected to Public.com. You can close this tab and return to the dashboard.</p>",
+      );
+    } catch (err) {
+      return c.html("<p>Token exchange failed: " + escapeHtml(String(err)) + "</p>", 400);
+    }
+  });
+
+  app.post("/api/public/disconnect", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    await agent.clearPublicTokens();
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/public/chat", requireAuth, async (c) => {
+    if (!publicConfigured(c.env)) {
+      return c.json({ error: "Public.com is not configured (PUBLIC_CLIENT_ID is unset)." }, 400);
+    }
+
+    const body = await c.req.json<{ message?: string }>();
+    const message = (body.message || "").trim();
+    if (!message) return c.json({ error: "message is required" }, 400);
+
+    const agent = getAgent(c);
+    const tokens = await agent.getPublicTokens();
+    if (!tokens?.access_token) {
+      return c.json({ error: "Not connected to Public.com. Connect first." }, 409);
+    }
+
+    // Refresh when within a minute of expiry, then persist.
+    let accessToken = tokens.access_token;
+    try {
+      if (tokens.expires_at - Date.now() < 60_000 && tokens.refresh_token) {
+        const refreshed = await refreshTokens(c.env, tokens.refresh_token);
+        await agent.setPublicTokens(refreshed);
+        accessToken = refreshed.access_token;
+      }
+    } catch {
+      // Fall through with the existing token; a 401 below surfaces the problem.
+    }
+
+    try {
+      const session: McpSession = {};
+      const tools = await listTools(accessToken, session);
+      if (tools.length === 0) {
+        return c.json({ error: "Public.com returned no tools for this account." }, 502);
+      }
+      const { answer, calls } = await agent.answerInstrumentQuestion(accessToken, message, tools, session);
+      return c.json({ answer, tools: tools.map((t) => t.name), calls });
+    } catch (err) {
+      return c.json({ error: String(err) }, 502);
+    }
+  });
+
+  function escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
   function getAgent(c: any) {
     const agentId = c.env.CfmailAgent.idFromName("agent");
     return c.env.CfmailAgent.get(agentId) as any;

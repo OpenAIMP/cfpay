@@ -114,6 +114,7 @@
         <div class="tab" data-tab="chat" onclick="switchTab('chat')">Chat</div>
         <div class="tab" data-tab="slack" onclick="switchTab('slack')">Slack</div>
         <div class="tab" data-tab="webhooks" onclick="switchTab('webhooks')">Webhooks</div>
+<div class="tab" data-tab="public" onclick="switchTab('public')">Public.com</div>
       </div>
       <div id="overview" class="panel active">
         <div class="card">
@@ -188,6 +189,34 @@
           </div>
         </div>
       </div>
+      <!-- Public.com instrument research -->
+      <div id="public" class="panel">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+            <h3 style="font-size:1.1rem;">Research instruments via Public.com</h3>
+            <span id="publicStatus" class="badge-confirmed" style="display:none;">Connected</span>
+          </div>
+          <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.75rem;">
+            Ask which instrument looks best for a view, and the agent will query
+            Public.com's market data tools to compare them. Read-only: it cannot
+            place or change orders.
+          </p>
+          <div id="publicNotice"></div>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <button class="btn" id="publicConnectBtn" onclick="connectPublic()">Connect Public.com</button>
+            <button class="btn" id="publicDisconnectBtn" onclick="disconnectPublic()" style="display:none;background:var(--bg);border:1px solid var(--border);color:var(--text);">Disconnect</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Ask about an instrument</h3>
+          <div class="chat-container" id="publicMessages"></div>
+          <div style="display:flex;gap:0.5rem;">
+            <input type="text" id="publicInput" placeholder="e.g. Which is the best trade for a bullish view on semiconductors?" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
+            <button class="btn" onclick="sendPublic()">Ask</button>
+          </div>
+          <div id="publicTools" style="margin-top:0.75rem;color:var(--muted);font-size:0.75rem;"></div>
+        </div>
+      </div>
       <!-- Webhooks -->
       <div id="webhooks" class="panel">
         <div class="card">
@@ -247,6 +276,7 @@
       if (tab === 'payments') loadPayments();
       if (tab === 'pay') checkMetaMask();
       if (tab === 'webhooks') loadWebhooks();
+      if (tab === 'public') loadPublic();
     }
     async function init() { loadStats(); checkMetaMask(); await loadPaymentOptions(); }
     const NETWORKS = {
@@ -630,6 +660,91 @@ async function loadStats() {
       container.innerHTML += `<div class="chat-msg assistant">${res.response}</div>`;
       container.scrollTop = container.scrollHeight;
     }
+    // ---------------------------------------------------------------------
+    // Public.com instrument research
+    //
+    // The OAuth token lives server-side, keyed to the dashboard session, so the
+    // browser never sees it. This tab only calls our own /api/public/* routes.
+    // ---------------------------------------------------------------------
+    async function loadPublicStatus() {
+      const notice = document.getElementById('publicNotice');
+      const connectBtn = document.getElementById('publicConnectBtn');
+      const disconnectBtn = document.getElementById('publicDisconnectBtn');
+      const badge = document.getElementById('publicStatus');
+      try {
+        const s = await api('/api/public/status');
+        if (!s.configured) {
+          notice.innerHTML = '<div class="status-msg error">Public.com is not configured. Set <code>PUBLIC_CLIENT_ID</code> on the Worker to a client id issued by Public.com, then reload.</div>';
+          connectBtn.style.display = 'none';
+          disconnectBtn.style.display = 'none';
+          badge.style.display = 'none';
+          return;
+        }
+        notice.innerHTML = '';
+        connectBtn.style.display = s.connected ? 'none' : '';
+        disconnectBtn.style.display = s.connected ? '' : 'none';
+        badge.style.display = s.connected ? '' : 'none';
+      } catch (err) {
+        notice.innerHTML = '<div class="status-msg error">Could not read Public.com status: ' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    async function connectPublic() {
+      const notice = document.getElementById('publicNotice');
+      try {
+        const res = await api('/api/public/connect');
+        if (!res.authorizeUrl) throw new Error(res.error || 'no authorize URL');
+        // Full navigation: this is a cross-origin OAuth redirect, not a fetch.
+        window.location.href = res.authorizeUrl;
+      } catch (err) {
+        notice.innerHTML = '<div class="status-msg error">' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    async function disconnectPublic() {
+      const notice = document.getElementById('publicNotice');
+      try {
+        await api('/api/public/disconnect', 'POST', {});
+        document.getElementById('publicMessages').innerHTML = '';
+        document.getElementById('publicTools').textContent = '';
+        loadPublicStatus();
+      } catch (err) {
+        notice.innerHTML = '<div class="status-msg error">' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    async function sendPublic() {
+      const input = document.getElementById('publicInput');
+      const container = document.getElementById('publicMessages');
+      const msg = input.value.trim();
+      if (!msg) return;
+      input.value = '';
+      container.innerHTML += '<div class="chat-msg user">' + escapeHtml(msg) + '</div>';
+      container.innerHTML += '<div class="chat-msg assistant" id="publicThinking">Thinking...</div>';
+      container.scrollTop = container.scrollHeight;
+      try {
+        const res = await api('/api/public/chat', 'POST', { message: msg });
+        document.getElementById('publicThinking').remove();
+        if (res.error) {
+          container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.error) + '</div>';
+        } else {
+          container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.answer || '(no answer)') + '</div>';
+          const calls = Array.isArray(res.calls) ? res.calls : [];
+          document.getElementById('publicTools').textContent = calls.length
+            ? 'Tools used: ' + calls.map(c => c.name).join(', ')
+            : 'No tools were called for this question.';
+        }
+      } catch (err) {
+        const t = document.getElementById('publicThinking');
+        if (t) t.remove();
+        container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(err.message) + '</div>';
+      }
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function loadPublic() {
+      loadPublicStatus();
+    }
     document.getElementById('chatInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
     if (window.ethereum) {
       window.ethereum.on('accountsChanged', (accounts) => {
@@ -723,6 +838,7 @@ async function loadStats() {
       case "slack": loadSlackMessages(); break;
       case "payments": loadPayments(); break;
       case "webhooks": loadWebhooks(); break;
+      case "public": loadPublicStatus(); break;
       default: break;
     }
   }
