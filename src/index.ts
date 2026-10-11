@@ -81,7 +81,11 @@ export default {
       // team/channel), but the dashboard, REST API and MCP server all read the
       // "agent" instance — so routing by that derived name recorded verified
       // events into a Durable Object nothing ever displayed.
-      const agent = await getAgentByName(env.CfmailAgent as any, "agent");
+      // Use idFromName directly (not getAgentByName): the SDK helper resolves
+      // to a different instance than the dashboard reads, so webhook events
+      // were logged where nothing displays them. Verified 2026-10-11.
+      const agentId = env.CfmailAgent.idFromName("agent");
+      const agent = env.CfmailAgent.get(agentId) as any;
 
       // GitHub signatures carry no timestamp: reject replayed deliveries. The
       // agent records delivery IDs in a rolling 24h set (fail closed).
@@ -307,7 +311,8 @@ async function handleSlackInstall(request: Request, env: Env): Promise<Response>
         `Slack refused the authorization code: ${data?.error ?? "unknown error"}`,
       );
     }
-    const agent = await getAgentByName(env.CfmailAgent as any, "agent");
+    const slackAgentId = env.CfmailAgent.idFromName("agent");
+    const agent = env.CfmailAgent.get(slackAgentId) as any;
     const stored = await (agent as any).setSlackBotToken(data.access_token);
     if (!stored?.success) {
       return slackInstallErrorPage("Could not store the Slack bot token.");
