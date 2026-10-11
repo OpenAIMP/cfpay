@@ -3,7 +3,7 @@ import Stripe from "stripe";
 import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
 import { formatAmount, formatEthAmount, parsePaymentConfig, verifyTestnetPayment } from "./payments";
-import { CfmailAgentSQLite as CfmailAgent } from "./agent";
+import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from "./agent";
 import {
   PUBLIC_MCP_URL,
   listTools,
@@ -718,7 +718,23 @@ export function createApp() {
     }
     const body = await c.req.json<{ email: string; request: string }>();
     const agent = getAgent(c);
-    const result = await agent.processPaidRequest(body.email, body.request, verification.claim);
+    let result;
+    try {
+      result = await agent.processPaidRequest(body.email, body.request, verification.claim);
+    } catch (err) {
+      // A replayed (already-consumed) claim is rejected by the agent. Fail
+      // closed with 409 rather than a generic 500.
+      if (err instanceof Error && err.message.startsWith(PAYMENT_CLAIM_REUSED_PREFIX)) {
+        return c.json(
+          {
+            error: "Payment already used",
+            details: err.message.slice(PAYMENT_CLAIM_REUSED_PREFIX.length).trim(),
+          },
+          409,
+        );
+      }
+      throw err;
+    }
     c.header("PAYMENT-RESPONSE", verification.receipt);
     c.header("x-payment-response", verification.receipt);
     return c.json({ success: true, receipt: result });
@@ -759,7 +775,23 @@ export function createApp() {
     }
     const body = await c.req.json<{ email: string; request: string }>();
     const agent = getAgent(c);
-    const result = await agent.processPaidRequest(body.email, body.request, verification.claim);
+    let result;
+    try {
+      result = await agent.processPaidRequest(body.email, body.request, verification.claim);
+    } catch (err) {
+      // A replayed (already-consumed) claim is rejected by the agent. Fail
+      // closed with 409 rather than a generic 500.
+      if (err instanceof Error && err.message.startsWith(PAYMENT_CLAIM_REUSED_PREFIX)) {
+        return c.json(
+          {
+            error: "Payment already used",
+            details: err.message.slice(PAYMENT_CLAIM_REUSED_PREFIX.length).trim(),
+          },
+          409,
+        );
+      }
+      throw err;
+    }
     c.header("PAYMENT-RESPONSE", verification.receipt);
     c.header("x-payment-response", verification.receipt);
     return c.json({
