@@ -7,7 +7,8 @@ import { isAcceptedAccessToken } from "./mcp-oauth-server";
  *
  * Which credential types are accepted is chosen by MCP_AUTH_MODE:
  *
- *   "either" (default) — a static bearer token OR a valid GitHub token
+ *   "either" (default) — a static bearer token, a valid GitHub token, or an
+ *     OAuth access token issued by this server's own authorization server
  *   "static"           — only the static bearer token
  *   "github"           — only a valid GitHub token
  *   "none"             — no authorisation; the endpoint is public
@@ -238,8 +239,10 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
       return null;
     }
 
-    // 2) OAuth access token issued by our own authorization server.
-    if (await isAcceptedAccessToken(presented, env)) {
+    // 2) OAuth access token issued by our own authorization server. Only in
+    //    "either" mode: "static" and "github" are documented as exclusive, so
+    //    an OAuth token must not satisfy them.
+    if (mode === "either" && (await isAcceptedAccessToken(presented, env))) {
       return null;
     }
 
