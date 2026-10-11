@@ -79,12 +79,12 @@ export default {
       // Forward to the canonical agent instance. webhooks.ts derives a
       // per-provider instance name (repo full_name, Stripe customer id, Slack
       // team/channel), but the dashboard, REST API and MCP server all read the
+      // Forward to the canonical agent instance. webhooks.ts derives a
+      // per-provider instance name (repo full_name, Stripe customer id, Slack
+      // team/channel), but the dashboard, REST API and MCP server all read the
       // "agent" instance — so routing by that derived name recorded verified
       // events into a Durable Object nothing ever displayed.
-      // Use idFromName directly: getAgentByName resolves to a different
-      // instance than the dashboard reads. No RPC needed here (dedupe is inside the DO).
-      const agentId = env.CfmailAgent.idFromName("agent");
-      const agent = env.CfmailAgent.get(agentId);
+      const agent = await getAgentByName(env.CfmailAgent as any, "agent");
 
       // Slack message events also become a conversation in the Slack tab:
       // handleSlackEvent records them on this same central instance (which the
@@ -103,21 +103,7 @@ export default {
         }
       }
 
-      // Bypass DO fetch (SDK throws before onRequest); use RPC instead.
-      // verified.payload is already parsed and signature-checked.
-      const headers: Record<string, string> = {};
-      request.headers.forEach((v, k) => { headers[k] = v; });
-      try {
-        const result = await (agent as any).handleWebhookRpc(
-          verified.provider,
-          verified.payload,
-          headers,
-        );
-        return new Response(result.message, { status: result.status });
-      } catch (err) {
-        console.error("Webhook RPC failed:", err);
-        return new Response("Webhook processing failed", { status: 500 });
-      }
+      return agent.fetch(request);
     }
 
     // HTTP webhook endpoint (legacy Slack apps)

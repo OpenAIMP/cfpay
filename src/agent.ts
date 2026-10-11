@@ -1753,45 +1753,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * it and returns false. Entries older than 24h are pruned, bounding the set.
    * Check-and-record is atomic under the Durable Object input gate.
    */
-  @callable()
-  async isDuplicateGitHubDelivery(deliveryId: string): Promise<boolean> {
-    const state = this.ensureState();
-    const seen = { ...(state.githubProcessedDeliveries || {}) };
-    const cutoff = Date.now() - 24 * 3600 * 1000;
-    for (const [id, ts] of Object.entries(seen)) {
-      if (new Date(ts).getTime() < cutoff) delete seen[id];
-    }
-    if (seen[deliveryId]) {
-      this.setState({ ...state, githubProcessedDeliveries: seen });
-      return true;
-    }
-    seen[deliveryId] = new Date().toISOString();
-    this.setState({ ...state, githubProcessedDeliveries: seen });
-    return false;
-  }
 
-  /**
-   * Webhook entrypoint via RPC (bypasses DO fetch).
-   * The Agents SDK fetch throws on POST /webhooks/* before reaching onRequest,
-   * so the Worker calls this directly instead of agent.fetch(request).
-   */
-  @callable()
-  async handleWebhookRpc(
-    provider: "github" | "stripe" | "slack",
-    payload: any,
-    headers: Record<string, string>,
-  ): Promise<{ ok: boolean; status: number; message: string }> {
-    // GitHub dedupe (same logic as onRequest)
-    if (provider === "github") {
-      const deliveryId = headers["x-github-delivery"] ?? headers["X-Github-Delivery"] ?? "";
-      const duplicate = await this.isDuplicateGitHubDelivery(deliveryId);
-      if (duplicate) {
-        return { ok: false, status: 409, message: "Duplicate webhook delivery" };
-      }
-    }
-    await this.processWebhookEvent(provider, payload);
-    return { ok: true, status: 200, message: "OK" };
-  }
 
   // ===========================================================================
   // RPC: OAuth refresh-token rotation
