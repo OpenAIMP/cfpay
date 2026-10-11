@@ -109,6 +109,16 @@ async function fetchJson(url: string, init?: RequestInit): Promise<{ ok: boolean
  * the protected-resource document (RFC 9762), then the authorization server's
  * metadata (RFC 8414, both the path-inserted and root forms).
  */
+/** True for absolute https: URLs only. Used to validate remote-supplied discovery URLs. */
+function isHttpsUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export async function discoverAuthorizationServer(resourceUrl: string): Promise<AuthorizationServerMetadata> {
   // A bare POST is enough: the 401 carries the challenge without any credential.
   const challenge = await fetch(resourceUrl, {
@@ -122,11 +132,21 @@ export async function discoverAuthorizationServer(resourceUrl: string): Promise<
     throw new Error("The MCP server did not advertise OAuth resource metadata (WWW-Authenticate).");
   }
 
+  // The metadata URL comes from a remote server's 401 header: only follow it
+  // over https.
+  if (!isHttpsUrl(match[1])) {
+    throw new Error("The MCP server advertised a non-HTTPS resource metadata URL.");
+  }
+
   const prm = await fetchJson(match[1]);
   if (!prm.ok || !Array.isArray(prm.json?.authorization_servers) || !prm.json.authorization_servers.length) {
     throw new Error("The MCP resource metadata lists no authorization server.");
   }
   const issuer: string = prm.json.authorization_servers[0];
+  // The issuer comes from the remote metadata document: only follow it over https.
+  if (!isHttpsUrl(issuer)) {
+    throw new Error("The MCP server advertised a non-HTTPS authorization server issuer.");
+  }
 
   const candidates = issuer.endsWith("/")
     ? [`${issuer}/.well-known/oauth-authorization-server`]

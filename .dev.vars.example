@@ -13,6 +13,7 @@ SLACK_SIGNING_SECRET=your-slack-signing-secret
 SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_APP_TOKEN=xapp-your-app-token
 SLACK_CLIENT_ID=your-slack-client-id
+# SLACK_CLIENT_SECRET=your-slack-client-secret  # for the /slack/install OAuth flow
 
 # Optional: outgoing Slack notifications (the dashboard's "Send to Slack" button
 # and webhook-received notifications). This is an INCOMING WEBHOOK URL from
@@ -20,6 +21,10 @@ SLACK_CLIENT_ID=your-slack-client-id
 # above despite the similar name. Leave it unset and the button will simply
 # report that it is not configured.
 #   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+
+# Optional: restrict the dashboard's "send webhook" RPC to URL prefixes.
+# Unset = any URL allowed (a warning is logged).
+#   OUTBOUND_WEBHOOK_ALLOWLIST=https://hooks.slack.com/,https://example.com/hooks/
 
 # Optional: email a human when a webhook event arrives. Leave unset to keep
 # webhook events dashboard-only. WEBHOOK_NOTIFY_PROVIDERS is an optional
