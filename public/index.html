@@ -652,10 +652,10 @@ async function loadStats() {
       if (!data.emails || data.emails.length === 0) { setListHtml(list, '<div class="empty">No emails yet</div>'); return; }
       setListHtml(list, data.emails.map(e => `
         <div class="card">
-          <div class="card-header"><div><span class="badge-${e.direction}">${e.direction}</span><span class="subject" style="margin-left:0.5rem;">${e.subject}</span></div><div class="meta">${e.direction === 'inbound' ? 'From: ' + e.from : 'To: ' + e.to}<br>${new Date(e.receivedAt).toLocaleString()}</div></div>
-          <div class="card-body">${(e.body || '').substring(0, 300)}${e.body && e.body.length > 300 ? '...' : ''}</div>
-          ${e.aiSummary ? `<div class="ai-box"><div class="ai-label">AI Summary</div>${e.aiSummary}</div>` : ''}
-          ${e.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${(e.aiResponse || '').substring(0, 300)}...</div>` : ''}
+          <div class="card-header"><div><span class="badge-${e.direction}">${e.direction}</span><span class="subject" style="margin-left:0.5rem;">${escapeHtml(e.subject)}</span></div><div class="meta">${e.direction === 'inbound' ? 'From: ' + escapeHtml(e.from) : 'To: ' + escapeHtml(e.to)}<br>${new Date(e.receivedAt).toLocaleString()}</div></div>
+          <div class="card-body">${escapeHtml((e.body || '').substring(0, 300))}${e.body && e.body.length > 300 ? '...' : ''}</div>
+          ${e.aiSummary ? `<div class="ai-box"><div class="ai-label">AI Summary</div>${escapeHtml(e.aiSummary)}</div>` : ''}
+          ${e.aiResponse ? `<div class="ai-box"><div class="ai-label">AI Response</div>${escapeHtml((e.aiResponse || '').substring(0, 300))}...</div>` : ''}
         </div>`).join(''));
     }
 
@@ -713,12 +713,12 @@ async function loadStats() {
       if (!msg) return;
       input.value = '';
       const container = document.getElementById('chatMessages');
-      container.innerHTML += `<div class="chat-msg user">${msg}</div>`;
+      container.innerHTML += `<div class="chat-msg user">${escapeHtml(msg)}</div>`;
       container.innerHTML += `<div class="chat-msg assistant" id="thinking">Thinking...</div>`;
       container.scrollTop = container.scrollHeight;
       const res = await api('/api/dashboard/chat', 'POST', { message: msg });
       document.getElementById('thinking').remove();
-      container.innerHTML += `<div class="chat-msg assistant">${res.response}</div>`;
+      container.innerHTML += `<div class="chat-msg assistant">${escapeHtml(res.response)}</div>`;
       container.scrollTop = container.scrollHeight;
     }
     // ---------------------------------------------------------------------
