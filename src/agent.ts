@@ -17,7 +17,13 @@ import type {
 import type { UsageCost } from "./models";
 import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
-import { computeCost, defaultModelId, normaliseToolCalls, resolveModelId } from "./models";
+import {
+  computeCost,
+  defaultModelId,
+  normaliseToolCalls,
+  readCompletion,
+  resolveModelId,
+} from "./models";
 import {
   formatAmount,
   generateId,
@@ -969,21 +975,26 @@ Do not claim to have completed a payment unless you have received confirmation.`
         { messages, tools: this.toAiToolSpecs(tools), max_tokens: 2048 } as never,
       );
 
-      if (response?.usage) {
-        usage.prompt_tokens += Number(response.usage.prompt_tokens || 0);
-        usage.completion_tokens += Number(response.usage.completion_tokens || 0);
+      // Models disagree on the envelope: older ones put response/tool_calls at the
+      // top level, newer ones nest them under choices[0].message. Reading the wrong
+      // one yields undefined for both, which looks like "no tools, no answer".
+      const completion = readCompletion(response);
+
+      const u: any = completion.usage;
+      if (u) {
+        usage.prompt_tokens += Number(u.prompt_tokens || 0);
+        usage.completion_tokens += Number(u.completion_tokens || 0);
         usage.total_tokens +=
-          Number(response.usage.total_tokens || 0) ||
-          Number(response.usage.prompt_tokens || 0) + Number(response.usage.completion_tokens || 0);
+          Number(u.total_tokens || 0) || Number(u.prompt_tokens || 0) + Number(u.completion_tokens || 0);
       }
 
       // Models answer in either the legacy or the current tool-call shape.
       // Normalising here is what makes the follow-up request valid: echoing a
       // legacy call back as tool_calls fails validation with AiError 8007.
-      const toolCalls = normaliseToolCalls(response?.tool_calls);
+      const toolCalls = normaliseToolCalls(completion.toolCalls);
       if (toolCalls.length === 0) {
         return {
-          answer: String(response?.response ?? "").trim(),
+          answer: completion.text.trim(),
           trace,
           model: modelId,
           cost: computeCost(modelId, usage),
@@ -993,7 +1004,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
       // Echo the assistant's own tool_calls back verbatim, ids included.
       messages.push({
         role: "assistant",
-        content: String(response?.response ?? ""),
+        content: completion.text,
         tool_calls: toolCalls,
       });
 

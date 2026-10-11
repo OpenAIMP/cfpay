@@ -108,6 +108,64 @@ export function computeCost(modelId: string, usage: unknown): UsageCost | null {
   return { promptTokens, completionTokens, totalTokens, inputCost, outputCost, totalCost };
 }
 
+/* ------------------------- response envelopes ---------------------------- */
+
+/**
+ * Workers AI returns one of two envelopes, and which one depends on the model.
+ *
+ *   legacy      { response, tool_calls, usage }          llama-3.3-70b
+ *   chat        { choices[0].message{content, tool_calls}, usage }
+ *                                                        gpt-oss, glm, most newer
+ *
+ * This was the cause of a silent regression: the code read .response and
+ * .tool_calls at the top level, which only the older models populate. Switching
+ * the default to gpt-oss-120b produced undefined for both, so no tools were
+ * called and the answer came back empty - with no error, because reading a
+ * missing property is not an error.
+ *
+ * Normalising here means the caller never has to know which model answered.
+ */
+export interface NormalisedCompletion {
+  text: string;
+  toolCalls: unknown;
+  usage: unknown;
+  finishReason: string;
+  /** Which envelope the model used, so a bare reply can be told from an empty one. */
+  envelope: "legacy" | "chat" | "unknown";
+}
+
+export function readCompletion(raw: any): NormalisedCompletion {
+  if (!raw || typeof raw !== "object") {
+    return { text: "", toolCalls: undefined, usage: undefined, finishReason: "", envelope: "unknown" };
+  }
+
+  // Chat-completions envelope. Keyed on the presence of choices, not on the
+  // absence of response, because llama-3.3-70b returns both and the legacy fields
+  // are the populated ones there.
+  if (Array.isArray(raw.choices) && raw.choices.length > 0) {
+    const choice = raw.choices[0] ?? {};
+    const message = choice.message ?? {};
+    const text = typeof message.content === "string" ? message.content : "";
+    if (message.tool_calls !== undefined || raw.tool_calls === undefined) {
+      return {
+        text,
+        toolCalls: message.tool_calls,
+        usage: raw.usage,
+        finishReason: String(choice.finish_reason ?? ""),
+        envelope: "chat",
+      };
+    }
+  }
+
+  return {
+    text: typeof raw.response === "string" ? raw.response : "",
+    toolCalls: raw.tool_calls,
+    usage: raw.usage,
+    finishReason: "",
+    envelope: "legacy",
+  };
+}
+
 /* --------------------------- tool-call shapes ---------------------------- */
 
 /** A tool call in the shape the chat-completions API requires. */
