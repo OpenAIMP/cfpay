@@ -252,3 +252,7 @@ Note that this Worker's own `/mcp` gate is independent of the portal. See
 `MCP_AUTH_MODE` in `wrangler.jsonc` and `.dev.vars.example`.
 
 
+
+
+
+
