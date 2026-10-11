@@ -17,6 +17,8 @@ export interface Env {
   SLACK_SIGNING_SECRET: string;
   SLACK_APP_TOKEN: string;
   SLACK_CLIENT_ID: string;
+  /** Secret for the Slack OAuth install flow (/slack/install code exchange). */
+  SLACK_CLIENT_SECRET?: string;
   // Webhook secrets (incoming verification)
   GITHUB_WEBHOOK_SECRET?: string;
   STRIPE_WEBHOOK_SECRET?: string;
@@ -61,6 +63,12 @@ export interface Env {
   WEBHOOK_NOTIFY_PROVIDERS?: string;
   OUTBOUND_PAY_TO_WHITELIST?: string;
   OUTBOUND_MAX_AMOUNT_ATOMIC?: string;
+  /**
+   * Optional comma-separated URL prefixes restricting the @callable
+   * sendWebhook RPC. When set and non-empty, URLs not starting with one of
+   * the prefixes are refused.
+   */
+  OUTBOUND_WEBHOOK_ALLOWLIST?: string;
 }
 
 export interface PaymentNetworkConfig {
@@ -186,6 +194,11 @@ export interface AgentState {
    * lifetime are pruned.
    */
   oauthConsumedRefreshJtis?: Record<string, string>;
+  /**
+   * Slack bot token from the OAuth install flow (/slack/install). Takes
+   * precedence over the SLACK_BOT_TOKEN env var when set.
+   */
+  slackBotToken?: string;
   /**
    * Public.com personal access token. Held server-side, behind
    * DASHBOARD_API_KEY, and never returned to the browser.

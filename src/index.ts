@@ -251,11 +251,85 @@ async function handleSlackWebhook(request: Request, env: Env): Promise<Response>
   return new Response("OK", { status: 200 });
 }
 
+/** HTML error page for the Slack install flow. */
+function slackInstallErrorPage(message: string): Response {
+  const safe = message.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  return new Response(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Slack install failed</title></head>` +
+      `<body style="font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1.25rem">` +
+      `<h1>Slack install failed</h1><p>${safe}</p></body></html>`,
+    { status: 500, headers: { "Content-Type": "text/html; charset=utf-8" } },
+  );
+}
+
 /**
- * Slack OAuth install redirect.
+ * Slack OAuth install flow.
+ *
+ * GET /slack/install (no params) starts the flow by redirecting to Slack.
+ * Slack then redirects back here with ?code=, which is exchanged for a bot
+ * token and stored on the canonical agent instance. The redirect_uri is
+ * derived from the request origin so staging/preview deployments work too.
  */
 async function handleSlackInstall(request: Request, env: Env): Promise<Response> {
+  const requestUrl = new URL(request.url);
+  const redirectUri = requestUrl.origin + "/slack/install";
+  const code = requestUrl.searchParams.get("code");
+
+  // Callback branch: exchange the authorization code for a bot token.
+  if (code) {
+    const clientId = (env.SLACK_CLIENT_ID ?? "").trim();
+    const clientSecret = (env.SLACK_CLIENT_SECRET ?? "").trim();
+    if (!clientId || !clientSecret) {
+      return slackInstallErrorPage(
+        "Slack OAuth is not configured: set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET.",
+      );
+    }
+    let data: any;
+    try {
+      const res = await fetch("https://slack.com/api/oauth.v2.access", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          code,
+          redirect_uri: redirectUri,
+        }),
+      });
+      data = await res.json();
+    } catch (err) {
+      return slackInstallErrorPage(
+        `Token exchange failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!data?.ok || typeof data?.access_token !== "string" || !data.access_token) {
+      return slackInstallErrorPage(
+        `Slack refused the authorization code: ${data?.error ?? "unknown error"}`,
+      );
+    }
+    const agent = await getAgentByName(env.CfmailAgent as any, "agent");
+    const stored = await (agent as any).setSlackBotToken(data.access_token);
+    if (!stored?.success) {
+      return slackInstallErrorPage("Could not store the Slack bot token.");
+    }
+    return new Response(
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Slack installed</title></head>` +
+        `<body style="font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1.25rem">` +
+        `<h1>Slack installed</h1><p>The CFmail agent can now post to Slack. You can close this tab.</p></body></html>`,
+      { headers: { "Content-Type": "text/html; charset=utf-8" } },
+    );
+  }
+
+  // Start branch: redirect to Slack for authorization.
+  const clientId = (env.SLACK_CLIENT_ID ?? "").trim();
+  if (!clientId) {
+    return slackInstallErrorPage("Slack OAuth is not configured: set SLACK_CLIENT_ID.");
+  }
   const scopes = "chat:write,chat:write.public,app_mentions:read,im:write,im:history";
-  const url = `https://slack.com/oauth/v2/authorize?client_id=${env.SLACK_CLIENT_ID}&scope=${scopes}&redirect_uri=https://pay.openaimp.com/slack/install`;
-  return Response.redirect(url, 302);
+  const authorizeUrl =
+    "https://slack.com/oauth/v2/authorize" +
+    `?client_id=${encodeURIComponent(clientId)}` +
+    `&scope=${encodeURIComponent(scopes)}` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  return Response.redirect(authorizeUrl, 302);
 }
