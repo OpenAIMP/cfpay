@@ -32,23 +32,3 @@ SLACK_CLIENT_ID=your-slack-client-id
 # environment for production. STRIPE_CONFIG lives in wrangler.jsonc.
 #   STRIPE_SECRET_KEY=sk_test_...
 # For local webhook testing: stripe listen --forward-to localhost:8787/webhooks/stripe
-# --- Public.com MCP (https://mcp.public.com/mcp) -----------------------------
-# Public.com publishes NO registration endpoint, so a client id must be obtained
-# from them. Until PUBLIC_CLIENT_ID is set, the dashboard's Public.com tab
-# reports that it is unconfigured and offers no Connect button.
-#
-# Create the client with Public.com, then register this exact redirect URI:
-#   https://pay.openaimp.com/api/public/callback
-#
-# PKCE (S256) is used and Public.com lists token_endpoint_auth_method "none", so
-# this is treated as a public client. Set PUBLIC_CLIENT_SECRET only if they issue
-# you a confidential client.
-PUBLIC_CLIENT_ID=
-# PUBLIC_CLIENT_SECRET=
-#
-# Space-separated. trading.write is deliberately NOT included: it permits placing
-# orders, and this tab is read-only. Add it only if you intend the agent to trade.
-# PUBLIC_SCOPES=marketdata trading.read
-#
-# Override the redirect if it differs from <origin>/api/public/callback:
-# PUBLIC_REDIRECT_URI=

@@ -30,8 +30,6 @@ import {
   sendSlackMessageWithButton,
   type SlackEvent,
 } from "./slack";
-import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
-import type { McpSession, McpTool, PublicTokens } from "./public-mcp";
 
 const DEFAULT_STATE: AgentState = {
   emails: [],
@@ -862,135 +860,8 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return slackMessages.slice(-limit).reverse();
   }
 
-  // ===========================================================================
-  // Public.com MCP
-  // ===========================================================================
-
-  /**
-   * Tokens for the dashboard user's Public.com account, or null when not
-   * connected. One set per agent instance: the dashboard is single-tenant and
-   * every route reaching this is behind DASHBOARD_API_KEY.
-   */
-  @callable()
-  async getPublicTokens(): Promise<PublicTokens | null> {
-    const state = this.ensureState() as any;
-    return (state.publicTokens as PublicTokens | undefined) ?? null;
-  }
-
-  @callable()
-  async setPublicTokens(tokens: PublicTokens): Promise<void> {
-    const state = this.ensureState() as any;
-    this.setState({ ...state, publicTokens: tokens });
-  }
-
-  @callable()
-  async clearPublicTokens(): Promise<void> {
-    const state = this.ensureState() as any;
-    const next = { ...state };
-    delete next.publicTokens;
-    this.setState(next);
-  }
-
-  /**
-   * Answer a question about instruments by letting the model call Public.com's
-   * MCP tools.
-   *
-   * Read-only on purpose: a tool that would place or modify an order is refused
-   * before it is called. The requested scope is trading.read, but this guard is
-   * a second line of defence that does not rely on the scope being honoured.
-   */
-  async answerInstrumentQuestion(
-    accessToken: string,
-    question: string,
-    tools: McpTool[],
-    session: McpSession,
-  ): Promise<{ answer: string; calls: Array<{ name: string; args: unknown }> }> {
-    const calls: Array<{ name: string; args: unknown }> = [];
-
-    const toolList = tools
-      .map((t) => "- " + t.name + (t.description ? ": " + String(t.description).slice(0, 300) : ""))
-      .join("\n");
-
-    const messages: Array<{ role: string; content: string }> = [
-      {
-        role: "system",
-        content: [
-          "You help compare tradeable instruments using Public.com market data.",
-          "Call the available tools to gather real data before answering; never invent prices or symbols.",
-          "When you propose a trade, state the instrument, the direction and why, then say plainly that this is not investment advice.",
-          "You cannot place orders. If asked to, explain that this dashboard is read-only.",
-          "",
-          "Available tools:",
-          toolList,
-        ].join("\n"),
-      },
-      { role: "user", content: question },
-    ];
-
-    // Bounded: without a cap a model can call tools indefinitely.
-    for (let turn = 0; turn < 6; turn++) {
-      const response: any = await this.env.AI.run(
-        "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
-        { messages, tools: this.toAiToolSpecs(tools) } as never,
-      );
-
-      const toolCalls = response?.tool_calls;
-      if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-        return { answer: String(response?.response ?? "").trim(), calls };
-      }
-
-      messages.push({ role: "assistant", content: String(response?.response ?? "") });
-
-      for (const call of toolCalls) {
-        const name = String(call?.name ?? call?.function?.name ?? "");
-        const rawArgs = call?.arguments ?? call?.function?.arguments ?? {};
-        const args = typeof rawArgs === "string" ? safeJson(rawArgs) : rawArgs;
-        if (!name) continue;
-
-        if (isOrderPlacingTool(name)) {
-          messages.push({
-            role: "tool",
-            content:
-              "Refused: " +
-              name +
-              " would place or modify an order. This dashboard is read-only for trading.",
-          });
-          continue;
-        }
-
-        calls.push({ name, args });
-        let output: string;
-        try {
-          output = await callTool(accessToken, name, args, session);
-        } catch (err) {
-          output = "Tool error: " + String(err);
-        }
-        messages.push({ role: "tool", content: output.slice(0, 8000) });
-      }
-    }
-
-    return {
-      answer:
-        "I stopped after several tool calls without reaching an answer. Try narrowing the question.",
-      calls,
-    };
-  }
-
-  /** Translate MCP tool definitions into the Workers AI tool schema. */
-  private toAiToolSpecs(tools: McpTool[]): Array<Record<string, unknown>> {
-    return tools.map((t) => ({
-      name: t.name,
-      description: t.description ? String(t.description).slice(0, 500) : t.name,
-      parameters:
-        t.inputSchema && typeof t.inputSchema === "object"
-          ? t.inputSchema
-          : { type: "object", properties: {} },
-    }));
-  }
-
   @callable()
   async chat(
-
     message: string,
   ): Promise<{ response: string; history: ChatMessage[] }> {
     const response = await this.generateAIResponse(message);

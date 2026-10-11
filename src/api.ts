@@ -4,21 +4,6 @@ import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
 import { formatAmount, formatEthAmount, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent } from "./agent";
-import {
-  PUBLIC_CLIENT_METADATA_PATH,
-  PUBLIC_MCP_URL,
-  buildAuthorizeUrl,
-  buildClientMetadata,
-  clientIdFor,
-  exchangeCode,
-  listTools,
-  pkceChallenge,
-  publicScopes,
-  randomUrlSafe,
-  refreshTokens,
-  type McpSession,
-  type McpTool,
-} from "./public-mcp";
 
 export function createApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -33,161 +18,57 @@ export function createApp() {
   }
 
   // ---------------------------------------------------------------------------
-  // Public.com MCP: OAuth 2.1 authorization-code flow with PKCE (S256).
+  // Public.com MCP endpoint probe.
   //
-  // Public.com publishes no registration_endpoint, so no client can register
-  // itself; PUBLIC_CLIENT_ID must be obtained from them and configured. Tokens
-  // are held per browser session in the agent's state, so each dashboard user
-  // authorizes their own Public.com account. Nothing here holds a shared
-  // credential.
+  // The dashboard links out to Public.com rather than proxying it: that server
+  // exposes order placement, and holding a shared credential here would let any
+  // dashboard visitor act as the brokerage account. So the only server-side
+  // concern is telling the user whether the endpoint is reachable, which needs
+  // no credential.
   //
-  // trading.write is not requested by default. See PUBLIC_DEFAULT_SCOPES.
+  // An unauthenticated POST returns 401 with a WWW-Authenticate challenge. That
+  // is the healthy answer: it proves the endpoint is live and that sign-in is
+  // required, which is what the tab claims.
   // ---------------------------------------------------------------------------
 
-  function publicOrigin(c: any): string {
-    return ((c.env as any).PUBLIC_ORIGIN || new URL(c.req.url).origin).replace(/\/+$/, "");
-  }
+  const PUBLIC_MCP_ENDPOINT = "https://mcp.public.com/mcp";
 
-  const publicState = new Map<string, { verifier: string; created: number }>();
-  const PUBLIC_STATE_TTL_MS = 10 * 60 * 1000;
-
-  function rememberVerifier(state: string, verifier: string): void {
-    const now = Date.now();
-    for (const [k, v] of publicState) if (now - v.created > PUBLIC_STATE_TTL_MS) publicState.delete(k);
-    publicState.set(state, { verifier, created: now });
-  }
-
-  function takeVerifier(state: string): string | null {
-    const entry = publicState.get(state);
-    if (!entry) return null;
-    publicState.delete(state);
-    if (Date.now() - entry.created > PUBLIC_STATE_TTL_MS) return null;
-    return entry.verifier;
-  }
-
-  // Client ID Metadata Document. Public.com fetches this because the client_id
-  // we send is this URL, which is how a client connects with nothing but a
-  // sign-in. Public and cacheable; it contains no secrets.
-  app.get(PUBLIC_CLIENT_METADATA_PATH, (c) => {
-    return new Response(JSON.stringify(buildClientMetadata(c.env, publicOrigin(c))), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "public, max-age=300",
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
-  });
-
-  app.get("/api/public/status", requireAuth, async (c) => {
-    const agent = getAgent(c);
-    const tokens = await agent.getPublicTokens();
-    return c.json({
-      // Always true now: without a registered client id we identify by metadata
-      // document, so there is no prerequisite to report.
-      configured: true,
-      clientId: clientIdFor(c.env, publicOrigin(c)),
-      usesRegisteredClient: Boolean((c.env as any).PUBLIC_CLIENT_ID),
-      connected: Boolean(tokens?.access_token),
-      expiresAt: tokens?.expires_at ?? null,
-      scopes: publicScopes(c.env),
-      mcpUrl: PUBLIC_MCP_URL,
-    });
-  });
-
-  app.get("/api/public/connect", requireAuth, async (c) => {
-    const state = randomUrlSafe(16);
-    const verifier = randomUrlSafe(48);
-    rememberVerifier(state, verifier);
-    const challenge = await pkceChallenge(verifier);
-    return c.json({
-      authorizeUrl: buildAuthorizeUrl(c.env, publicOrigin(c), state, challenge),
-    });
-  });
-
-  app.get("/api/public/callback", async (c) => {
-    const params = new URL(c.req.url).searchParams;
-    const error = params.get("error");
-    if (error) {
-      return c.html(
-        "<p>Public.com authorization failed: " +
-          escapeHtml(String(error)) +
-          "<br>" +
-          escapeHtml(String(params.get("error_description") || "")) +
-          "</p>",
-        400,
-      );
-    }
-
-    const code = params.get("code") || "";
-    const state = params.get("state") || "";
-    const verifier = takeVerifier(state);
-    if (!code || !verifier) {
-      return c.html("<p>Invalid or expired authorization response.</p>", 400);
-    }
-
+  app.get("/api/public/endpoint", requireAuth, async (c) => {
     try {
-      const tokens = await exchangeCode(c.env, publicOrigin(c), code, verifier);
-      const agent = getAgent(c);
-      await agent.setPublicTokens(tokens);
-      return c.html(
-        "<p>Connected to Public.com. You can close this tab and return to the dashboard.</p>",
-      );
+      const res = await fetch(PUBLIC_MCP_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "cfmail", version: "1" } },
+        }),
+      });
+
+      const challenge = (res.headers.get("www-authenticate") || "").toLowerCase();
+      return c.json({
+        endpoint: PUBLIC_MCP_ENDPOINT,
+        reachable: true,
+        status: res.status,
+        // 401 with a bearer challenge means live and gated, which is correct.
+        requiresAuth: res.status === 401 && challenge.includes("bearer"),
+        detail: null,
+      });
     } catch (err) {
-      return c.html("<p>Token exchange failed: " + escapeHtml(String(err)) + "</p>", 400);
+      return c.json({
+        endpoint: PUBLIC_MCP_ENDPOINT,
+        reachable: false,
+        status: 0,
+        requiresAuth: false,
+        detail: String(err),
+      });
     }
   });
 
-  app.post("/api/public/disconnect", requireAuth, async (c) => {
-    const agent = getAgent(c);
-    await agent.clearPublicTokens();
-    return c.json({ ok: true });
-  });
-
-  app.post("/api/public/chat", requireAuth, async (c) => {
-    const body = await c.req.json<{ message?: string }>();
-    const message = (body.message || "").trim();
-    if (!message) return c.json({ error: "message is required" }, 400);
-
-    const agent = getAgent(c);
-    const tokens = await agent.getPublicTokens();
-    if (!tokens?.access_token) {
-      return c.json({ error: "Not connected to Public.com. Connect first." }, 409);
-    }
-
-    // Refresh when within a minute of expiry, then persist.
-    let accessToken = tokens.access_token;
-    try {
-      if (tokens.expires_at - Date.now() < 60_000 && tokens.refresh_token) {
-        const refreshed = await refreshTokens(c.env, publicOrigin(c), tokens.refresh_token);
-        await agent.setPublicTokens(refreshed);
-        accessToken = refreshed.access_token;
-      }
-    } catch {
-      // Fall through with the existing token; a 401 below surfaces the problem.
-    }
-
-    try {
-      const session: McpSession = {};
-      const tools = await listTools(accessToken, session);
-      if (tools.length === 0) {
-        return c.json({ error: "Public.com returned no tools for this account." }, 502);
-      }
-      const { answer, calls } = await agent.answerInstrumentQuestion(accessToken, message, tools, session);
-      return c.json({ answer, tools: tools.map((t) => t.name), calls });
-    } catch (err) {
-      return c.json({ error: String(err) }, 502);
-    }
-  });
-
-  function escapeHtml(value: string): string {
-    return value
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
   function getAgent(c: any) {
     const agentId = c.env.CfmailAgent.idFromName("agent");
     return c.env.CfmailAgent.get(agentId) as any;

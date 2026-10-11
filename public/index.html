@@ -189,32 +189,77 @@
           </div>
         </div>
       </div>
-      <!-- Public.com instrument research -->
+      <!-- Public.com instrument research (link-out, no credentials handled here) -->
       <div id="public" class="panel">
         <div class="card">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
-            <h3 style="font-size:1.1rem;">Research instruments via Public.com</h3>
-            <span id="publicStatus" class="badge-confirmed" style="display:none;">Connected</span>
-          </div>
-          <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.75rem;">
-            Sign in with your Public.com account and ask which instrument looks best
-            for a view. The agent queries Public.com's market data tools to compare
-            them. Read-only: it cannot place or change orders.
+          <h3 style="font-size:1.1rem;margin-bottom:0.5rem;">Research instruments with Public.com</h3>
+          <p style="color:var(--muted);font-size:0.9rem;line-height:1.65;margin-bottom:0.75rem;">
+            Public.com hosts an MCP server at
+            <code>https://mcp.public.com/mcp</code> that connects your brokerage
+            account to an AI assistant. This dashboard does not hold a Public.com
+            credential, so it links out rather than proxying: point your assistant
+            at that endpoint and sign in there.
           </p>
-          <div id="publicNotice"></div>
-          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-            <button class="btn" id="publicConnectBtn" onclick="connectPublic()">Connect Public.com</button>
-            <button class="btn" id="publicDisconnectBtn" onclick="disconnectPublic()" style="display:none;background:var(--bg);border:1px solid var(--border);color:var(--text);">Disconnect</button>
+          <div id="publicStatus"></div>
+        </div>
+
+        <div class="card">
+          <h3 style="font-size:1rem;margin-bottom:0.75rem;">Connect your assistant</h3>
+          <ol style="color:var(--muted);font-size:0.875rem;line-height:1.9;padding-left:1.25rem;">
+            <li>Add a custom connector with URL <code>https://mcp.public.com/mcp</code></li>
+            <li>Choose the OAuth sign-in option</li>
+            <li>Complete the authorization in the browser</li>
+          </ol>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem;">
+            <a class="btn" href="https://public.com/api/docs/templates/hosted-mcp" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;">Public.com setup guide &nearr;</a>
+            <a class="btn" href="https://public.com/signup" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;background:var(--bg);border:1px solid var(--border);color:var(--text);">Create a Public.com account &nearr;</a>
           </div>
         </div>
+
         <div class="card">
-          <h3 style="margin-bottom:1rem;">Ask about an instrument</h3>
-          <div class="chat-container" id="publicMessages"></div>
-          <div style="display:flex;gap:0.5rem;">
-            <input type="text" id="publicInput" placeholder="e.g. Which is the best trade for a bullish view on semiconductors?" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
-            <button class="btn" onclick="sendPublic()">Ask</button>
+          <h3 style="font-size:1rem;margin-bottom:0.75rem;">Details</h3>
+          <div class="payment-info">
+            <div class="item"><div class="key">Endpoint</div><div class="val" style="font-family:monospace;font-size:0.8rem;">https://mcp.public.com/mcp</div></div>
+            <div class="item"><div class="key">Transport</div><div class="val">Streamable HTTP</div></div>
+            <div class="item"><div class="key">Auth</div><div class="val">OAuth sign-in, or a personal access token for clients that support API keys</div></div>
+            <div class="item"><div class="key">Credential</div><div class="val">Held by your assistant, never by this dashboard</div></div>
           </div>
-          <div id="publicTools" style="margin-top:0.75rem;color:var(--muted);font-size:0.75rem;"></div>
+        </div>
+
+        <div class="card" style="border-left:3px solid #b45309;">
+          <h3 style="font-size:1rem;margin-bottom:0.5rem;">Before you connect</h3>
+          <p style="color:var(--muted);font-size:0.875rem;line-height:1.7;margin:0;">
+            Public.com's server exposes order placement. Their documentation warns
+            that a trade placed through an MCP client is a
+            <strong style="color:var(--text);">real order using real money</strong>,
+            and asks that preflight details are reviewed before confirming. The
+            prompts below are read-only; trading prompts are included so you know
+            what the connector can do.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3 style="font-size:1rem;margin-bottom:0.75rem;">Prompts to try</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.75rem;">
+            <div>
+              <div style="color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.35rem;">Read-only</div>
+              <ul style="color:var(--muted);font-size:0.85rem;line-height:1.8;padding-left:1.1rem;margin:0;">
+                <li>Show my account balance and buying power</li>
+                <li>How is my portfolio performing today?</li>
+                <li>What is the current price of TSLA?</li>
+                <li>Show the option chain for AAPL expiring next Friday</li>
+                <li>Find a covered call opportunity on SPY based on my holdings</li>
+              </ul>
+            </div>
+            <div>
+              <div style="color:#b45309;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.35rem;">Places real orders</div>
+              <ul style="color:var(--muted);font-size:0.85rem;line-height:1.8;padding-left:1.1rem;margin:0;">
+                <li>Show my open orders</li>
+                <li>Cancel my open AAPL order</li>
+                <li>Place a buy order for 1 share of NVDA at market</li>
+              </ul>
+            </div>
+          </div>
         </div>
       </div>
       <!-- Webhooks -->
@@ -276,7 +321,7 @@
       if (tab === 'payments') loadPayments();
       if (tab === 'pay') checkMetaMask();
       if (tab === 'webhooks') loadWebhooks();
-      if (tab === 'public') loadPublic();
+      if (tab === 'public') loadPublicStatus();
     }
     async function init() { loadStats(); checkMetaMask(); await loadPaymentOptions(); }
     const NETWORKS = {
@@ -661,87 +706,28 @@ async function loadStats() {
       container.scrollTop = container.scrollHeight;
     }
     // ---------------------------------------------------------------------
-    // Public.com instrument research
+    // Public.com research tab.
     //
-    // The OAuth token lives server-side, keyed to the dashboard session, so the
-    // browser never sees it. This tab only calls our own /api/public/* routes.
+    // Link-out only. This dashboard deliberately holds no Public.com
+    // credential: that server exposes order placement, and an embedded flow
+    // would mean either a shared credential or per-user secret storage. The
+    // tab's one dynamic element is a reachability probe, which needs no auth
+    // and reports what the endpoint says about itself.
     // ---------------------------------------------------------------------
     async function loadPublicStatus() {
-      const notice = document.getElementById('publicNotice');
-      const connectBtn = document.getElementById('publicConnectBtn');
-      const disconnectBtn = document.getElementById('publicDisconnectBtn');
-      const badge = document.getElementById('publicStatus');
+      const el = document.getElementById('publicStatus');
+      if (!el) return;
       try {
-        const s = await api('/api/public/status');
-        notice.innerHTML = '';
-        // No configured/not-configured branch: the Worker identifies itself with
-        // a metadata document, so the only state is connected or not.
-        connectBtn.style.display = s.connected ? 'none' : '';
-        disconnectBtn.style.display = s.connected ? '' : 'none';
-        badge.style.display = s.connected ? '' : 'none';
-        document.getElementById('publicTools').textContent = s.connected
-          ? 'Signed in. Scopes: ' + (s.scopes || '')
-          : '';
-      } catch (err) {
-        notice.innerHTML = '<div class="status-msg error">Could not read Public.com status: ' + escapeHtml(err.message) + '</div>';
-      }
-    }
-
-    async function connectPublic() {
-      const notice = document.getElementById('publicNotice');
-      try {
-        const res = await api('/api/public/connect');
-        if (!res.authorizeUrl) throw new Error(res.error || 'no authorize URL');
-        // Full navigation: this is a cross-origin OAuth redirect, not a fetch.
-        window.location.href = res.authorizeUrl;
-      } catch (err) {
-        notice.innerHTML = '<div class="status-msg error">' + escapeHtml(err.message) + '</div>';
-      }
-    }
-
-    async function disconnectPublic() {
-      const notice = document.getElementById('publicNotice');
-      try {
-        await api('/api/public/disconnect', 'POST', {});
-        document.getElementById('publicMessages').innerHTML = '';
-        document.getElementById('publicTools').textContent = '';
-        loadPublicStatus();
-      } catch (err) {
-        notice.innerHTML = '<div class="status-msg error">' + escapeHtml(err.message) + '</div>';
-      }
-    }
-
-    async function sendPublic() {
-      const input = document.getElementById('publicInput');
-      const container = document.getElementById('publicMessages');
-      const msg = input.value.trim();
-      if (!msg) return;
-      input.value = '';
-      container.innerHTML += '<div class="chat-msg user">' + escapeHtml(msg) + '</div>';
-      container.innerHTML += '<div class="chat-msg assistant" id="publicThinking">Thinking...</div>';
-      container.scrollTop = container.scrollHeight;
-      try {
-        const res = await api('/api/public/chat', 'POST', { message: msg });
-        document.getElementById('publicThinking').remove();
-        if (res.error) {
-          container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.error) + '</div>';
+        const res = await api('/api/public/endpoint');
+        if (res.reachable) {
+          el.innerHTML = '<div class="status-msg success">Endpoint answered HTTP ' + res.status + ' - reachable' +
+            (res.requiresAuth ? ', and requires sign-in as expected.' : '.') + '</div>';
         } else {
-          container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.answer || '(no answer)') + '</div>';
-          const calls = Array.isArray(res.calls) ? res.calls : [];
-          document.getElementById('publicTools').textContent = calls.length
-            ? 'Tools used: ' + calls.map(c => c.name).join(', ')
-            : 'No tools were called for this question.';
+          el.innerHTML = '<div class="status-msg error">Endpoint did not answer as expected: ' + escapeHtml(res.detail || 'unknown') + '</div>';
         }
       } catch (err) {
-        const t = document.getElementById('publicThinking');
-        if (t) t.remove();
-        container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(err.message) + '</div>';
+        el.innerHTML = '<div class="status-msg error">Could not check the endpoint: ' + escapeHtml(err.message) + '</div>';
       }
-      container.scrollTop = container.scrollHeight;
-    }
-
-    function loadPublic() {
-      loadPublicStatus();
     }
     document.getElementById('chatInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
     if (window.ethereum) {
