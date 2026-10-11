@@ -9,7 +9,9 @@ import type { Env } from "./types";
  *
  * Phase 1 is deliberately READ-ONLY: every tool below only reads records the
  * agent already stores. Nothing here can send email, spend funds, or trigger an
- * outbound request, because this endpoint is unauthenticated.
+ * outbound request. The endpoint itself is protected by the credential check in
+ * src/mcp-auth.ts (see MCP_AUTH_MODE); the read-only tool surface is defense
+ * in depth.
  *
  * In particular these are intentionally NOT exposed:
  *   - payExternalEndpoint  (broadcasts a real EVM transfer)

@@ -58,7 +58,19 @@ type AiMessage = {
   content: string;
 };
 
-const PAYMENT_KEYWORDS = ["pay", "payment", "buy", "purchase", "subscribe", "process", "request"];
+const PAYMENT_KEYWORDS = ["pay", "payment", "buy", "purchase", "subscribe"];
+
+// "request" and "process" were deliberately dropped from the list above: they
+// matched ordinary Slack chatter and sent a payment button for almost every
+// message. Keep this list to unambiguous payment intent.
+
+/** Per-sender conversational messages kept for the AI prompt. */
+const MAX_CHAT_HISTORY_PER_SENDER = 10;
+
+/** Bound Durable Object storage: only the most recent records are kept. */
+const MAX_STORED_EMAILS = 500;
+const MAX_STORED_PAYMENTS = 200;
+const MAX_STORED_WEBHOOK_EVENTS = 200;
 
 function isPaymentRequest(text: string): boolean {
   const lower = text.toLowerCase();
@@ -99,7 +111,11 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
     payments: [],
   };
 
-  private chatHistory: ChatMessage[] = [];
+  /**
+   * Conversational history, keyed by sender so one user's messages never leak
+   * into another user's prompt. In-memory only (not persisted in DO state).
+   */
+  private chatHistoryBySender: Record<string, ChatMessage[]> = {};
   private slackSocket: WebSocket | null = null;
 
   async onStart(): Promise<void> {
@@ -169,7 +185,7 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
    * The Durable Object maintains a persistent WebSocket connection to Slack.
    */
   private async connectSlack(): Promise<void> {
-    if (!this.env.SLACK_APP_TOKEN || !this.env.SLACK_BOT_TOKEN) {
+    if (!this.env.SLACK_APP_TOKEN || !this.getSlackBotToken()) {
       console.log("Slack tokens not configured — skipping Socket Mode");
       return;
     }
@@ -185,6 +201,26 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
     } catch (error) {
       console.error("Failed to connect Slack Socket Mode:", error);
     }
+  }
+
+  /**
+   * Slack bot token: the OAuth install flow (/slack/install) stores the token
+   * in DO state; otherwise fall back to the SLACK_BOT_TOKEN env var/secret.
+   */
+  private getSlackBotToken(): string {
+    return this.ensureState().slackBotToken || this.env.SLACK_BOT_TOKEN;
+  }
+
+  /**
+   * Persist the bot token from the Slack OAuth install flow (see
+   * handleSlackInstall in index.ts).
+   */
+  @callable()
+  async setSlackBotToken(token: string): Promise<{ success: boolean }> {
+    if (!token || typeof token !== "string") return { success: false };
+    const state = this.ensureState();
+    this.setState({ ...state, slackBotToken: token });
+    return { success: true };
   }
 
   /**
@@ -207,7 +243,7 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
         const paymentUrl = `https://pay.openaimp.com?request=${encodedRequest}`;
         
         await sendSlackMessageWithButton(
-          this.env.SLACK_BOT_TOKEN,
+          this.getSlackBotToken(),
           event.channel,
           "To process your request, please complete the payment below:",
           "Pay & Process",
@@ -217,9 +253,9 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
         response = "Payment button sent. Please complete the payment at https://pay.openaimp.com to proceed.";
       } else {
         // Generate AI response for non-payment messages
-        response = await this.generateAIResponse(event.text);
+        response = await this.generateAIResponse(event.text, undefined, `slack:${event.user}`);
         await sendSlackMessage(
-          this.env.SLACK_BOT_TOKEN,
+          this.getSlackBotToken(),
           event.channel,
           response,
           event.thread_ts || event.ts,
@@ -245,7 +281,7 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
 
     this.setState({
       ...state,
-      emails: [...state.emails, emailRecord],
+      emails: [...state.emails, emailRecord].slice(-MAX_STORED_EMAILS),
       totalEmailsReceived: state.totalEmailsReceived + 1,
     });
   }
@@ -255,6 +291,7 @@ export class CfmailAgentSQLite extends Agent<Env, AgentState> {
   async generateAIResponse(
     userMessage: string,
     emailContext?: string,
+    senderId?: string,
   ): Promise<string> {
     const systemPrompt = `You are the CFmail Agent, an AI assistant operating via email and Slack.
 You are connected to a payment system using the x402 protocol.
@@ -284,7 +321,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
       });
     }
 
-    for (const message of this.chatHistory.slice(-10)) {
+    // Only the current sender's history is included, so one user's messages
+    // can neither leak to nor steer another user's replies.
+    const senderKey = senderId ?? "unknown";
+    const priorHistory = this.chatHistoryBySender[senderKey] ?? [];
+    for (const message of priorHistory.slice(-MAX_CHAT_HISTORY_PER_SENDER)) {
       messages.push({
         role: message.role as "user" | "assistant",
         content: message.content,
@@ -312,7 +353,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
         text = (fallbackResponse as { response?: string }).response ?? "I could not generate a response.";
       }
 
-      this.chatHistory.push(
+      // Annotated as ChatMessage[] so the object literals below are
+      // contextually typed and `role` narrows to the union instead of
+      // widening to `string` (TS2322).
+      const updatedHistory: ChatMessage[] = [
+        ...priorHistory,
         {
           role: "user",
           content: userMessage,
@@ -323,7 +368,8 @@ Do not claim to have completed a payment unless you have received confirmation.`
           content: text,
           timestamp: new Date().toISOString(),
         },
-      );
+      ];
+      this.chatHistoryBySender[senderKey] = updatedHistory.slice(-MAX_CHAT_HISTORY_PER_SENDER);
 
       return text;
     } catch (error) {
@@ -346,7 +392,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // ─── Webhook AI analysis ───────────────────────────
 
   /**
-   * Analyse a webhook event without touching chatHistory. Webhook analysis is
+   * Analyse a webhook event without touching chatHistoryBySender. Webhook analysis is
    * a side activity and must not pollute the conversational context reused by
    * onEmail() and chat(). Never throws.
    */
@@ -458,13 +504,14 @@ Do not claim to have completed a payment unless you have received confirmation.`
         `Subject: ${parsed.subject || "(no subject)"}`,
         `Body: ${parsed.text || ""}`,
       ].join("\n"),
+      email.from,
     );
 
     emailRecord.aiResponse = aiResponse;
 
     const stateAfterInbound: AgentState = {
       ...state,
-      emails: [...state.emails, emailRecord],
+      emails: [...state.emails, emailRecord].slice(-MAX_STORED_EMAILS),
       totalEmailsReceived: state.totalEmailsReceived + 1,
     };
 
@@ -548,7 +595,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
         console.log("[email-capture] body:\n" + body);
         this.setState({
           ...state,
-          emails: [...state.emails, record],
+          emails: [...state.emails, record].slice(-MAX_STORED_EMAILS),
           totalEmailsSent: this.state.totalEmailsSent + 1,
         });
         return { success: true, emailId };
@@ -564,7 +611,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
       this.setState({
         ...state,
-        emails: [...state.emails, record],
+        emails: [...state.emails, record].slice(-MAX_STORED_EMAILS),
         totalEmailsSent: this.state.totalEmailsSent + 1,
       });
 
@@ -629,7 +676,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
       createdAt: new Date().toISOString(),
     };
 
-    const aiResponse = await this.generateAIResponse(request);
+    const aiResponse = await this.generateAIResponse(request, undefined, senderEmail);
 
     const emailResult = await this.sendOutboundEmail(
       senderEmail,
@@ -645,7 +692,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const latest = this.ensureState();
     this.setState({
       ...latest,
-      payments: [...latest.payments, payment],
+      payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
       totalPaymentsReceived: latest.totalPaymentsReceived + 1,
       ...(claimKey
         ? {
@@ -680,7 +727,13 @@ Do not claim to have completed a payment unless you have received confirmation.`
     request: string,
   ): Promise<{ ok: boolean; error?: string }> {
     const state = this.ensureState();
-    const existing = state.stripeCheckouts?.[requestId];
+    // Prune abandoned intents (older than 24h) so they cannot grow state forever.
+    const checkouts = { ...(state.stripeCheckouts || {}) };
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    for (const [id, co] of Object.entries(checkouts)) {
+      if (new Date(co.createdAt).getTime() < cutoff) delete checkouts[id];
+    }
+    const existing = checkouts[requestId];
     if (existing) {
       return { ok: false, error: "This request already has a checkout." };
     }
@@ -695,7 +748,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     this.setState({
       ...state,
-      stripeCheckouts: { ...(state.stripeCheckouts || {}), [requestId]: checkout },
+      stripeCheckouts: { ...checkouts, [requestId]: checkout },
     });
 
     return { ok: true };
@@ -1224,10 +1277,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     message: string,
   ): Promise<{ response: string; history: ChatMessage[] }> {
-    const response = await this.generateAIResponse(message);
+    const response = await this.generateAIResponse(message, undefined, "dashboard");
     return {
       response,
-      history: this.chatHistory,
+      history: this.chatHistoryBySender["dashboard"] ?? [],
     };
   }
 
@@ -1359,7 +1412,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
       this.setState({
         ...latest,
-        payments: [...latest.payments, payment],
+        payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
         totalPaymentsSent: latest.totalPaymentsSent + 1,
       });
 
@@ -1635,7 +1688,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     };
 
     const state = this.ensureState();
-    const webhookEvents = [...(state.webhookEvents || []), event];
+    const webhookEvents = [...(state.webhookEvents || []), event].slice(-MAX_STORED_WEBHOOK_EVENTS);
 
     this.setState({
       ...state,
@@ -1785,6 +1838,26 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // ===========================================================================
   @callable()
   async sendWebhook(url: string, payload: unknown): Promise<{ success: boolean }> {
+    // This RPC can make the Worker fetch an arbitrary URL, so an optional
+    // allowlist restricts where it may point. Configure it with the
+    // OUTBOUND_WEBHOOK_ALLOWLIST env var (comma-separated URL prefixes).
+    // When unset, any URL is still allowed but a warning is logged, because an
+    // authenticated dashboard key currently unlocks this primitive.
+    const allowlist = (this.env.OUTBOUND_WEBHOOK_ALLOWLIST ?? "")
+      .split(",")
+      .map((prefix) => prefix.trim())
+      .filter((prefix) => prefix.length > 0);
+    if (allowlist.length > 0) {
+      if (!allowlist.some((prefix) => url.startsWith(prefix))) {
+        console.warn(`Outgoing webhook blocked: ${url} is not in OUTBOUND_WEBHOOK_ALLOWLIST.`);
+        return { success: false };
+      }
+    } else {
+      console.warn(
+        "OUTBOUND_WEBHOOK_ALLOWLIST is not set: sendWebhook can fetch any URL. " +
+          "Set it to a comma-separated list of allowed URL prefixes.",
+      );
+    }
     try {
       const ok = await sendSignedWebhook(url, payload, this.env.EMAIL_SECRET);
       return { success: ok };

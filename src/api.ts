@@ -26,6 +26,35 @@ import {
 } from "./public-oauth";
 import { defaultModelId, listModels, resolveModelId } from "./models";
 
+/**
+ * Best-effort per-IP rate limiter for the unauthenticated /api/stripe/checkout
+ * endpoint. Memory is per-isolate, so load spread across isolates is not
+ * counted together; for robust protection, add a Cloudflare Rate Limiting rule
+ * on /api/stripe/checkout instead.
+ */
+const STRIPE_CHECKOUT_LIMIT = 10;
+const STRIPE_CHECKOUT_WINDOW_MS = 60_000;
+const stripeCheckoutHits = new Map<string, number[]>();
+
+function isStripeCheckoutRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const cutoff = now - STRIPE_CHECKOUT_WINDOW_MS;
+  const recent = (stripeCheckoutHits.get(ip) ?? []).filter((t) => t > cutoff);
+  if (recent.length >= STRIPE_CHECKOUT_LIMIT) {
+    stripeCheckoutHits.set(ip, recent);
+    return true;
+  }
+  recent.push(now);
+  stripeCheckoutHits.set(ip, recent);
+  // Bound the map itself: drop IPs with no recent hits.
+  if (stripeCheckoutHits.size > 2000) {
+    for (const [key, times] of stripeCheckoutHits) {
+      if (times.length === 0 || times[times.length - 1] <= cutoff) stripeCheckoutHits.delete(key);
+    }
+  }
+  return false;
+}
+
 export function createApp() {
   const app = new Hono<{ Bindings: Env }>();
 
@@ -452,7 +481,7 @@ export function createApp() {
   }
 
 
-  function buildPaymentChallenge(env: Env, description: string) {
+  function buildPaymentChallenge(env: Env, description: string, origin: string) {
     const config = getPaymentConfig(env);
     const accepts = [];
 
@@ -484,7 +513,7 @@ export function createApp() {
     const challenge = {
       x402Version: 2,
       resource: {
-        url: "https://pay.openaimp.com/api/process",
+        url: `${origin}/api/process`,
         description: description,
         mimeType: "application/json",
       },
@@ -581,6 +610,7 @@ export function createApp() {
     env: Env,
     paymentHeader: string,
     description: string,
+    origin: string,
   ): Promise<{ verified: true; claim: PaymentClaim; receipt: string } | { verified: false; error: string }> {
     let claim: PaymentClaim;
     try {
@@ -591,7 +621,7 @@ export function createApp() {
         error: error instanceof Error ? error.message : "Invalid payment signature.",
       };
     }
-    const challengeHeaders = buildPaymentChallenge(env, description);
+    const challengeHeaders = buildPaymentChallenge(env, description, origin);
     const challenge = JSON.parse(atob(challengeHeaders["PAYMENT-REQUIRED"])) as unknown;
     const verification = await verifyPayment(env, paymentHeader, challenge, claim);
     if (!verification.verified) {
@@ -621,6 +651,15 @@ export function createApp() {
    * passed to Stripe, so the return path never trusts client input.
    */
   app.post("/api/stripe/checkout", async (c) => {
+    // Best-effort per-IP throttling for this unauthenticated endpoint.
+    const clientIp =
+      c.req.header("CF-Connecting-IP") ??
+      c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() ??
+      "unknown";
+    if (isStripeCheckoutRateLimited(clientIp)) {
+      return c.json({ error: "Too many requests. Please try again in a minute." }, 429);
+    }
+
     const config = getStripeConfig(c.env);
     if (!config) {
       return c.json(
@@ -710,10 +749,15 @@ export function createApp() {
       return c.json(
         { error: "Payment required" },
         402,
-        buildPaymentChallenge(c.env, c.env.PAYMENT_DESCRIPTION),
+        buildPaymentChallenge(c.env, c.env.PAYMENT_DESCRIPTION, new URL(c.req.url).origin),
       );
     }
-    const verification = await verifyRequestPayment(c.env, paymentHeader, c.env.PAYMENT_DESCRIPTION);
+    const verification = await verifyRequestPayment(
+      c.env,
+      paymentHeader,
+      c.env.PAYMENT_DESCRIPTION,
+      new URL(c.req.url).origin,
+    );
     if (!verification.verified) {
       return c.json({ error: "Payment verification failed", details: verification.error }, 402);
     }
@@ -747,10 +791,15 @@ export function createApp() {
       return c.json(
         { error: "Payment required" },
         402,
-        buildPaymentChallenge(c.env, "Access to stored email history"),
+        buildPaymentChallenge(c.env, "Access to stored email history", new URL(c.req.url).origin),
       );
     }
-    const verification = await verifyRequestPayment(c.env, paymentHeader, "Access to stored email history");
+    const verification = await verifyRequestPayment(
+      c.env,
+      paymentHeader,
+      "Access to stored email history",
+      new URL(c.req.url).origin,
+    );
     if (!verification.verified) {
       return c.json({ error: "Payment verification failed", details: verification.error }, 402);
     }
@@ -767,10 +816,15 @@ export function createApp() {
       return c.json(
         { error: "Payment required" },
         402,
-        buildPaymentChallenge(c.env, "Process email request via MCP tool"),
+        buildPaymentChallenge(c.env, "Process email request via MCP tool", new URL(c.req.url).origin),
       );
     }
-    const verification = await verifyRequestPayment(c.env, paymentHeader, "Process email request via MCP tool");
+    const verification = await verifyRequestPayment(
+      c.env,
+      paymentHeader,
+      "Process email request via MCP tool",
+      new URL(c.req.url).origin,
+    );
     if (!verification.verified) {
       return c.json({ error: "Payment verification failed", details: verification.error }, 402);
     }
