@@ -71,10 +71,13 @@ export default {
     // Webhook routes — verified events are handled on the canonical central
     // instance (plus Slack conversation routing below).
     if (request.method === "POST" && url.pathname.startsWith("/webhooks/")) {
+      console.log("[webhook-debug] Received webhook POST", url.pathname);
       const verified = await verifyAndParseWebhook(request.clone(), env);
       if (!verified) {
+        console.log("[webhook-debug] Verification FAILED for", url.pathname);
         return new Response("Invalid signature", { status: 401 });
       }
+      console.log("[webhook-debug] Verified", verified.provider, "delivery:", verified.deliveryId);
 
       // Forward to the canonical agent instance. webhooks.ts derives a
       // per-provider instance name (repo full_name, Stripe customer id, Slack
@@ -113,7 +116,10 @@ export default {
         }
       }
 
-      return agent.fetch(request);
+      console.log("[webhook-debug] Calling agent.fetch for", verified.provider);
+      const resp = await agent.fetch(request);
+      console.log("[webhook-debug] agent.fetch returned status", resp.status, "for", verified.provider);
+      return resp;
     }
 
     // HTTP webhook endpoint (legacy Slack apps)
