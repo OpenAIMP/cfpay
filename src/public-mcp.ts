@@ -50,17 +50,66 @@ export const PUBLIC_REVOKE_URL = PUBLIC_AS_BASE + "/revoke";
  */
 export const PUBLIC_DEFAULT_SCOPES = "marketdata trading.read";
 
-/** True when Public.com can be used at all. Without a client_id it cannot. */
-export function publicConfigured(env: Env): boolean {
-  return Boolean((env as any).PUBLIC_CLIENT_ID);
-}
-
 export function publicScopes(env: Env): string {
   return ((env as any).PUBLIC_SCOPES || "").trim() || PUBLIC_DEFAULT_SCOPES;
 }
 
 export function publicRedirectUri(env: Env, origin: string): string {
   return ((env as any).PUBLIC_REDIRECT_URI || "").trim() || origin + "/api/public/callback";
+}
+
+/**
+ * Client ID Metadata Document (CIMD).
+ *
+ * Public.com's authorization server advertises
+ * client_id_metadata_document_supported, and publishes no registration endpoint.
+ * That combination means a client identifies itself by URL: the client_id IS the
+ * URL of a JSON document describing the client, which the AS fetches. This is how
+ * Claude connects with nothing but a sign-in.
+ *
+ * So this Worker serves its own document and uses that URL as the client_id,
+ * removing the need to register a client with Public.com by hand. Setting
+ * PUBLIC_CLIENT_ID overrides this and uses a registered client instead.
+ */
+export const PUBLIC_CLIENT_METADATA_PATH = "/.well-known/oauth-client-metadata";
+
+export function clientMetadataUrl(env: Env, origin: string): string {
+  const configured = String((env as any).PUBLIC_CLIENT_METADATA_URL || "").trim();
+  if (configured) return configured;
+  return origin + PUBLIC_CLIENT_METADATA_PATH;
+}
+
+/**
+ * The client metadata document. `client_id` must equal the URL it is served
+ * from, so a deployment behind a different hostname gets the right value.
+ */
+export function buildClientMetadata(env: Env, origin: string): Record<string, unknown> {
+  const self = clientMetadataUrl(env, origin);
+  return {
+    client_id: self,
+    client_name: String((env as any).PUBLIC_CLIENT_NAME || "OpenAIMP Dashboard"),
+    client_uri: origin + "/",
+    redirect_uris: [publicRedirectUri(env, origin)],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    // Public client: PKCE is the proof, there is no secret.
+    token_endpoint_auth_method: "none",
+    scope: publicScopes(env),
+  };
+}
+
+/** The credential sent as client_id: a registered id if present, else the CIMD URL. */
+export function clientIdFor(env: Env, origin: string): string {
+  const registered = String((env as any).PUBLIC_CLIENT_ID || "").trim();
+  return registered || clientMetadataUrl(env, origin);
+}
+
+/**
+ * Public.com can be used when either a registered client id is configured or a
+ * CIMD document can be served, which is always the case.
+ */
+export function publicUsable(_env: Env): boolean {
+  return true;
 }
 
 /* ------------------------------- PKCE ---------------------------------- */
@@ -91,7 +140,7 @@ export function buildAuthorizeUrl(
 ): string {
   const url = new URL(PUBLIC_AUTHORIZE_URL);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", String((env as any).PUBLIC_CLIENT_ID));
+  url.searchParams.set("client_id", clientIdFor(env, origin));
   url.searchParams.set("redirect_uri", publicRedirectUri(env, origin));
   url.searchParams.set("scope", publicScopes(env));
   url.searchParams.set("state", state);
@@ -151,11 +200,15 @@ export async function exchangeCode(
   return toTokens(JSON.parse(text));
 }
 
-export async function refreshTokens(env: Env, refreshToken: string): Promise<PublicTokens> {
+export async function refreshTokens(
+  env: Env,
+  origin: string,
+  refreshToken: string,
+): Promise<PublicTokens> {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
-    client_id: String((env as any).PUBLIC_CLIENT_ID),
+    client_id: clientIdFor(env, origin),
   });
   const res = await fetch(PUBLIC_TOKEN_URL, {
     method: "POST",

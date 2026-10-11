@@ -5,12 +5,14 @@ import { renderStripeReturnPage } from "./stripe-return-page";
 import { formatAmount, formatEthAmount, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent } from "./agent";
 import {
+  PUBLIC_CLIENT_METADATA_PATH,
   PUBLIC_MCP_URL,
   buildAuthorizeUrl,
+  buildClientMetadata,
+  clientIdFor,
   exchangeCode,
   listTools,
   pkceChallenge,
-  publicConfigured,
   publicScopes,
   randomUrlSafe,
   refreshTokens,
@@ -63,12 +65,29 @@ export function createApp() {
     return entry.verifier;
   }
 
+  // Client ID Metadata Document. Public.com fetches this because the client_id
+  // we send is this URL, which is how a client connects with nothing but a
+  // sign-in. Public and cacheable; it contains no secrets.
+  app.get(PUBLIC_CLIENT_METADATA_PATH, (c) => {
+    return new Response(JSON.stringify(buildClientMetadata(c.env, publicOrigin(c))), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=300",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  });
+
   app.get("/api/public/status", requireAuth, async (c) => {
-    const configured = publicConfigured(c.env);
     const agent = getAgent(c);
-    const tokens = configured ? await agent.getPublicTokens() : null;
+    const tokens = await agent.getPublicTokens();
     return c.json({
-      configured,
+      // Always true now: without a registered client id we identify by metadata
+      // document, so there is no prerequisite to report.
+      configured: true,
+      clientId: clientIdFor(c.env, publicOrigin(c)),
+      usesRegisteredClient: Boolean((c.env as any).PUBLIC_CLIENT_ID),
       connected: Boolean(tokens?.access_token),
       expiresAt: tokens?.expires_at ?? null,
       scopes: publicScopes(c.env),
@@ -77,15 +96,6 @@ export function createApp() {
   });
 
   app.get("/api/public/connect", requireAuth, async (c) => {
-    if (!publicConfigured(c.env)) {
-      return c.json(
-        {
-          error:
-            "Public.com is not configured. Set PUBLIC_CLIENT_ID to a client id issued by Public.com.",
-        },
-        400,
-      );
-    }
     const state = randomUrlSafe(16);
     const verifier = randomUrlSafe(48);
     rememberVerifier(state, verifier);
@@ -135,10 +145,6 @@ export function createApp() {
   });
 
   app.post("/api/public/chat", requireAuth, async (c) => {
-    if (!publicConfigured(c.env)) {
-      return c.json({ error: "Public.com is not configured (PUBLIC_CLIENT_ID is unset)." }, 400);
-    }
-
     const body = await c.req.json<{ message?: string }>();
     const message = (body.message || "").trim();
     if (!message) return c.json({ error: "message is required" }, 400);
@@ -153,7 +159,7 @@ export function createApp() {
     let accessToken = tokens.access_token;
     try {
       if (tokens.expires_at - Date.now() < 60_000 && tokens.refresh_token) {
-        const refreshed = await refreshTokens(c.env, tokens.refresh_token);
+        const refreshed = await refreshTokens(c.env, publicOrigin(c), tokens.refresh_token);
         await agent.setPublicTokens(refreshed);
         accessToken = refreshed.access_token;
       }

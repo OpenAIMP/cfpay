@@ -197,9 +197,9 @@
             <span id="publicStatus" class="badge-confirmed" style="display:none;">Connected</span>
           </div>
           <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.75rem;">
-            Ask which instrument looks best for a view, and the agent will query
-            Public.com's market data tools to compare them. Read-only: it cannot
-            place or change orders.
+            Sign in with your Public.com account and ask which instrument looks best
+            for a view. The agent queries Public.com's market data tools to compare
+            them. Read-only: it cannot place or change orders.
           </p>
           <div id="publicNotice"></div>
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
@@ -673,17 +673,15 @@ async function loadStats() {
       const badge = document.getElementById('publicStatus');
       try {
         const s = await api('/api/public/status');
-        if (!s.configured) {
-          notice.innerHTML = '<div class="status-msg error">Public.com is not configured. Set <code>PUBLIC_CLIENT_ID</code> on the Worker to a client id issued by Public.com, then reload.</div>';
-          connectBtn.style.display = 'none';
-          disconnectBtn.style.display = 'none';
-          badge.style.display = 'none';
-          return;
-        }
         notice.innerHTML = '';
+        // No configured/not-configured branch: the Worker identifies itself with
+        // a metadata document, so the only state is connected or not.
         connectBtn.style.display = s.connected ? 'none' : '';
         disconnectBtn.style.display = s.connected ? '' : 'none';
         badge.style.display = s.connected ? '' : 'none';
+        document.getElementById('publicTools').textContent = s.connected
+          ? 'Signed in. Scopes: ' + (s.scopes || '')
+          : '';
       } catch (err) {
         notice.innerHTML = '<div class="status-msg error">Could not read Public.com status: ' + escapeHtml(err.message) + '</div>';
       }
