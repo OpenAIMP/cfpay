@@ -165,6 +165,14 @@ export interface AgentState {
    */
   stripeProcessedEvents?: Record<string, string>;
   /**
+   * x402 payment transaction hashes (lower-cased) already redeemed for a paid
+   * request, mapped to the ISO timestamp of first use. Verified claims are
+   * single-use: once a txHash is recorded here, presenting the same
+   * PAYMENT-SIGNATURE again is rejected before any AI inference or email is
+   * burned. Mirrors stripeProcessedEvents.
+   */
+  x402ProcessedClaims?: Record<string, string>;
+  /**
    * Public.com personal access token. Held server-side, behind
    * DASHBOARD_API_KEY, and never returned to the browser.
    */

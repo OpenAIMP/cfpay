@@ -83,6 +83,15 @@ function isTrustedResponseUrl(value: unknown): value is string {
   }
 }
 
+/**
+ * Prefix of the error message thrown by processPaidRequest() when a verified
+ * x402 payment claim is presented more than once. api.ts matches on this
+ * prefix to return HTTP 409 instead of a generic 500. A plain string prefix
+ * is used rather than an error subclass because the agent is invoked over
+ * RPC, which does not preserve prototypes across the boundary.
+ */
+export const PAYMENT_CLAIM_REUSED_PREFIX = "PAYMENT_CLAIM_REUSED:";
+
 export class CfmailAgentSQLite extends Agent<Env, AgentState> {
   initialState: AgentState = {
     ...DEFAULT_STATE,
@@ -572,6 +581,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * Two callers: the x402 rail passes a `claim`, while the Stripe webhook passes
    * a `card` descriptor. Only one may be supplied; without either, the payment
    * is recorded with the legacy x402 defaults so existing behaviour is unchanged.
+   *
+   * x402 claims are single-use: a verified claim whose txHash is already in
+   * `x402ProcessedClaims` throws (see PAYMENT_CLAIM_REUSED_PREFIX). The check
+   * runs after signature verification and before any AI inference or email.
    */
   @callable()
   async processPaidRequest(
@@ -581,6 +594,23 @@ Do not claim to have completed a payment unless you have received confirmation.`
     card?: { amount: string; currency: string; reference: string },
   ): Promise<{ success: boolean; response: string; paymentId: string }> {
     const state = this.ensureState();
+
+    // Replay protection for the x402 rail. This runs after PAYMENT-SIGNATURE
+    // verification (api.ts verifyRequestPayment) and before any AI inference
+    // or email is burned, so a captured signature cannot be replayed for free
+    // work. The Stripe rail passes `card` instead of a claim and is
+    // unaffected. The txHash is lower-cased so equivalent representations of
+    // the same transaction map to a single key.
+    const claimKey = claim?.txHash.toLowerCase();
+    if (claimKey) {
+      const consumedClaims = state.x402ProcessedClaims || {};
+      if (consumedClaims[claimKey]) {
+        throw new Error(
+          `${PAYMENT_CLAIM_REUSED_PREFIX} This payment has already been used for a request; each on-chain payment can be redeemed only once.`,
+        );
+      }
+    }
+
     const paymentId = generateId();
 
     const payment: PaymentRecord = {
@@ -609,10 +639,22 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     payment.relatedEmailId = emailResult.emailId;
 
+    // Re-read: sendOutboundEmail wrote state while we were awaiting, so the
+    // entry-time snapshot is stale. Mark the x402 claim consumed only now that
+    // fulfilment succeeded, mirroring stripeProcessedEvents.
+    const latest = this.ensureState();
     this.setState({
-      ...state,
-      payments: [...state.payments, payment],
-      totalPaymentsReceived: state.totalPaymentsReceived + 1,
+      ...latest,
+      payments: [...latest.payments, payment],
+      totalPaymentsReceived: latest.totalPaymentsReceived + 1,
+      ...(claimKey
+        ? {
+            x402ProcessedClaims: {
+              ...(latest.x402ProcessedClaims || {}),
+              [claimKey]: new Date().toISOString(),
+            },
+          }
+        : {}),
     });
 
     return {
