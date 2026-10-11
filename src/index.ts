@@ -9,6 +9,7 @@ import { verifyAndParseWebhook } from "./webhooks";
 import { createCfmailMcpHandler } from "./mcp";
 import { authorizeMcpRequest } from "./mcp-auth";
 import { handleResourceMetadata } from "./mcp-oauth";
+import { PUBLIC_CLIENT_METADATA_PATH } from "./public-mcp";
 import {
   AS_METADATA_PATH,
   AUTHORIZE_PATH,
@@ -117,7 +118,12 @@ export default {
       url.pathname.startsWith("/api") ||
       url.pathname.startsWith("/mcp") ||
       url.pathname === "/health" ||
-      url.pathname === "/ws"
+      url.pathname === "/ws" ||
+      // Client ID Metadata Document for the Public.com OAuth flow. Anything not
+      // listed here falls through to the static assets handler and 404s, which is
+      // why this exact path has to be named rather than merely registered on the
+      // Hono app.
+      url.pathname === PUBLIC_CLIENT_METADATA_PATH
     ) {
       return app.fetch(request, env, ctx);
     }
