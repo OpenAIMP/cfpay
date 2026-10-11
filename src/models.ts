@@ -70,6 +70,102 @@ export function resolveModelId(requested?: string | null): string {
   return defaultModelId();
 }
 
+/* ------------------------------- pricing -------------------------------- */
+
+/**
+ * What one question cost, from the token usage the model reports.
+ *
+ * Rates live in models.json per million tokens, so this is computed from the
+ * configured prices rather than assumed. A model with no configured price
+ * returns nulls for the cost fields rather than a misleading zero.
+ */
+export interface UsageCost {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  inputCost: number | null;
+  outputCost: number | null;
+  totalCost: number | null;
+}
+
+export function computeCost(modelId: string, usage: unknown): UsageCost | null {
+  if (!usage || typeof usage !== "object") return null;
+  const u = usage as any;
+  const promptTokens = Number(u.prompt_tokens ?? 0);
+  const completionTokens = Number(u.completion_tokens ?? 0);
+  const totalTokens = Number(u.total_tokens ?? promptTokens + completionTokens);
+  if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens)) return null;
+
+  const info = CATALOGUE.models.find((m) => m.id === modelId);
+  const inRate = typeof info?.inputPerMTok === "number" ? info.inputPerMTok : null;
+  const outRate = typeof info?.outputPerMTok === "number" ? info.outputPerMTok : null;
+
+  const inputCost = inRate === null ? null : (promptTokens / 1e6) * inRate;
+  const outputCost = outRate === null ? null : (completionTokens / 1e6) * outRate;
+  const totalCost =
+    inputCost === null || outputCost === null ? null : inputCost + outputCost;
+
+  return { promptTokens, completionTokens, totalTokens, inputCost, outputCost, totalCost };
+}
+
+/* ------------------------- response envelopes ---------------------------- */
+
+/**
+ * Workers AI returns one of two envelopes, and which one depends on the model.
+ *
+ *   legacy      { response, tool_calls, usage }          llama-3.3-70b
+ *   chat        { choices[0].message{content, tool_calls}, usage }
+ *                                                        gpt-oss, glm, most newer
+ *
+ * This was the cause of a silent regression: the code read .response and
+ * .tool_calls at the top level, which only the older models populate. Switching
+ * the default to gpt-oss-120b produced undefined for both, so no tools were
+ * called and the answer came back empty - with no error, because reading a
+ * missing property is not an error.
+ *
+ * Normalising here means the caller never has to know which model answered.
+ */
+export interface NormalisedCompletion {
+  text: string;
+  toolCalls: unknown;
+  usage: unknown;
+  finishReason: string;
+  /** Which envelope the model used, so a bare reply can be told from an empty one. */
+  envelope: "legacy" | "chat" | "unknown";
+}
+
+export function readCompletion(raw: any): NormalisedCompletion {
+  if (!raw || typeof raw !== "object") {
+    return { text: "", toolCalls: undefined, usage: undefined, finishReason: "", envelope: "unknown" };
+  }
+
+  // Chat-completions envelope. Keyed on the presence of choices, not on the
+  // absence of response, because llama-3.3-70b returns both and the legacy fields
+  // are the populated ones there.
+  if (Array.isArray(raw.choices) && raw.choices.length > 0) {
+    const choice = raw.choices[0] ?? {};
+    const message = choice.message ?? {};
+    const text = typeof message.content === "string" ? message.content : "";
+    if (message.tool_calls !== undefined || raw.tool_calls === undefined) {
+      return {
+        text,
+        toolCalls: message.tool_calls,
+        usage: raw.usage,
+        finishReason: String(choice.finish_reason ?? ""),
+        envelope: "chat",
+      };
+    }
+  }
+
+  return {
+    text: typeof raw.response === "string" ? raw.response : "",
+    toolCalls: raw.tool_calls,
+    usage: raw.usage,
+    finishReason: "",
+    envelope: "legacy",
+  };
+}
+
 /* --------------------------- tool-call shapes ---------------------------- */
 
 /** A tool call in the shape the chat-completions API requires. */

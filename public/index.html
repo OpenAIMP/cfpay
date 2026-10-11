@@ -234,10 +234,14 @@
               <span id="publicTokenHint" style="color:var(--muted);font-size:0.78rem;font-family:monospace;"></span>
               <button class="btn" onclick="disconnectPublic()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">Disconnect</button>
             </div>
-            <div class="form-group" style="margin-top:0.9rem;">
-              <label for="publicModel">Model</label>
-              <select id="publicModel" onchange="selectPublicModel()" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;box-sizing:border-box;"></select>
-              <p id="publicModelNote" style="color:var(--muted);font-size:0.75rem;line-height:1.5;margin:0.35rem 0 0;"></p>
+            <div style="margin-top:0.9rem;">
+              <label for="publicModel" style="display:block;color:var(--muted);font-size:0.78rem;margin-bottom:0.3rem;">Model</label>
+              <!-- Plain select on purpose: it is the control everyone expects, and
+                   it stays usable on narrow screens. The chosen model's details sit
+                   underneath so the dropdown itself does not need to carry them. -->
+              <select id="publicModel" onchange="selectPublicModel(this.value)"
+                style="width:100%;max-width:36rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.55rem;color:var(--text);font-size:0.875rem;box-sizing:border-box;display:block;"></select>
+              <div id="publicModelNote" style="max-width:36rem;margin-top:0.4rem;color:var(--muted);font-size:0.75rem;line-height:1.65;"></div>
             </div>
           </div>
         <div class="card" id="publicChatCard" style="display:none;">
@@ -787,48 +791,84 @@ async function loadStats() {
       }
     }
 
-    // Populate the picker from src/models.json via the API. The choice persists
-    // server-side; an unknown stored id resolves to the configured default, so a
-    // stale value cannot break the tab.
+    // Model picker.
+    //
+    // loadPublicModels fills a plain <select>; renderModelDetail puts the chosen
+    // model's rate, context window and description underneath it. Keeping the
+    // details out of the option text matters: option labels are truncated to the
+    // control width, and a wide row layout pushed the label into a narrow column.
+    let publicModels = [];
+    let publicSelectedModel = '';
+
+    function modelById(id) {
+      return publicModels.filter(m => m.id === id)[0] || null;
+    }
+
+    function renderModelDetail() {
+      const note = document.getElementById('publicModelNote');
+      if (!note) return;
+      const m = modelById(publicSelectedModel);
+      if (!m) { note.textContent = ''; return; }
+      const rows = [];
+      if (m.inputPerMTok != null) {
+        rows.push(['Cost', '$' + m.inputPerMTok + ' per M input tokens, $' + m.outputPerMTok + ' per M output']);
+      } else {
+        rows.push(['Cost', 'not configured']);
+      }
+      if (m.contextWindow) rows.push(['Context', m.contextWindow.toLocaleString() + ' tokens']);
+      rows.push(['Id', m.id]);
+      let html = rows.map(r =>
+        '<div style="display:flex;gap:0.5rem;"><span style="min-width:4.5rem;opacity:0.75;">'
+        + escapeHtml(r[0]) + '</span><span style="font-family:monospace;font-size:0.72rem;">'
+        + escapeHtml(String(r[1])) + '</span></div>'
+      ).join('');
+      if (m.description) html += '<div style="margin-top:0.35rem;opacity:0.8;">' + escapeHtml(m.description) + '</div>';
+      note.innerHTML = html;
+    }
+
     async function loadPublicModels() {
       const sel = document.getElementById('publicModel');
-      const note = document.getElementById('publicModelNote');
       if (!sel) return;
       try {
         const res = await api('/api/public/models');
-        const models = Array.isArray(res.models) ? res.models : [];
-        sel.innerHTML = models.map(m => {
-          const def = (m.id === res.defaultModel) ? ' (default)' : '';
-          const price = (m.inputPerMTok != null)
-            ? ' \u2014 $' + m.inputPerMTok + ' in / $' + m.outputPerMTok + ' out per M tokens'
-            : '';
-          return '<option value="' + escapeHtml(m.id) + '"' + (m.id === res.selected ? ' selected' : '') + '>'
-            + escapeHtml(m.label || m.id) + def + price + '</option>';
-        }).join('');
-        const chosen = models.filter(m => m.id === res.selected)[0];
-        let text = chosen && chosen.description ? chosen.description : '';
-        if (chosen && chosen.contextWindow) text += ' Context: ' + chosen.contextWindow.toLocaleString() + ' tokens.';
-        note.textContent = text;
+        publicModels = Array.isArray(res.models) ? res.models : [];
+        publicSelectedModel = res.selected;
+        sel.innerHTML = publicModels.map(m =>
+          '<option value="' + escapeHtml(m.id) + '"' + (m.id === publicSelectedModel ? ' selected' : '') + '>'
+          + escapeHtml(m.label || m.id) + (m.id === res.defaultModel ? ' (default)' : '') + '</option>'
+        ).join('');
+        renderModelDetail();
       } catch (err) {
         sel.innerHTML = '<option value="">(could not load models)</option>';
-        note.textContent = err.message;
+        const note = document.getElementById('publicModelNote');
+        if (note) note.textContent = err.message;
       }
     }
 
-    async function selectPublicModel() {
-      const sel = document.getElementById('publicModel');
+    async function selectPublicModel(value) {
       const note = document.getElementById('publicModelNote');
-      const previous = note.textContent;
       try {
-        const res = await api('/api/public/model', 'POST', { model: sel.value });
-        if (res.error) { note.textContent = res.error; return; }
-        await loadPublicModels();
-        note.textContent = (note.textContent || previous) + '  Selected.';
+        const res = await api('/api/public/model', 'POST', { model: value });
+        if (res.error) { if (note) note.textContent = res.error; return; }
+        publicSelectedModel = res.model;
+        renderModelDetail();
       } catch (err) {
-        note.textContent = err.message;
+        if (note) note.textContent = err.message;
       }
     }
 
+    // Per-question cost, from the token usage the model reported summed across
+    // every round of the tool loop.
+    function costLine(cost) {
+      if (!cost) return '';
+      const tok = cost.totalTokens ? cost.totalTokens.toLocaleString() + ' tokens' : '';
+      const usd = (cost.totalCost != null) ? '$' + cost.totalCost.toFixed(6) : 'cost n/a';
+      const parts = [tok, usd].filter(Boolean);
+      if (cost.promptTokens || cost.completionTokens) {
+        parts.push('(' + cost.promptTokens.toLocaleString() + ' in / ' + cost.completionTokens.toLocaleString() + ' out)');
+      }
+      return parts.join('  \u00b7  ');
+    }
     async function loadPublicTools() {
       const el = document.getElementById('publicToolList');
       try {
@@ -889,9 +929,21 @@ async function loadStats() {
           const trace = Array.isArray(res.trace) ? res.trace : [];
           const names = trace.map(c => c.name);
           const modelNote = res.model ? 'Model: ' + res.model + ' - ' : '';
+          const cost = costLine(res.cost);
           document.getElementById('publicTools').textContent = modelNote + (names.length
             ? 'tools used: ' + names.join(', ')
             : 'no tools were called.');
+          if (cost) document.getElementById('publicTools').textContent += '  |  ' + cost;
+          // finish_reason separates "the model chose not to call tools" from
+          // "the loop ran out of rounds", which need different responses.
+          if (res.finishReason) {
+            const fr = String(res.finishReason);
+            let meaning = '';
+            if (fr === 'round_limit') meaning = ' (stopped: too many tool calls)';
+            else if (fr === 'stop' && trace.length === 0) meaning = ' (the model answered without calling tools)';
+            else if (fr === 'length') meaning = ' (the reply was cut off at the token limit)';
+            document.getElementById('publicTools').textContent += '  |  finish: ' + fr + meaning;
+          }
           // Inline the trace with the answer so a claim can be traced to a result.
           container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
             + renderToolTrace(trace) + '</div>';
