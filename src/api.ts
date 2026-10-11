@@ -4,6 +4,12 @@ import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
 import { formatAmount, formatEthAmount, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent } from "./agent";
+import {
+  PUBLIC_MCP_URL,
+  listTools,
+  mcpCall,
+  type McpSession,
+} from "./public-mcp";
 
 export function createApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -18,62 +24,95 @@ export function createApp() {
   }
 
   // ---------------------------------------------------------------------------
-  // Public.com MCP endpoint probe.
+  // Public.com chat.
   //
-  // The dashboard links out to Public.com rather than proxying it: that server
-  // exposes order placement, and holding a shared credential here would let any
-  // dashboard visitor act as the brokerage account. So the only server-side
-  // concern is telling the user whether the endpoint is reachable, which needs
-  // no credential.
+  // Public.com publishes no registration endpoint, so there is no OAuth flow we
+  // can drive; their documented credential is a personal access token. The user
+  // pastes one, it is stored on the agent instance, and it is used server-side to
+  // reach mcp.public.com. It is never sent back to the browser and never logged.
   //
-  // An unauthenticated POST returns 401 with a WWW-Authenticate challenge. That
-  // is the healthy answer: it proves the endpoint is live and that sign-in is
-  // required, which is what the tab claims.
+  // Order-placing tools are refused in the model loop unless PUBLIC_ALLOW_TRADING
+  // is set: their guide warns that a trade placed through an MCP client is a real
+  // order using real money, so read-only is the default posture.
   // ---------------------------------------------------------------------------
 
-  const PUBLIC_MCP_ENDPOINT = "https://mcp.public.com/mcp";
+  app.get("/api/public/status", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const token = await agent.getPublicToken();
+    return c.json({
+      connected: Boolean(token),
+      // Shown so the user can confirm they pasted the key they meant to.
+      tokenHint: token ? token.slice(0, 4) + "..." + token.slice(-4) : null,
+      allowTrading: allowTrading(c.env),
+      mcpUrl: PUBLIC_MCP_URL,
+    });
+  });
 
-  app.get("/api/public/endpoint", requireAuth, async (c) => {
+  app.post("/api/public/connect", requireAuth, async (c) => {
+    const body = await c.req.json<{ token?: string }>();
+    const token = (body.token || "").trim();
+    if (!token) return c.json({ error: "An access token is required." }, 400);
+
+    // Verify before storing: a token that cannot list tools is not useful, and
+    // storing it first would make the UI claim a connection that does not work.
     try {
-      const res = await fetch(PUBLIC_MCP_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "initialize",
-          params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "cfmail", version: "1" } },
-        }),
-      });
-
-      const challenge = (res.headers.get("www-authenticate") || "").toLowerCase();
-      return c.json({
-        endpoint: PUBLIC_MCP_ENDPOINT,
-        reachable: true,
-        status: res.status,
-        // 401 with a bearer challenge means live and gated, which is correct.
-        requiresAuth: res.status === 401 && challenge.includes("bearer"),
-        detail: null,
-      });
+      const tools = await listTools(token, {});
+      const agent = getAgent(c);
+      await agent.setPublicToken(token);
+      return c.json({ ok: true, toolCount: tools.length, tools: tools.map((t) => t.name) });
     } catch (err) {
-      return c.json({
-        endpoint: PUBLIC_MCP_ENDPOINT,
-        reachable: false,
-        status: 0,
-        requiresAuth: false,
-        detail: String(err),
-      });
+      return c.json({ error: String(err) }, 400);
     }
   });
 
+  app.post("/api/public/disconnect", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    await agent.clearPublicToken();
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/public/tools", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const token = await agent.getPublicToken();
+    if (!token) return c.json({ error: "Not connected." }, 409);
+    try {
+      const tools = await listTools(token, {});
+      return c.json({ tools: tools.map((t) => ({ name: t.name, description: t.description || "" })) });
+    } catch (err) {
+      return c.json({ error: String(err) }, 502);
+    }
+  });
+
+  app.post("/api/public/chat", requireAuth, async (c) => {
+    const body = await c.req.json<{ message?: string }>();
+    const message = (body.message || "").trim();
+    if (!message) return c.json({ error: "message is required" }, 400);
+
+    const agent = getAgent(c);
+    const token = await agent.getPublicToken();
+    if (!token) return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+
+    try {
+      const session: McpSession = {};
+      const tools = await listTools(token, session);
+      if (tools.length === 0) return c.json({ error: "Public.com returned no tools for this account." }, 502);
+      const { answer, calls } = await agent.answerInstrumentQuestion(token, message, tools, session);
+      return c.json({ answer, calls });
+    } catch (err) {
+      return c.json({ error: String(err) }, 502);
+    }
+  });
   function getAgent(c: any) {
     const agentId = c.env.CfmailAgent.idFromName("agent");
     return c.env.CfmailAgent.get(agentId) as any;
   }
 
+  // Read-only by default. Their server can place real orders; enabling this is a
+  // deliberate opt-in via the Worker secret PUBLIC_ALLOW_TRADING.
+  /** Read-only unless PUBLIC_ALLOW_TRADING is explicitly "true" on the Worker. */
+  function allowTrading(env: Env): boolean {
+    return String((env as any).PUBLIC_ALLOW_TRADING || "").trim().toLowerCase() === "true";
+  }
   const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
   function parsePaymentClaim(header: string, env: Env): PaymentClaim {

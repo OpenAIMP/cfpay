@@ -164,6 +164,11 @@ export interface AgentState {
    * checkout state machine.
    */
   stripeProcessedEvents?: Record<string, string>;
+  /**
+   * Public.com personal access token. Held server-side, behind
+   * DASHBOARD_API_KEY, and never returned to the browser.
+   */
+  publicToken?: string;
 }
 
 export interface ChatMessage {

@@ -32,3 +32,14 @@ SLACK_CLIENT_ID=your-slack-client-id
 # environment for production. STRIPE_CONFIG lives in wrangler.jsonc.
 #   STRIPE_SECRET_KEY=sk_test_...
 # For local webhook testing: stripe listen --forward-to localhost:8787/webhooks/stripe
+
+# --- Public.com chat (https://mcp.public.com/mcp) ----------------------------
+# No client id or redirect is needed: Public.com publishes no registration
+# endpoint, so the OAuth flow cannot be driven from here. Users paste a personal
+# access token into the dashboard's Public.com tab; it is stored server-side,
+# behind DASHBOARD_API_KEY, and never returned to the browser.
+
+# Read-only by default. Their server also exposes order placement, and their
+# documentation warns a trade through an MCP client is a real order using real
+# money. Set this to true only if you intend the agent to place orders.
+# PUBLIC_ALLOW_TRADING=false

@@ -13,6 +13,8 @@ import type {
   StripeConfig,
   WebhookEvent,
 } from "./types";
+import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
+import type { McpSession, McpTool } from "./public-mcp";
 import {
   formatAmount,
   generateId,
@@ -860,8 +862,137 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return slackMessages.slice(-limit).reverse();
   }
 
+  // ===========================================================================
+  // Public.com chat
+  // ===========================================================================
+
+  /**
+   * The user's Public.com personal access token, or null when not connected.
+   * Held on the agent instance, behind DASHBOARD_API_KEY, and never returned to
+   * the browser - only a hint is exposed so the user can confirm what they pasted.
+   */
+  @callable()
+  async getPublicToken(): Promise<string | null> {
+    const state = this.ensureState() as any;
+    return (state.publicToken as string | undefined) ?? null;
+  }
+
+  @callable()
+  async setPublicToken(token: string): Promise<void> {
+    const state = this.ensureState() as any;
+    this.setState({ ...state, publicToken: token });
+  }
+
+  @callable()
+  async clearPublicToken(): Promise<void> {
+    const state = this.ensureState() as any;
+    const next = { ...state };
+    delete next.publicToken;
+    this.setState(next);
+  }
+
+  /**
+   * Answer a question by letting the model call Public.com's MCP tools.
+   *
+   * Read-only unless PUBLIC_ALLOW_TRADING is "true": an order-placing tool is
+   * refused before it is called, because their guide warns that a trade through
+   * an MCP client is a real order using real money.
+   */
+  async answerInstrumentQuestion(
+    token: string,
+    question: string,
+    tools: McpTool[],
+    session: McpSession,
+  ): Promise<{ answer: string; calls: Array<{ name: string; args: unknown }> }> {
+    const calls: Array<{ name: string; args: unknown }> = [];
+    const tradingAllowed = String((this.env as any).PUBLIC_ALLOW_TRADING || "").trim().toLowerCase() === "true";
+
+    const toolList = tools
+      .map((t) => "- " + t.name + (t.description ? ": " + String(t.description).slice(0, 300) : ""))
+      .join("\n");
+
+    const messages: Array<{ role: string; content: string }> = [
+      {
+        role: "system",
+        content: [
+          "You answer questions about tradeable instruments using Public.com's data.",
+          "Call the available tools to gather real data before answering; never invent prices, symbols or balances.",
+          "Be concise and state which instruments you compared and why.",
+          "This is not investment advice, and you should say so when recommending anything.",
+          tradingAllowed
+            ? "Order-placing tools are enabled. Before calling one, state the instrument, side, size and price, and only proceed if the user has clearly asked for it."
+            : "You cannot place or modify orders in this session. If asked, say so plainly.",
+          "",
+          "Available tools:",
+          toolList,
+        ].join("\n"),
+      },
+      { role: "user", content: question },
+    ];
+
+    // Bounded: without a cap a model can call tools indefinitely.
+    for (let turn = 0; turn < 6; turn++) {
+      const response: any = await this.env.AI.run(
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
+        { messages, tools: this.toAiToolSpecs(tools) } as never,
+      );
+
+      const toolCalls = response?.tool_calls;
+      if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+        return { answer: String(response?.response ?? "").trim(), calls };
+      }
+
+      messages.push({ role: "assistant", content: String(response?.response ?? "") });
+
+      for (const call of toolCalls) {
+        const name = String(call?.name ?? call?.function?.name ?? "");
+        const rawArgs = call?.arguments ?? call?.function?.arguments ?? {};
+        const args = typeof rawArgs === "string" ? safeJson(rawArgs) : rawArgs;
+        if (!name) continue;
+
+        if (!tradingAllowed && isOrderPlacingTool(name)) {
+          messages.push({
+            role: "tool",
+            content:
+              "Refused: " +
+              name +
+              " would place or modify an order, and this session is read-only. Tell the user it is blocked and that PUBLIC_ALLOW_TRADING would enable it.",
+          });
+          continue;
+        }
+
+        calls.push({ name, args });
+        let output: string;
+        try {
+          output = await callTool(token, name, args, session);
+        } catch (err) {
+          output = "Tool error: " + String(err);
+        }
+        messages.push({ role: "tool", content: output.slice(0, 8000) });
+      }
+    }
+
+    return {
+      answer: "I stopped after several tool calls without reaching an answer. Try narrowing the question.",
+      calls,
+    };
+  }
+
+  /** Translate MCP tool definitions into the Workers AI tool schema. */
+  private toAiToolSpecs(tools: McpTool[]): Array<Record<string, unknown>> {
+    return tools.map((t) => ({
+      name: t.name,
+      description: t.description ? String(t.description).slice(0, 500) : t.name,
+      parameters:
+        t.inputSchema && typeof t.inputSchema === "object"
+          ? t.inputSchema
+          : { type: "object", properties: {} },
+    }));
+  }
+
   @callable()
   async chat(
+
     message: string,
   ): Promise<{ response: string; history: ChatMessage[] }> {
     const response = await this.generateAIResponse(message);
