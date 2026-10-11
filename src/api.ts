@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import Stripe from "stripe";
 import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
-import { formatAmount, formatEthAmount, parsePaymentConfig, verifyTestnetPayment } from "./payments";
+import { ZERO_ADDRESS, formatAmount, formatEthAmount, parsePaymentClaim, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from "./agent";
 import { timingSafeStringEqual } from "./mcp-auth";
 import {
@@ -375,58 +375,6 @@ export function createApp() {
   function allowTrading(env: Env): boolean {
     return String((env as any).PUBLIC_ALLOW_TRADING || "").trim().toLowerCase() === "true";
   }
-  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-
-  function parsePaymentClaim(header: string, env: Env): PaymentClaim {
-    let value: unknown;
-    try {
-      value = JSON.parse(atob(header));
-    } catch {
-      throw new Error("Invalid base64-encoded PAYMENT-SIGNATURE");
-    }
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !("asset" in value) ||
-      !("payTo" in value) ||
-      !("amount" in value) ||
-      !("network" in value) ||
-      !("txHash" in value) ||
-      typeof value.asset !== "string" ||
-      typeof value.payTo !== "string" ||
-      typeof value.amount !== "string" ||
-      typeof value.network !== "string" ||
-      typeof value.txHash !== "string" ||
-      !/^0x[a-fA-F0-9]{40}$/.test(value.asset) ||
-      !/^0x[a-fA-F0-9]{40}$/.test(value.payTo) ||
-      !/^0x[a-fA-F0-9]{64}$/.test(value.txHash) ||
-      !/^[1-9]\d*$/.test(value.amount)
-    ) {
-      throw new Error("PAYMENT-SIGNATURE is missing valid payment details");
-    }
-    const configuredNetwork = getPaymentConfig(env).networks[value.network];
-    if (!configuredNetwork || value.payTo.toLowerCase() !== env.PAY_TO_ADDRESS.toLowerCase()) {
-      throw new Error("PAYMENT-SIGNATURE does not match a configured network or recipient");
-    }
-    const isConfiguredNativePayment =
-      value.asset.toLowerCase() === ZERO_ADDRESS &&
-      configuredNetwork.ethAmount !== undefined &&
-      value.amount === configuredNetwork.ethAmount;
-    const isConfiguredTokenPayment =
-      configuredNetwork.usdc?.toLowerCase() === value.asset.toLowerCase() &&
-      configuredNetwork.usdcAmount !== undefined &&
-      value.amount === configuredNetwork.usdcAmount;
-    if (!isConfiguredNativePayment && !isConfiguredTokenPayment) {
-      throw new Error("PAYMENT-SIGNATURE asset is not configured for this network");
-    }
-    return {
-      asset: value.asset,
-      payTo: value.payTo,
-      amount: value.amount,
-      network: value.network,
-      txHash: value.txHash,
-    };
-  }
 
   function getPaymentConfig(env: Env) {
     return parsePaymentConfig(env.PAYMENT_CONFIG);
@@ -699,6 +647,11 @@ export function createApp() {
       );
     }
 
+    // Absolute base URL for links handed to Stripe. Explicit config wins;
+    // otherwise fall back to the request's own origin (same pattern as the
+    // x402 payment challenge).
+    const stripeBaseUrl = (c.env.APP_BASE_URL || new URL(c.req.url).origin).replace(/\/$/, "");
+
     try {
       const stripe = getStripe(c.env);
       const session = await stripe.checkout.sessions.create({
@@ -708,10 +661,10 @@ export function createApp() {
         client_reference_id: requestId,
         metadata: { cfmail_source: "cfmail", cfmail_request_id: requestId },
         success_url:
-          "https://pay.openaimp.com/api/stripe/return?request_id=" +
+          `${stripeBaseUrl}/api/stripe/return?request_id=` +
           requestId +
-          "&session_id={CHECKOUT_SESSION_ID}",
-        cancel_url: "https://pay.openaimp.com/?checkout=cancelled",
+          `&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${stripeBaseUrl}/?checkout=cancelled`,
       });
 
       if (!session.url) {

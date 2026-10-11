@@ -1,7 +1,7 @@
 import { createWalletClient, http, type Address, type Chain, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia, sepolia } from "viem/chains";
-import type { PaymentClaim, PaymentConfig, PaymentNetworkConfig } from "./types";
+import type { Env, PaymentClaim, PaymentConfig, PaymentNetworkConfig } from "./types";
 
 type X402Accept = {
   asset: string;
@@ -27,7 +27,7 @@ export type X402AcceptedPayment = {
   fromAddress: string;
 };
 
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 const TESTNET_RPC: Record<string, { url: string; chainId: string }> = {
   "eip155:84532": { url: "https://sepolia.base.org", chainId: "0x14a34" },
@@ -225,6 +225,66 @@ export function parsePaymentConfig(value: string): PaymentConfig {
   }
 
   return { networks };
+}
+
+/**
+ * Parse and validate an x402 PAYMENT-SIGNATURE header value.
+ *
+ * Pure given `env`: base64url-decodes the header, validates the shape and
+ * formats of every field, then checks the claim against the server's payment
+ * config (network must be configured, payTo must be ours, asset+amount must
+ * exactly match a configured native or USDC payment). Throws on anything
+ * invalid. Extracted to module scope so it can be unit-tested.
+ */
+export function parsePaymentClaim(header: string, env: Env): PaymentClaim {
+  let value: unknown;
+  try {
+    value = JSON.parse(atob(header));
+  } catch {
+    throw new Error("Invalid base64-encoded PAYMENT-SIGNATURE");
+  }
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("asset" in value) ||
+    !("payTo" in value) ||
+    !("amount" in value) ||
+    !("network" in value) ||
+    !("txHash" in value) ||
+    typeof value.asset !== "string" ||
+    typeof value.payTo !== "string" ||
+    typeof value.amount !== "string" ||
+    typeof value.network !== "string" ||
+    typeof value.txHash !== "string" ||
+    !/^0x[a-fA-F0-9]{40}$/.test(value.asset) ||
+    !/^0x[a-fA-F0-9]{40}$/.test(value.payTo) ||
+    !/^0x[a-fA-F0-9]{64}$/.test(value.txHash) ||
+    !/^[1-9]\d*$/.test(value.amount)
+  ) {
+    throw new Error("PAYMENT-SIGNATURE is missing valid payment details");
+  }
+  const configuredNetwork = parsePaymentConfig(env.PAYMENT_CONFIG).networks[value.network];
+  if (!configuredNetwork || value.payTo.toLowerCase() !== env.PAY_TO_ADDRESS.toLowerCase()) {
+    throw new Error("PAYMENT-SIGNATURE does not match a configured network or recipient");
+  }
+  const isConfiguredNativePayment =
+    value.asset.toLowerCase() === ZERO_ADDRESS &&
+    configuredNetwork.ethAmount !== undefined &&
+    value.amount === configuredNetwork.ethAmount;
+  const isConfiguredTokenPayment =
+    configuredNetwork.usdc?.toLowerCase() === value.asset.toLowerCase() &&
+    configuredNetwork.usdcAmount !== undefined &&
+    value.amount === configuredNetwork.usdcAmount;
+  if (!isConfiguredNativePayment && !isConfiguredTokenPayment) {
+    throw new Error("PAYMENT-SIGNATURE asset is not configured for this network");
+  }
+  return {
+    asset: value.asset,
+    payTo: value.payTo,
+    amount: value.amount,
+    network: value.network,
+    txHash: value.txHash,
+  };
 }
 
 export function createWallet(privateKey: string, network = "eip155:8453") {
