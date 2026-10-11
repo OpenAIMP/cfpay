@@ -227,10 +227,14 @@
               <span id="publicTokenHint" style="color:var(--muted);font-size:0.78rem;font-family:monospace;"></span>
               <button class="btn" onclick="disconnectPublic()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">Disconnect</button>
             </div>
-            <div class="form-group" style="margin-top:0.9rem;">
-              <label for="publicModel">Model</label>
-              <div id="publicModelPicker"></div>
-              <p id="publicModelNote" style="color:var(--muted);font-size:0.75rem;line-height:1.5;margin:0.35rem 0 0;"></p>
+            <div style="margin-top:0.9rem;">
+              <label for="publicModel" style="display:block;color:var(--muted);font-size:0.78rem;margin-bottom:0.3rem;">Model</label>
+              <!-- Plain select on purpose: it is the control everyone expects, and
+                   it stays usable on narrow screens. The chosen model's details sit
+                   underneath so the dropdown itself does not need to carry them. -->
+              <select id="publicModel" onchange="selectPublicModel(this.value)"
+                style="width:100%;max-width:36rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.55rem;color:var(--text);font-size:0.875rem;box-sizing:border-box;display:block;"></select>
+              <div id="publicModelNote" style="max-width:36rem;margin-top:0.4rem;color:var(--muted);font-size:0.75rem;line-height:1.65;"></div>
             </div>
           </div>
         <div class="card" id="publicChatCard" style="display:none;">
@@ -765,12 +769,12 @@ async function loadStats() {
       }
     }
 
-    // The model picker.
+    // Model picker.
     //
-    // Deliberately not a <select>: option text is truncated to the control
-    // width, so the price would be cut off on any real label. This lists
-    // models with their rate and context window in a block that has room for
-    // both.
+    // loadPublicModels fills a plain <select>; renderModelDetail puts the chosen
+    // model's rate, context window and description underneath it. Keeping the
+    // details out of the option text matters: option labels are truncated to the
+    // control width, and a wide row layout pushed the label into a narrow column.
     let publicModels = [];
     let publicSelectedModel = '';
 
@@ -778,52 +782,44 @@ async function loadStats() {
       return publicModels.filter(m => m.id === id)[0] || null;
     }
 
-    function renderModelPicker() {
-      const host = document.getElementById('publicModelPicker');
-      if (!host) return;
-      if (!publicModels.length) {
-        host.innerHTML = '<div class="loading">Loading models...</div>';
-        return;
+    function renderModelDetail() {
+      const note = document.getElementById('publicModelNote');
+      if (!note) return;
+      const m = modelById(publicSelectedModel);
+      if (!m) { note.textContent = ''; return; }
+      const rows = [];
+      if (m.inputPerMTok != null) {
+        rows.push(['Cost', '$' + m.inputPerMTok + ' per M input tokens, $' + m.outputPerMTok + ' per M output']);
+      } else {
+        rows.push(['Cost', 'not configured']);
       }
-      host.innerHTML = publicModels.map(m => {
-        const isSel = m.id === publicSelectedModel;
-        const rate = (m.inputPerMTok != null && m.outputPerMTok != null)
-          ? '$' + m.inputPerMTok + ' in / $' + m.outputPerMTok + ' out per M tokens'
-          : 'price not configured';
-        const ctx = m.contextWindow ? (m.contextWindow / 1000) + 'k context' : '';
-        const bits = [rate, ctx].filter(Boolean).join('  \u00b7  ');
-        return '<label style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.5rem 0.6rem;margin-top:0.3rem;border:1px solid '
-          + (isSel ? 'var(--green)' : 'var(--border)')
-          + ';border-radius:6px;cursor:pointer;background:' + (isSel ? 'rgba(34,197,94,0.07)' : 'transparent') + ';">'
-          + '<input type="radio" name="publicModelChoice" value="' + escapeHtml(m.id) + '"'
-          + (isSel ? ' checked' : '') + ' onchange="selectPublicModel(this.value)" style="margin-top:0.2rem;">'
-          + '<span style="flex:1;">'
-          + '<span style="font-size:0.85rem;color:var(--text);">' + escapeHtml(m.label || m.id) + '</span>'
-          + (m.id === publicModels[0].id ? '' : '')
-          + '<br><span style="font-size:0.75rem;color:var(--muted);">' + bits + '</span>'
-          + (m.description ? '<br><span style="font-size:0.72rem;color:var(--muted);">' + escapeHtml(m.description) + '</span>' : '')
-          + '<br><code style="font-size:0.68rem;color:var(--muted);">' + escapeHtml(m.id) + '</code>'
-          + '</span></label>';
-      }).join('');
+      if (m.contextWindow) rows.push(['Context', m.contextWindow.toLocaleString() + ' tokens']);
+      rows.push(['Id', m.id]);
+      let html = rows.map(r =>
+        '<div style="display:flex;gap:0.5rem;"><span style="min-width:4.5rem;opacity:0.75;">'
+        + escapeHtml(r[0]) + '</span><span style="font-family:monospace;font-size:0.72rem;">'
+        + escapeHtml(String(r[1])) + '</span></div>'
+      ).join('');
+      if (m.description) html += '<div style="margin-top:0.35rem;opacity:0.8;">' + escapeHtml(m.description) + '</div>';
+      note.innerHTML = html;
     }
 
     async function loadPublicModels() {
-      const note = document.getElementById('publicModelNote');
-      const host = document.getElementById('publicModelPicker');
-      if (!host) return;
+      const sel = document.getElementById('publicModel');
+      if (!sel) return;
       try {
         const res = await api('/api/public/models');
         publicModels = Array.isArray(res.models) ? res.models : [];
         publicSelectedModel = res.selected;
-        renderModelPicker();
-        const chosen = modelById(publicSelectedModel);
-        if (note) {
-          note.textContent = chosen
-            ? 'Using ' + (chosen.label || chosen.id) + (res.selected === res.defaultModel ? ' (the configured default).' : '.')
-            : '';
-        }
+        sel.innerHTML = publicModels.map(m =>
+          '<option value="' + escapeHtml(m.id) + '"' + (m.id === publicSelectedModel ? ' selected' : '') + '>'
+          + escapeHtml(m.label || m.id) + (m.id === res.defaultModel ? ' (default)' : '') + '</option>'
+        ).join('');
+        renderModelDetail();
       } catch (err) {
-        host.innerHTML = '<div class="status-msg error">Could not load models: ' + escapeHtml(err.message) + '</div>';
+        sel.innerHTML = '<option value="">(could not load models)</option>';
+        const note = document.getElementById('publicModelNote');
+        if (note) note.textContent = err.message;
       }
     }
 
@@ -832,11 +828,8 @@ async function loadStats() {
       try {
         const res = await api('/api/public/model', 'POST', { model: value });
         if (res.error) { if (note) note.textContent = res.error; return; }
-        await loadPublicModels();
-        if (note) {
-          const m = modelById(res.model);
-          note.textContent = 'Now using ' + (m ? (m.label || m.id) : res.model) + '.';
-        }
+        publicSelectedModel = res.model;
+        renderModelDetail();
       } catch (err) {
         if (note) note.textContent = err.message;
       }
