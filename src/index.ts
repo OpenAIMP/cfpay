@@ -71,33 +71,18 @@ export default {
     // Webhook routes — verified events are handled on the canonical central
     // instance (plus Slack conversation routing below).
     if (request.method === "POST" && url.pathname.startsWith("/webhooks/")) {
-      console.log("[webhook-debug] Received webhook POST", url.pathname);
       const verified = await verifyAndParseWebhook(request.clone(), env);
       if (!verified) {
-        console.log("[webhook-debug] Verification FAILED for", url.pathname);
         return new Response("Invalid signature", { status: 401 });
       }
-      console.log("[webhook-debug] Verified", verified.provider, "delivery:", verified.deliveryId);
 
       // Forward to the canonical agent instance. webhooks.ts derives a
       // per-provider instance name (repo full_name, Stripe customer id, Slack
       // team/channel), but the dashboard, REST API and MCP server all read the
       // "agent" instance — so routing by that derived name recorded verified
       // events into a Durable Object nothing ever displayed.
-      // Use idFromName directly (not getAgentByName): the SDK helper resolves
-      // to a different instance than the dashboard reads, so webhook events
-      // were logged where nothing displays them. Verified 2026-10-11.
-      const agentId = env.CfmailAgent.idFromName("agent");
-      const agent = env.CfmailAgent.get(agentId) as any;
-
-      // GitHub signatures carry no timestamp: reject replayed deliveries. The
-      // agent records delivery IDs in a rolling 24h set (fail closed).
-      if (verified.provider === "github") {
-        const duplicate = await (agent as any).isDuplicateGitHubDelivery(verified.deliveryId ?? "");
-        if (duplicate) {
-          return new Response("Duplicate webhook delivery", { status: 409 });
-        }
-      }
+      // Dedupe runs inside the DO (onRequest); getAgentByName provides the RPC-capable stub.
+      const agent = await getAgentByName(env.CfmailAgent as any, "agent");
 
       // Slack message events also become a conversation in the Slack tab:
       // handleSlackEvent records them on this same central instance (which the
@@ -116,10 +101,7 @@ export default {
         }
       }
 
-      console.log("[webhook-debug] Calling agent.fetch for", verified.provider);
-      const resp = await agent.fetch(request);
-      console.log("[webhook-debug] agent.fetch returned status", resp.status, "for", verified.provider);
-      return resp;
+      return agent.fetch(request);
     }
 
     // HTTP webhook endpoint (legacy Slack apps)
@@ -317,8 +299,7 @@ async function handleSlackInstall(request: Request, env: Env): Promise<Response>
         `Slack refused the authorization code: ${data?.error ?? "unknown error"}`,
       );
     }
-    const slackAgentId = env.CfmailAgent.idFromName("agent");
-    const agent = env.CfmailAgent.get(slackAgentId) as any;
+    const agent = await getAgentByName(env.CfmailAgent as any, "agent");
     const stored = await (agent as any).setSlackBotToken(data.access_token);
     if (!stored?.success) {
       return slackInstallErrorPage("Could not store the Slack bot token.");
