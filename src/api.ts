@@ -134,14 +134,14 @@ export function createApp() {
       const tools = await listTools(token, session);
       if (tools.length === 0) return c.json({ error: "Public.com returned no tools for this account." }, 502);
       const storedModel = await agent.getPublicModel();
-      const { answer, trace, model, cost } = await agent.answerInstrumentQuestion(
+      const { answer, trace, model, cost, finishReason } = await agent.answerInstrumentQuestion(
         token,
         message,
         tools,
         session,
         storedModel,
       );
-      return c.json({ answer, trace, model, cost });
+      return c.json({ answer, trace, model, cost, finishReason });
     } catch (err) {
       return c.json({ error: String(err) }, 502);
     }

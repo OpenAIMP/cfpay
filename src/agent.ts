@@ -930,22 +930,24 @@ Do not claim to have completed a payment unless you have received confirmation.`
     tools: McpTool[],
     session: McpSession,
     model?: string | null,
-  ): Promise<{ answer: string; trace: ToolTrace[]; model: string; cost: UsageCost | null }> {
+  ): Promise<{
+    answer: string;
+    trace: ToolTrace[];
+    model: string;
+    cost: UsageCost | null;
+    /** Last finish_reason, so  "stopped" can be told from "ran out of rounds". */
+    finishReason: string;
+  }> {
     const trace: ToolTrace[] = [];
     // Summed across every round of the tool loop: one question is several model
     // calls, so reporting only the last would understate the cost.
     let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    let lastFinishReason = "";
     // Resolved once per question: the user's stored choice, else the configured
     // default from src/models.json.
     const modelId = resolveModelId(model);
     const tradingAllowed =
       String((this.env as any).PUBLIC_ALLOW_TRADING || "").trim().toLowerCase() === "true";
-
-    const toolList = tools
-      .map((t) => "- " + t.name + (t.description ? ": " + String(t.description).slice(0, 200) : ""))
-      .join("\n");
-
-    // Messages use the chat-completions shape. A tool result MUST carry the
     // tool_call_id it answers, or the model cannot match it to its own request.
     const messages: Array<Record<string, unknown>> = [
       {
@@ -954,22 +956,34 @@ Do not claim to have completed a payment unless you have received confirmation.`
           "You answer questions about tradeable instruments using Public.com's data.",
           "You have tools available. Always call them to get real data: prices, chains, greeks, balances.",
           "Never invent a price, symbol, balance or expiry. If a tool returns nothing, say so.",
-          "Prefer several focused calls over one vague one - for example quote the candidates, then pull the option chain for the ones worth comparing.",
-          "Be concise. State which instruments you compared and why.",
+          "Prefer several focused calls over one vague one: quote the candidates first, then pull the option chain for the ones worth comparing.",
+          "When the account is unknown, call check_setup or get_accounts once to resolve the account id, then carry on.",
+          "Never repeat a call you have already made in this conversation - the result is above. If a call returned nothing useful, try different arguments or answer with what you have.",
+          "Stop gathering once you can answer. Say which instruments you compared and why.",
           "This is not investment advice; say so when recommending anything.",
           tradingAllowed
             ? "Order-placing tools are enabled, but only call one when the user has clearly asked to trade."
             : "Trading is disabled on this deployment. Do not attempt order-placing tools; explain that reads work and trading is off.",
-          "",
-          "Available tools:",
-          toolList,
+          // The tool list is NOT repeated here: 37 entries cost ~450 prompt tokens on
+          // every round, and the definitions are already sent structurally via the
+          // tools parameter. Repeating them was pure duplication.
         ].join("\n"),
       },
       { role: "user", content: question },
     ];
 
+    // Indices into `messages` that hold actual tool output. These are the only
+    // large messages, and they are the ones that may be shortened after a few
+    // rounds. Control messages (system, user, assistant) are never touched.
+    const resultIndexes: number[] = [];
+
     // Bounded: without a cap a model can call tools indefinitely.
-    for (let turn = 0; turn < 8; turn++) {
+    // Bounded by tool calls, not by rounds: a round may make several calls, and  
+    // the failure this guards against is unbounded backtracking, which shows up
+    // as call count rather than round count.
+    const MAX_TOOL_CALLS = 12;
+    const PRUNE_AFTER_CALLS = 4;
+    for (let turn = 0; turn < 10 && trace.length < MAX_TOOL_CALLS; turn++) {
       const response: any = await this.env.AI.run(
         modelId as never,
         { messages, tools: this.toAiToolSpecs(tools), max_tokens: 2048 } as never,
@@ -979,6 +993,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
       // top level, newer ones nest them under choices[0].message. Reading the wrong
       // one yields undefined for both, which looks like "no tools, no answer".
       const completion = readCompletion(response);
+      if (completion.finishReason) lastFinishReason = completion.finishReason;
 
       const u: any = completion.usage;
       if (u) {
@@ -998,6 +1013,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
           trace,
           model: modelId,
           cost: computeCost(modelId, usage),
+          finishReason: lastFinishReason,
         };
       }
 
@@ -1007,6 +1023,23 @@ Do not claim to have completed a payment unless you have received confirmation.`
         content: completion.text,
         tool_calls: toolCalls,
       });
+
+      // Shorten all but the most recent results before the next request.
+      //
+      // Nothing pruned history before, so every round re-sent every earlier result
+      // at full size: an option chain is up to 6000 characters, so eight rounds
+      // grew the prompt monotonically to ~112k input tokens over a single question.
+      // The full results are still returned to the caller in `trace`, so the UI is
+      // unaffected - only what the model re-reads is reduced.
+      if (trace.length >= PRUNE_AFTER_CALLS) {
+        const keep = 2;
+        resultIndexes.slice(0, Math.max(0, resultIndexes.length - keep)).forEach((idx) => {
+          const m: any = messages[idx];
+          if (m && m.role === "tool" && typeof m.content === "string" && m.content.length > 400) {
+            m.content = m.content.slice(0, 400) + "\n[... shortened: " + (m.content.length - 400) + " more characters; the full result is shown in the tool panel]\n";
+          }
+        });
+      }
 
       for (const call of toolCalls) {
         const id = call.id;
@@ -1025,10 +1058,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
           const output = await callTool(token, name, args, session);
           const firstLine = output.split("\n").find((l) => l.trim() !== "") || "(empty)";
           trace.push({ name, args, ok: true, result: output, summary: firstLine.slice(0, 200) });
+          resultIndexes.push(messages.length);
           messages.push({ role: "tool", content: output.slice(0, 6000), tool_call_id: id });
         } catch (err) {
           const msg = String(err);
           trace.push({ name, args, ok: false, result: msg });
+          resultIndexes.push(messages.length);
           messages.push({ role: "tool", content: "Tool error: " + msg, tool_call_id: id });
         }
       }
@@ -1036,10 +1071,13 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     return {
       answer:
-        "I stopped after several tool calls without reaching an answer. Try narrowing the question.",
+        "I stopped after " +
+        trace.length +
+        " tool calls without settling on an answer. The results I gathered are in the tool panel above; asking about a specific instrument or expiry usually gets further.",
       trace,
       model: modelId,
       cost: computeCost(modelId, usage),
+      finishReason: lastFinishReason || "round_limit",
     };
   }
 

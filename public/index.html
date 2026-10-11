@@ -912,6 +912,16 @@ async function loadStats() {
             ? 'tools used: ' + names.join(', ')
             : 'no tools were called.');
           if (cost) document.getElementById('publicTools').textContent += '  |  ' + cost;
+          // finish_reason separates "the model chose not to call tools" from
+          // "the loop ran out of rounds", which need different responses.
+          if (res.finishReason) {
+            const fr = String(res.finishReason);
+            let meaning = '';
+            if (fr === 'round_limit') meaning = ' (stopped: too many tool calls)';
+            else if (fr === 'stop' && trace.length === 0) meaning = ' (the model answered without calling tools)';
+            else if (fr === 'length') meaning = ' (the reply was cut off at the token limit)';
+            document.getElementById('publicTools').textContent += '  |  finish: ' + fr + meaning;
+          }
           // Inline the trace with the answer so a claim can be traced to a result.
           container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
             + renderToolTrace(trace) + '</div>';
