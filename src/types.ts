@@ -169,6 +169,12 @@ export interface AgentState {
    * DASHBOARD_API_KEY, and never returned to the browser.
    */
   publicToken?: string;
+  /**
+   * The user's chosen model id for the Public.com chat, persisted so the
+   * choice survives a reload. Resolved against src/models.json on read; an
+   * unknown id falls back to the configured default rather than erroring.
+   */
+  publicModel?: string;
 }
 
 export interface ChatMessage {

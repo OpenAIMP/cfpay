@@ -1,0 +1,94 @@
+{
+  "$comment": [
+    "Model catalogue for the Public.com chat tab.",
+    "",
+    "Every entry was verified against the Workers AI catalogue for this account,",
+    "including the function_calling property: without that a model cannot call",
+    "Public.com's tools at all, which is the whole point of the tab. Prices are the",
+    "published per-million-token rates at the time of writing and are for guidance",
+    "only - check the dashboard before relying on them.",
+    "",
+    "Selection order, highest priority first:",
+    "  1. The user's choice in the dashboard, which persists in the agent's state.",
+    "  2. defaultModel below.",
+    "  3. The first entry in models.",
+    "",
+    "A model id that is not listed here is still selectable via the picker only if",
+    "it appears in models; unknown ids fall back to defaultModel."
+  ],
+  "defaultModel": "@cf/openai/gpt-oss-120b",
+  "models": [
+    {
+      "id": "@cf/openai/gpt-oss-120b",
+      "label": "GPT-OSS 120B",
+      "description": "Best tool use of the set. Reasoning model, and the default.",
+      "contextWindow": 128000,
+      "inputPerMTok": 0.35,
+      "outputPerMTok": 0.75,
+      "functionCalling": true
+    },
+    {
+      "id": "@cf/openai/gpt-oss-20b",
+      "label": "GPT-OSS 20B",
+      "description": "Cheaper sibling of the 120B; fine for single-step lookups.",
+      "contextWindow": 128000,
+      "inputPerMTok": 0.2,
+      "outputPerMTok": 0.3,
+      "functionCalling": true
+    },
+    {
+      "id": "@cf/nvidia/nemotron-3-120b-a12b",
+      "label": "Nemotron 3 120B",
+      "description": "Large context (256k) and strong reasoning; more expensive.",
+      "contextWindow": 256000,
+      "inputPerMTok": 0.5,
+      "outputPerMTok": 1.5,
+      "functionCalling": true
+    },
+    {
+      "id": "@cf/meta/llama-4-scout-17b-16e-instruct",
+      "label": "Llama 4 Scout 17B",
+      "description": "Meta's tool-calling model, 131k context.",
+      "contextWindow": 131000,
+      "inputPerMTok": 0.27,
+      "outputPerMTok": 0.85,
+      "functionCalling": true
+    },
+    {
+      "id": "@cf/zai-org/glm-4.7-flash",
+      "label": "GLM 4.7 Flash",
+      "description": "Cheapest of the large-context options; good value for reads.",
+      "contextWindow": 131072,
+      "inputPerMTok": 0.0605,
+      "outputPerMTok": 0.4,
+      "functionCalling": true
+    },
+    {
+      "id": "@cf/qwen/qwen3-30b-a3b-fp8",
+      "label": "Qwen3 30B A3B",
+      "description": "Very cheap input, but only a 32k context window.",
+      "contextWindow": 32768,
+      "inputPerMTok": 0.0509,
+      "outputPerMTok": 0.335,
+      "functionCalling": true
+    },
+    {
+      "id": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+      "label": "Mistral Small 3.1 24B",
+      "description": "Mid-range alternative with tool calling and vision.",
+      "contextWindow": 128000,
+      "inputPerMTok": 0.351,
+      "outputPerMTok": 0.555,
+      "functionCalling": true
+    },
+    {
+      "id": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      "label": "Llama 3.3 70B (previous default)",
+      "description": "Kept for comparison. Only a 24k context, and weaker multi-step tool use - it tended to answer from a single portfolio read instead of quoting and comparing.",
+      "contextWindow": 24000,
+      "inputPerMTok": 0.293,
+      "outputPerMTok": 2.253,
+      "functionCalling": true
+    }
+  ]
+}

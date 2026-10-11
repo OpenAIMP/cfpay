@@ -10,6 +10,7 @@ import {
   mcpCall,
   type McpSession,
 } from "./public-mcp";
+import { defaultModelId, listModels, resolveModelId } from "./models";
 
 export function createApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -39,8 +40,11 @@ export function createApp() {
   app.get("/api/public/status", requireAuth, async (c) => {
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
+    const stored = await agent.getPublicModel();
     return c.json({
       connected: Boolean(token),
+      model: resolveModelId(stored),
+      modelIsDefault: !stored,
       // Shown so the user can confirm they pasted the key they meant to.
       tokenHint: token ? token.slice(0, 4) + "..." + token.slice(-4) : null,
       allowTrading: allowTrading(c.env),
@@ -83,6 +87,39 @@ export function createApp() {
     }
   });
 
+  // The catalogue the picker renders. Read-only, no credentials involved.
+  app.get("/api/public/models", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const stored = await agent.getPublicModel();
+    return c.json({
+      models: listModels(),
+      defaultModel: defaultModelId(),
+      selected: resolveModelId(stored),
+      isDefault: !stored,
+    });
+  });
+
+  app.post("/api/public/model", requireAuth, async (c) => {
+    const body = await c.req.json<{ model?: string }>();
+    const requested = (body.model || "").trim();
+    if (!requested) {
+      // Clearing the choice returns to the configured default.
+      const agent = getAgent(c);
+      await agent.setPublicModel("");
+      return c.json({ ok: true, model: defaultModelId(), isDefault: true });
+    }
+    const chosen = resolveModelId(requested);
+    if (chosen !== requested) {
+      return c.json(
+        { error: "Unknown model: " + requested + ". Pick one from /api/public/models." },
+        400,
+      );
+    }
+    const agent = getAgent(c);
+    await agent.setPublicModel(chosen);
+    return c.json({ ok: true, model: chosen, isDefault: false });
+  });
+
   app.post("/api/public/chat", requireAuth, async (c) => {
     const body = await c.req.json<{ message?: string }>();
     const message = (body.message || "").trim();
@@ -96,8 +133,15 @@ export function createApp() {
       const session: McpSession = {};
       const tools = await listTools(token, session);
       if (tools.length === 0) return c.json({ error: "Public.com returned no tools for this account." }, 502);
-      const { answer, trace } = await agent.answerInstrumentQuestion(token, message, tools, session);
-      return c.json({ answer, trace });
+      const storedModel = await agent.getPublicModel();
+      const { answer, trace, model } = await agent.answerInstrumentQuestion(
+        token,
+        message,
+        tools,
+        session,
+        storedModel,
+      );
+      return c.json({ answer, trace, model });
     } catch (err) {
       return c.json({ error: String(err) }, 502);
     }

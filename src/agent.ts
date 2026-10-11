@@ -16,6 +16,7 @@ import type {
 } from "./types";
 import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
+import { defaultModelId, normaliseToolCalls, resolveModelId } from "./models";
 import {
   formatAmount,
   generateId,
@@ -278,7 +279,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
       let text: string;
       try {
         const response = await this.env.AI.run(
-          "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
+          defaultModelId() as never,
           {
             messages,
           } as never,
@@ -336,7 +337,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
   private async generateAiInsight(prompt: string): Promise<string> {
     try {
       const response = await this.env.AI.run(
-        "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
+        defaultModelId() as never,
         {
           messages: [
             {
@@ -411,7 +412,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     try {
       const summaryResponse = await this.env.AI.run(
-        "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
+        defaultModelId() as never,
         {
           messages: [
             {
@@ -878,6 +879,20 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return (state.publicToken as string | undefined) ?? null;
   }
 
+  /** The stored model preference, if any. Unset means use the default. */
+  @callable()
+  async getPublicModel(): Promise<string | null> {
+    const state = this.ensureState() as any;
+    return (state.publicModel as string | undefined) ?? null;
+  }
+
+  /** Store the model preference. Caller validates against the catalogue. */
+  @callable()
+  async setPublicModel(modelId: string): Promise<void> {
+    const state = this.ensureState() as any;
+    this.setState({ ...state, publicModel: modelId });
+  }
+
   @callable()
   async setPublicToken(token: string): Promise<void> {
     const state = this.ensureState() as any;
@@ -907,8 +922,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
     question: string,
     tools: McpTool[],
     session: McpSession,
-  ): Promise<{ answer: string; trace: ToolTrace[] }> {
+    model?: string | null,
+  ): Promise<{ answer: string; trace: ToolTrace[]; model: string }> {
     const trace: ToolTrace[] = [];
+    // Resolved once per question: the user's stored choice, else the configured
+    // default from src/models.json.
+    const modelId = resolveModelId(model);
     const tradingAllowed =
       String((this.env as any).PUBLIC_ALLOW_TRADING || "").trim().toLowerCase() === "true";
 
@@ -942,13 +961,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
     // Bounded: without a cap a model can call tools indefinitely.
     for (let turn = 0; turn < 8; turn++) {
       const response: any = await this.env.AI.run(
-        "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
+        modelId as never,
         { messages, tools: this.toAiToolSpecs(tools), max_tokens: 2048 } as never,
       );
 
-      const toolCalls = response?.tool_calls;
-      if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-        return { answer: String(response?.response ?? "").trim(), trace };
+      // Models answer in either the legacy or the current tool-call shape.
+      // Normalising here is what makes the follow-up request valid: echoing a
+      // legacy call back as tool_calls fails validation with AiError 8007.
+      const toolCalls = normaliseToolCalls(response?.tool_calls);
+      if (toolCalls.length === 0) {
+        return { answer: String(response?.response ?? "").trim(), trace, model: modelId };
       }
 
       // Echo the assistant's own tool_calls back verbatim, ids included.
@@ -959,14 +981,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
       });
 
       for (const call of toolCalls) {
-        // Chat-completions shape: {id, type, function:{name, arguments}}.
-        // Legacy models answered {name, arguments} at the top level.
-        const id = String(call?.id ?? "");
-        const fn = call?.function ?? {};
-        const name = String(fn.name ?? call?.name ?? "");
-        const rawArgs = fn.arguments ?? call?.arguments ?? {};
-        const args = typeof rawArgs === "string" ? safeJson(rawArgs) : rawArgs;
-        if (!name) continue;
+        const id = call.id;
+        const name = call.function.name;
+        const args = safeJson(call.function.arguments);
 
         if (!tradingAllowed && isOrderPlacingTool(name)) {
           const refusal =
@@ -993,6 +1010,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
       answer:
         "I stopped after several tool calls without reaching an answer. Try narrowing the question.",
       trace,
+      model: modelId,
     };
   }
 

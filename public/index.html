@@ -227,9 +227,12 @@
               <span id="publicTokenHint" style="color:var(--muted);font-size:0.78rem;font-family:monospace;"></span>
               <button class="btn" onclick="disconnectPublic()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">Disconnect</button>
             </div>
+            <div class="form-group" style="margin-top:0.9rem;">
+              <label for="publicModel">Model</label>
+              <select id="publicModel" onchange="selectPublicModel()" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;box-sizing:border-box;"></select>
+              <p id="publicModelNote" style="color:var(--muted);font-size:0.75rem;line-height:1.5;margin:0.35rem 0 0;"></p>
+            </div>
           </div>
-        </div>
-
         <div class="card" id="publicChatCard" style="display:none;">
           <h3 style="margin-bottom:1rem;">Ask about an instrument</h3>
           <div class="chat-container" id="publicMessages"></div>
@@ -711,11 +714,13 @@ async function loadStats() {
         document.getElementById('publicConnectedBox').style.display = connected ? '' : 'none';
         document.getElementById('publicChatCard').style.display = connected ? '' : 'none';
         notice.innerHTML = '';
+        if (!connected) loadPublicModels();
         if (connected) {
           document.getElementById('publicTokenHint').textContent = s.tokenHint ? 'token ' + s.tokenHint : '';
           if (!s.allowTrading) {
             notice.innerHTML = '<div class="status-msg info">Order placement is disabled on this deployment. Reads work normally.</div>';
           }
+          loadPublicModels();
           loadPublicTools();
         }
       } catch (err) {
@@ -757,6 +762,48 @@ async function loadStats() {
         loadPublicStatus();
       } catch (err) {
         notice.innerHTML = '<div class="status-msg error">' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    // Populate the picker from src/models.json via the API. The choice persists
+    // server-side; an unknown stored id resolves to the configured default, so a
+    // stale value cannot break the tab.
+    async function loadPublicModels() {
+      const sel = document.getElementById('publicModel');
+      const note = document.getElementById('publicModelNote');
+      if (!sel) return;
+      try {
+        const res = await api('/api/public/models');
+        const models = Array.isArray(res.models) ? res.models : [];
+        sel.innerHTML = models.map(m => {
+          const def = (m.id === res.defaultModel) ? ' (default)' : '';
+          const price = (m.inputPerMTok != null)
+            ? ' \u2014 $' + m.inputPerMTok + ' in / $' + m.outputPerMTok + ' out per M tokens'
+            : '';
+          return '<option value="' + escapeHtml(m.id) + '"' + (m.id === res.selected ? ' selected' : '') + '>'
+            + escapeHtml(m.label || m.id) + def + price + '</option>';
+        }).join('');
+        const chosen = models.filter(m => m.id === res.selected)[0];
+        let text = chosen && chosen.description ? chosen.description : '';
+        if (chosen && chosen.contextWindow) text += ' Context: ' + chosen.contextWindow.toLocaleString() + ' tokens.';
+        note.textContent = text;
+      } catch (err) {
+        sel.innerHTML = '<option value="">(could not load models)</option>';
+        note.textContent = err.message;
+      }
+    }
+
+    async function selectPublicModel() {
+      const sel = document.getElementById('publicModel');
+      const note = document.getElementById('publicModelNote');
+      const previous = note.textContent;
+      try {
+        const res = await api('/api/public/model', 'POST', { model: sel.value });
+        if (res.error) { note.textContent = res.error; return; }
+        await loadPublicModels();
+        note.textContent = (note.textContent || previous) + '  Selected.';
+      } catch (err) {
+        note.textContent = err.message;
       }
     }
 
@@ -819,9 +866,10 @@ async function loadStats() {
           container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.answer || '(no answer)') + '</div>';
           const trace = Array.isArray(res.trace) ? res.trace : [];
           const names = trace.map(c => c.name);
-          document.getElementById('publicTools').textContent = names.length
-            ? 'Tools used: ' + names.join(', ')
-            : 'No tools were called.';
+          const modelNote = res.model ? 'Model: ' + res.model + ' - ' : '';
+          document.getElementById('publicTools').textContent = modelNote + (names.length
+            ? 'tools used: ' + names.join(', ')
+            : 'no tools were called.');
           // Inline the trace with the answer so a claim can be traced to a result.
           container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
             + renderToolTrace(trace) + '</div>';
