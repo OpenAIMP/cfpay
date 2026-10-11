@@ -13,6 +13,7 @@ import {
 import {
   DEFAULT_PUBLIC_OAUTH_SCOPES,
   buildAuthorizeUrl,
+  PUBLIC_OAUTH_CLIENT_PATH,
   clientMetadataDocument,
   codeChallengeFor,
   createPkceSession,
@@ -56,11 +57,25 @@ export function createApp() {
 
   // Client ID Metadata Document (draft-ietf-oauth-client-id-metadata-document).
   // Only this deployment's own client_id is ever described.
+  app.get(PUBLIC_OAUTH_CLIENT_PATH, (c) => {
+    const origin = new URL(c.req.url).origin;
+    return new Response(JSON.stringify(clientMetadataDocument(origin)), {
+      status: 200,
+      headers: {
+        // Must be JSON: the authorization server parses this to learn the
+        // redirect URIs for the client_id it was given.
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=300",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  });
+
+  // Compatibility: the earlier revision served the same document here behind a
+  // client_id query parameter. Kept so an already-registered client_id still
+  // resolves, but it is not the URL we advertise.
   app.get("/.well-known/oauth-client-id-metadata-document", (c) => {
     const origin = new URL(c.req.url).origin;
-    if (!isOwnClientId(c.req.query("client_id"), origin)) {
-      return c.json({ error: "unknown client_id" }, 404);
-    }
     return c.json(clientMetadataDocument(origin));
   });
 
@@ -76,7 +91,8 @@ export function createApp() {
 
     const origin = new URL(c.req.url).origin;
     const redirectUri = origin + "/auth/public/callback";
-    const clientId = origin + "/auth/public";
+    // Must equal `iss` in the document; the AS compares the two.
+    const clientId = clientMetadataDocument(origin).iss;
 
     try {
       const as = await discoverAuthorizationServer(PUBLIC_MCP_URL);

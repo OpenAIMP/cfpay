@@ -17,6 +17,13 @@
  * held on the central agent Durable Object behind DASHBOARD_API_KEY.
  */
 
+/**
+ * Path that serves this Worker's Client ID Metadata Document. The client_id we
+ * present IS this URL, so it must be the path the document is actually served
+ * from, and it must match `iss` in the document.
+ */
+export const PUBLIC_OAUTH_CLIENT_PATH = "/auth/public";
+
 export const DEFAULT_PUBLIC_OAUTH_SCOPES = "openid offline_access marketdata trading.read";
 
 export interface AuthorizationServerMetadata {
@@ -294,7 +301,10 @@ export function isExpired(tokens: PublicOAuthTokens, skewMs = 60_000): boolean {
  * equal the client_id, so the client_id is "<origin>/auth/public" and the
  * document describes exactly that client.
  */
-export function clientMetadataDocument(origin: string, clientIdPath = "/auth/public"): any {
+export function clientMetadataDocument(
+  origin: string,
+  clientIdPath: string = PUBLIC_OAUTH_CLIENT_PATH,
+): any {
   return {
     iss: origin + clientIdPath,
     client_name: "CFmail Agent Dashboard",
