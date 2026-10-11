@@ -353,7 +353,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
         text = (fallbackResponse as { response?: string }).response ?? "I could not generate a response.";
       }
 
-      this.chatHistoryBySender[senderKey] = [
+      // Annotated as ChatMessage[] so the object literals below are
+      // contextually typed and `role` narrows to the union instead of
+      // widening to `string` (TS2322).
+      const updatedHistory: ChatMessage[] = [
         ...priorHistory,
         {
           role: "user",
@@ -365,7 +368,8 @@ Do not claim to have completed a payment unless you have received confirmation.`
           content: text,
           timestamp: new Date().toISOString(),
         },
-      ].slice(-MAX_CHAT_HISTORY_PER_SENDER);
+      ];
+      this.chatHistoryBySender[senderKey] = updatedHistory.slice(-MAX_CHAT_HISTORY_PER_SENDER);
 
       return text;
     } catch (error) {
