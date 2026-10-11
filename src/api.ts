@@ -4,6 +4,7 @@ import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
 import { formatAmount, formatEthAmount, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from "./agent";
+import { timingSafeStringEqual } from "./mcp-auth";
 import {
   PUBLIC_MCP_URL,
   listTools,
@@ -62,7 +63,7 @@ export function createApp() {
   function requireAuth(c: any, next: any) {
     const presented = c.req.header("X-API-Key") ?? "";
     // Fail closed: an unset DASHBOARD_API_KEY must never authorize a request.
-    if (!c.env.DASHBOARD_API_KEY || presented !== c.env.DASHBOARD_API_KEY) {
+    if (!c.env.DASHBOARD_API_KEY || !timingSafeStringEqual(presented, c.env.DASHBOARD_API_KEY)) {
       return c.json({ error: "Unauthorized" }, 401);
     }
     return next();
@@ -116,7 +117,7 @@ export function createApp() {
     // Browser navigation cannot send headers; the dashboard passes its own key
     // as ?key=, the same pattern the WebSocket state sync uses.
     const presented = c.req.query("key") ?? "";
-    if (!c.env.DASHBOARD_API_KEY || presented !== c.env.DASHBOARD_API_KEY) {
+    if (!c.env.DASHBOARD_API_KEY || !timingSafeStringEqual(presented, c.env.DASHBOARD_API_KEY)) {
       return c.text("Unauthorized", 401);
     }
 
@@ -870,7 +871,7 @@ export function createApp() {
     const presented = c.req.header("X-API-Key") ?? c.req.query("token") ?? "";
 
     // Fail closed: an unset key must never match an empty presented value.
-    if (!c.env.DASHBOARD_API_KEY || presented !== c.env.DASHBOARD_API_KEY) {
+    if (!c.env.DASHBOARD_API_KEY || !timingSafeStringEqual(presented, c.env.DASHBOARD_API_KEY)) {
       return c.json({ error: "Unauthorized" }, 401);
     }
 

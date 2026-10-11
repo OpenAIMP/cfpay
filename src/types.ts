@@ -173,6 +173,20 @@ export interface AgentState {
    */
   x402ProcessedClaims?: Record<string, string>;
   /**
+   * GitHub X-GitHub-Delivery IDs already handled, mapped to the ISO timestamp
+   * of first receipt. GitHub signatures cover no timestamp, so without this
+   * rolling 24h set a captured payload could be replayed indefinitely.
+   * Mirrors stripeProcessedEvents.
+   */
+  githubProcessedDeliveries?: Record<string, string>;
+  /**
+   * Consumed OAuth refresh-token ids (jti), mapped to the ISO timestamp of
+   * rotation. Refresh tokens are single-use: presenting an already-rotated
+   * token is rejected as suspected theft. Entries older than the refresh
+   * lifetime are pruned.
+   */
+  oauthConsumedRefreshJtis?: Record<string, string>;
+  /**
    * Public.com personal access token. Held server-side, behind
    * DASHBOARD_API_KEY, and never returned to the browser.
    */

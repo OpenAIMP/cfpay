@@ -1692,6 +1692,62 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   // ===========================================================================
+  // RPC: GitHub webhook delivery dedup
+  // ===========================================================================
+  /**
+   * Reject replayed GitHub webhook deliveries. Returns true when this delivery
+   * ID was already seen (the caller must reject the request); otherwise records
+   * it and returns false. Entries older than 24h are pruned, bounding the set.
+   * Check-and-record is atomic under the Durable Object input gate.
+   */
+  @callable()
+  async isDuplicateGitHubDelivery(deliveryId: string): Promise<boolean> {
+    const state = this.ensureState();
+    const seen = { ...(state.githubProcessedDeliveries || {}) };
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    for (const [id, ts] of Object.entries(seen)) {
+      if (new Date(ts).getTime() < cutoff) delete seen[id];
+    }
+    if (seen[deliveryId]) {
+      this.setState({ ...state, githubProcessedDeliveries: seen });
+      return true;
+    }
+    seen[deliveryId] = new Date().toISOString();
+    this.setState({ ...state, githubProcessedDeliveries: seen });
+    return false;
+  }
+
+  // ===========================================================================
+  // RPC: OAuth refresh-token rotation
+  // ===========================================================================
+  /**
+   * Consume one OAuth refresh-token id (single-use rotation). Returns
+   * { ok: true } on first presentation and records the id; returns
+   * { ok: false, reused: true } when the id was already consumed, which the
+   * token endpoint treats as suspected token theft. Entries older than the
+   * refresh-token lifetime cannot be replayed usefully and are pruned.
+   * Check-and-record is atomic under the Durable Object input gate.
+   */
+  @callable()
+  async rotateOAuthRefreshToken(jti: string): Promise<{ ok: boolean; reused?: boolean }> {
+    const state = this.ensureState();
+    const consumed = { ...(state.oauthConsumedRefreshJtis || {}) };
+    // Refresh tokens live 30 days (REFRESH_TTL_S in mcp-oauth-server.ts); keep
+    // a small grace period so clock skew cannot resurrect a consumed id.
+    const cutoff = Date.now() - 31 * 24 * 3600 * 1000;
+    for (const [id, ts] of Object.entries(consumed)) {
+      if (new Date(ts).getTime() < cutoff) delete consumed[id];
+    }
+    if (consumed[jti]) {
+      this.setState({ ...state, oauthConsumedRefreshJtis: consumed });
+      return { ok: false, reused: true };
+    }
+    consumed[jti] = new Date().toISOString();
+    this.setState({ ...state, oauthConsumedRefreshJtis: consumed });
+    return { ok: true };
+  }
+
+  // ===========================================================================
   // RPC: Get webhook events
   // ===========================================================================
   @callable()

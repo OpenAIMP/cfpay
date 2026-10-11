@@ -15,6 +15,8 @@ export interface VerifiedWebhook {
   provider: WebhookProvider;
   agentName: string;
   payload: unknown;
+  /** X-GitHub-Delivery header value (GitHub only). Used for replay protection. */
+  deliveryId?: string;
 }
 
 /**
@@ -152,6 +154,12 @@ export async function verifyAndParseWebhook(
     if (!isConfiguredSecret(env.GITHUB_WEBHOOK_SECRET)) return null;
     if (!(await verifyGitHub(rawBody, signature, env.GITHUB_WEBHOOK_SECRET))) return null;
 
+    // GitHub signs no timestamp, so a captured payload replays forever. The
+    // delivery ID is the only replay signal; without it uniqueness cannot be
+    // established, so fail closed.
+    const deliveryId = request.headers.get("X-GitHub-Delivery");
+    if (!deliveryId) return null;
+
     let payload: any;
     try {
       payload = JSON.parse(rawBody);
@@ -163,7 +171,7 @@ export async function verifyAndParseWebhook(
     const repo = payload?.repository?.full_name;
     if (!repo) return null;
     const agentName = repo.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    return { provider: "github", agentName, payload };
+    return { provider: "github", agentName, payload, deliveryId };
   }
 
   if (url.pathname === "/webhooks/stripe") {

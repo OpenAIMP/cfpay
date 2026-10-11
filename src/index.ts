@@ -7,7 +7,7 @@ import { createApp } from "./api";
 import { CfmailAgentSQLite } from "./agent";
 import { verifyAndParseWebhook } from "./webhooks";
 import { createCfmailMcpHandler } from "./mcp";
-import { authorizeMcpRequest } from "./mcp-auth";
+import { authorizeMcpRequest, timingSafeStringEqual } from "./mcp-auth";
 import { handleResourceMetadata } from "./mcp-oauth";
 import {
   AS_METADATA_PATH,
@@ -83,6 +83,15 @@ export default {
       // events into a Durable Object nothing ever displayed.
       const agent = await getAgentByName(env.CfmailAgent as any, "agent");
 
+      // GitHub signatures carry no timestamp: reject replayed deliveries. The
+      // agent records delivery IDs in a rolling 24h set (fail closed).
+      if (verified.provider === "github") {
+        const duplicate = await (agent as any).isDuplicateGitHubDelivery(verified.deliveryId ?? "");
+        if (duplicate) {
+          return new Response("Duplicate webhook delivery", { status: 409 });
+        }
+      }
+
       // Slack message events also become a conversation in the Slack tab:
       // handleSlackEvent records them on this same central instance (which the
       // live state sync broadcasts to the dashboard without a reload) and
@@ -133,7 +142,7 @@ export default {
     const agentResponse = await routeAgentRequest(request, env, {
       onBeforeConnect: async (req: Request) => {
         const token = new URL(req.url).searchParams.get("token");
-        if (!token || token !== env.DASHBOARD_API_KEY) {
+        if (!token || !timingSafeStringEqual(token, env.DASHBOARD_API_KEY ?? "")) {
           return new Response("Unauthorized", { status: 401 });
         }
       },
@@ -142,8 +151,8 @@ export default {
         const apiKey = req.headers.get("X-API-Key");
         const token = auth?.replace("Bearer ", "");
         if (
-          (!token || token !== env.DASHBOARD_API_KEY) &&
-          (!apiKey || apiKey !== env.DASHBOARD_API_KEY)
+          (!token || !timingSafeStringEqual(token, env.DASHBOARD_API_KEY ?? "")) &&
+          (!apiKey || !timingSafeStringEqual(apiKey, env.DASHBOARD_API_KEY ?? ""))
         ) {
           return new Response("Unauthorized", { status: 401 });
         }
