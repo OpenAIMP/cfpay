@@ -28,6 +28,37 @@ import { defaultModelId, listModels, resolveModelId } from "./models";
 export function createApp() {
   const app = new Hono<{ Bindings: Env }>();
 
+  /**
+   * Shown when Public.com refuses this client_id.
+   *
+   * Verified against production. Public.com's authorization server rejects every
+   * client_id not registered with them: an opaque id, a URL, their own origin, and
+   * the client_id Anthropic uses for Claude. A Client ID Metadata Document is
+   * refused too, even though their metadata advertises
+   * client_id_metadata_document_supported, and serving a valid document at the
+   * client_id URL does not help. There is no registration endpoint either, so a
+   * client cannot be created programmatically.
+   *
+   * Consequence: sign-in cannot be provisioned from this Worker. Claude works
+   * because it is a client registered with Public.com, not because of a mechanism
+   * that can be reused here.
+   */
+  const PUBLIC_CLIENT_REJECTED_MESSAGE = [
+    "Public.com will not authorise this application.",
+    "",
+    "Their authorization server accepts only clients registered with them directly,",
+    "and provides no endpoint to register one. A Client ID Metadata Document is not",
+    "accepted either, despite their metadata advertising support for it.",
+    "",
+    "To use Public.com here, connect with a personal access token on the Public tab:",
+    "create one on the API settings page of your Public account and paste it there.",
+    "That path is verified working.",
+    "",
+    "Or connect Public.com straight to Claude, ChatGPT or Perplexity, which they",
+    "support as first-party clients:",
+    "https://public.com/api/docs/templates/hosted-mcp",
+  ].join("\n");
+
   function requireAuth(c: any, next: any) {
     const presented = c.req.header("X-API-Key") ?? "";
     // Fail closed: an unset DASHBOARD_API_KEY must never authorize a request.
@@ -107,6 +138,20 @@ export function createApp() {
         DEFAULT_PUBLIC_OAUTH_SCOPES,
         PUBLIC_MCP_URL,
       );
+      // Probe the authorize endpoint before sending the browser to it.
+      //
+      // Public.com rejects a client_id it has not registered with a bare
+      // invalid_request, and calling it is the only way to know. Checking here
+      // turns a dead-end JSON error on Public's site into an explanation on ours.
+      try {
+        const probe = await fetch(url, { redirect: "manual" });
+        if (probe.status === 400 && (await probe.text()).includes("client_id")) {
+          return c.text(PUBLIC_CLIENT_REJECTED_MESSAGE, 502);
+        }
+      } catch {
+        // Not conclusive: fall through so a transient error cannot block sign-in.
+      }
+
       const agent = getAgent(c);
       await agent.setPublicOAuthPending(pending);
       return c.redirect(url, 302);
