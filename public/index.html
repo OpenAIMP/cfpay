@@ -204,6 +204,12 @@
           <div id="publicNotice"></div>
 
           <div id="publicConnectBox">
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem;">
+              <button class="btn" onclick="connectPublicOAuth()">Connect Public</button>
+              <span style="color:var(--muted);font-size:0.8rem;">Sign in on Public's own page and come straight back here - no token to paste. Read-only scopes only.</span>
+            </div>
+            <details>
+              <summary style="cursor:pointer;color:var(--muted);font-size:0.78rem;margin-bottom:0.5rem;">Or connect with a personal access token</summary>
             <div class="form-group">
               <label for="publicToken">Public.com personal access token</label>
               <input type="password" id="publicToken" placeholder="Paste your token" autocomplete="off" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;box-sizing:border-box;" />
@@ -219,6 +225,7 @@
               <a class="btn" href="https://public.com/settings/developer" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;background:var(--bg);border:1px solid var(--border);color:var(--text);">Get a token &nearr;</a>
               <a class="btn" href="https://public.com/api/docs/templates/hosted-mcp" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;background:var(--bg);border:1px solid var(--border);color:var(--text);">Setup guide &nearr;</a>
             </div>
+            </details>
           </div>
 
           <div id="publicConnectedBox" style="display:none;">
@@ -287,6 +294,9 @@
     let account = null;
     let pendingPayment = null;
     let configuredPaymentOptions = [];
+    // Set by the OAuth callback deep link (/?tab=public&connected=N), consumed
+    // by the first status load so the user sees a confirmation on return.
+    let publicConnectedCount = null;
     if (apiKey) { document.getElementById('login').style.display = 'none'; document.getElementById('app').style.display = 'block'; init(); }
     function login() {
       apiKey = document.getElementById('apiKeyInput').value;
@@ -714,9 +724,14 @@ async function loadStats() {
         document.getElementById('publicConnectedBox').style.display = connected ? '' : 'none';
         document.getElementById('publicChatCard').style.display = connected ? '' : 'none';
         notice.innerHTML = '';
+        if (connected && Number.isFinite(publicConnectedCount)) {
+          notice.innerHTML = '<div class="status-msg success">Public connected - ' + publicConnectedCount + ' tools available.</div>';
+          publicConnectedCount = null;
+        }
         if (!connected) loadPublicModels();
         if (connected) {
-          document.getElementById('publicTokenHint').textContent = s.tokenHint ? 'token ' + s.tokenHint : '';
+          document.getElementById('publicTokenHint').textContent =
+            s.method === 'oauth' ? 'signed in with Public' : (s.tokenHint ? 'token ' + s.tokenHint : '');
           if (!s.allowTrading) {
             notice.innerHTML = '<div class="status-msg info">Order placement is disabled on this deployment. Reads work normally.</div>';
           }
@@ -726,6 +741,13 @@ async function loadStats() {
       } catch (err) {
         notice.innerHTML = '<div class="status-msg error">Could not read status: ' + escapeHtml(err.message) + '</div>';
       }
+    }
+
+    // Full-page navigation, not fetch: the user must visit Public's own
+    // sign-in page. The dashboard key rides along as ?key= because a top-level
+    // navigation cannot send headers (the Worker validates it before redirecting).
+    function connectPublicOAuth() {
+      window.location.assign('/auth/public/connect?key=' + encodeURIComponent(apiKey));
     }
 
     async function connectPublic() {
@@ -901,6 +923,25 @@ async function loadStats() {
           document.getElementById('payRequest').value = params.get('request');
         }
       }, 500);
+    }
+
+    // Deep link from the OAuth callback: /?tab=public&connected=N reopens the
+    // Public chat tab and shows the sign-in confirmation. Give up quietly if
+    // the user never logs in.
+    if (params.get('tab')) {
+      const wantedTab = params.get('tab');
+      const connectedCount = parseInt(params.get('connected') || '', 10);
+      if (Number.isFinite(connectedCount)) publicConnectedCount = connectedCount;
+      let tabAttempts = 0;
+      const openTab = () => {
+        if (document.getElementById('app').style.display !== 'none' && document.querySelector('.tab[data-tab="' + wantedTab + '"]')) {
+          switchTab(wantedTab);
+          history.replaceState({}, '', window.location.pathname);
+        } else if (++tabAttempts < 30) {
+          setTimeout(openTab, 200);
+        }
+      };
+      openTab();
     }
 
         async function loadWebhooks() {

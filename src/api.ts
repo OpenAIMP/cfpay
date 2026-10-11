@@ -10,6 +10,18 @@ import {
   mcpCall,
   type McpSession,
 } from "./public-mcp";
+import {
+  DEFAULT_PUBLIC_OAUTH_SCOPES,
+  buildAuthorizeUrl,
+  clientMetadataDocument,
+  codeChallengeFor,
+  createPkceSession,
+  discoverAuthorizationServer,
+  exchangeCode,
+  isFreshPending,
+  isOwnClientId,
+  stateMatches,
+} from "./public-oauth";
 import { defaultModelId, listModels, resolveModelId } from "./models";
 
 export function createApp() {
@@ -27,25 +39,123 @@ export function createApp() {
   // ---------------------------------------------------------------------------
   // Public.com chat.
   //
-  // Public.com publishes no registration endpoint, so there is no OAuth flow we
-  // can drive; their documented credential is a personal access token. The user
-  // pastes one, it is stored on the agent instance, and it is used server-side to
-  // reach mcp.public.com. It is never sent back to the browser and never logged.
+  // Two ways to connect, both ending with the credential held on the agent
+  // instance and never sent back to the browser:
+  //
+  //   1. "Connect Public" (preferred) - OAuth 2.1 with PKCE S256. The user is
+  //      redirected to Public's own sign-in page and lands back on the chat.
+  //      The public client identifies via a Client ID Metadata Document served
+  //      by this Worker (Public's AS supports CIDMD, publishes no DCR endpoint).
+  //   2. A pasted personal access token - the documented fallback.
   //
   // Order-placing tools are refused in the model loop unless PUBLIC_ALLOW_TRADING
   // is set: their guide warns that a trade placed through an MCP client is a real
-  // order using real money, so read-only is the default posture.
+  // order using real money, so read-only is the default posture. The OAuth
+  // scopes requested here are read-only as well.
   // ---------------------------------------------------------------------------
+
+  // Client ID Metadata Document (draft-ietf-oauth-client-id-metadata-document).
+  // Only this deployment's own client_id is ever described.
+  app.get("/.well-known/oauth-client-id-metadata-document", (c) => {
+    const origin = new URL(c.req.url).origin;
+    if (!isOwnClientId(c.req.query("client_id"), origin)) {
+      return c.json({ error: "unknown client_id" }, 404);
+    }
+    return c.json(clientMetadataDocument(origin));
+  });
+
+  // Start the sign-in: discover the authorization server, store the PKCE
+  // session on the agent instance, and send the user to Public's login page.
+  app.get("/auth/public/connect", async (c) => {
+    // Browser navigation cannot send headers; the dashboard passes its own key
+    // as ?key=, the same pattern the WebSocket state sync uses.
+    const presented = c.req.query("key") ?? "";
+    if (!c.env.DASHBOARD_API_KEY || presented !== c.env.DASHBOARD_API_KEY) {
+      return c.text("Unauthorized", 401);
+    }
+
+    const origin = new URL(c.req.url).origin;
+    const redirectUri = origin + "/auth/public/callback";
+    const clientId = origin + "/auth/public";
+
+    try {
+      const as = await discoverAuthorizationServer(PUBLIC_MCP_URL);
+      const pending = await createPkceSession(clientId, as, redirectUri);
+      const challenge = await codeChallengeFor(pending.codeVerifier);
+      const url = buildAuthorizeUrl(
+        as,
+        clientId,
+        redirectUri,
+        pending.state,
+        challenge,
+        DEFAULT_PUBLIC_OAUTH_SCOPES,
+        PUBLIC_MCP_URL,
+      );
+      const agent = getAgent(c);
+      await agent.setPublicOAuthPending(pending);
+      return c.redirect(url, 302);
+    } catch (err) {
+      return c.text(
+        "Could not start the Public.com sign-in: " + String(err) +
+          "\n\nYou can still connect with a personal access token on the Public tab.",
+        502,
+      );
+    }
+  });
+
+  // OAuth callback. Gated by the state parameter stored before the redirect,
+  // not by the dashboard key (Public redirects here without one).
+  app.get("/auth/public/callback", async (c) => {
+    const agent = getAgent(c);
+    const pending = await agent.getPublicOAuthPending();
+    const fail = (message: string) => c.text(message, 400);
+
+    if (c.req.query("error")) {
+      const detail = c.req.query("error_description") || c.req.query("error") || "denied";
+      await agent.clearPublicOAuthPending();
+      return fail("Public.com authorization was not completed: " + detail);
+    }
+
+    const code = c.req.query("code");
+    if (!code) {
+      await agent.clearPublicOAuthPending();
+      return fail("Missing authorization code.");
+    }
+
+    if (!isFreshPending(pending) || !stateMatches(c.req.query("state"), pending.state)) {
+      await agent.clearPublicOAuthPending();
+      return fail("Invalid or expired OAuth state. Start again from the Public tab.");
+    }
+
+    try {
+      const previous = await agent.getPublicOAuthRecord();
+      const tokens = await exchangeCode(pending, code, previous?.revocationEndpoint);
+      // Verify before saving: a credential that cannot list tools is not useful.
+      const tools = await listTools(tokens.accessToken, {});
+      await agent.savePublicOAuthTokens(tokens);
+      // Back to the chat interface, on the Public tab.
+      return c.redirect("/?tab=public&connected=" + tools.length, 303);
+    } catch (err) {
+      return c.text(
+        "Public.com sign-in failed while exchanging the code: " + String(err) +
+          "\n\nYou can still connect with a personal access token on the Public tab.",
+        502,
+      );
+    }
+  });
 
   app.get("/api/public/status", requireAuth, async (c) => {
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
+    const method = token ? await agent.getPublicTokenSource() : null;
     const stored = await agent.getPublicModel();
     return c.json({
       connected: Boolean(token),
+      // "oauth" = signed in with Connect Public; "token" = pasted key.
+      method,
       model: resolveModelId(stored),
       modelIsDefault: !stored,
-      // Shown so the user can confirm they pasted the key they meant to.
+      // Shown so the user can confirm which credential is active.
       tokenHint: token ? token.slice(0, 4) + "..." + token.slice(-4) : null,
       allowTrading: allowTrading(c.env),
       mcpUrl: PUBLIC_MCP_URL,
@@ -71,6 +181,23 @@ export function createApp() {
 
   app.post("/api/public/disconnect", requireAuth, async (c) => {
     const agent = getAgent(c);
+    // Best-effort revocation of the OAuth grant, then drop both credentials.
+    try {
+      const record = await agent.getPublicOAuthRecord();
+      if (record?.accessToken && record.revocationEndpoint) {
+        await fetch(record.revocationEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            token: record.accessToken,
+            client_id: record.clientId,
+          }).toString(),
+        }).catch(() => {});
+      }
+    } catch {
+      /* the token set is dropped below regardless */
+    }
+    await agent.clearPublicOAuthTokens();
     await agent.clearPublicToken();
     return c.json({ ok: true });
   });

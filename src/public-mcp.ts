@@ -5,12 +5,13 @@
  * tools/list, returns 401 with a WWW-Authenticate challenge until a credential
  * is presented, so nothing is reachable unauthenticated.
  *
- * Credential: Public.com's documented path is a personal access token, entered
- * by the user and held server-side. Nothing here registers a client or runs an
- * OAuth flow - Public.com publishes no registration endpoint, and their own
- * guide has clients present a key or sign in themselves.
+ * Credential: either an OAuth access token (see public-oauth.ts - the user
+ * clicks "Connect Public", signs in on Public's own page, and the token set is
+ * held server-side on the agent instance) or a personal access token pasted by
+ * the user. Public.com publishes no RFC 7591 registration endpoint, so the
+ * OAuth client identifies via a Client ID Metadata Document instead.
  *
- * The token is never returned to the browser and never logged.
+ * Neither credential is ever returned to the browser or logged.
  */
 
 import type { Env } from "./types";

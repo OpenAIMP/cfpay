@@ -117,7 +117,11 @@ export default {
       url.pathname.startsWith("/api") ||
       url.pathname.startsWith("/mcp") ||
       url.pathname === "/health" ||
-      url.pathname === "/ws"
+      url.pathname === "/ws" ||
+      // Public.com sign-in (OAuth connect/callback) and the client metadata
+      // document the authorization server fetches to identify this client.
+      url.pathname.startsWith("/auth/") ||
+      url.pathname === "/.well-known/oauth-client-id-metadata-document"
     ) {
       return app.fetch(request, env, ctx);
     }

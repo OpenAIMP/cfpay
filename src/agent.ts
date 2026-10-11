@@ -869,14 +869,88 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // ===========================================================================
 
   /**
-   * The user's Public.com personal access token, or null when not connected.
-   * Held on the agent instance, behind DASHBOARD_API_KEY, and never returned to
-   * the browser - only a hint is exposed so the user can confirm what they pasted.
+   * The active Public.com credential: the OAuth access token when the user
+   * connected with "Connect Public" (refreshing it when it expires), otherwise
+   * the pasted personal access token. Never returned to the browser - only a
+   * hint is exposed so the user can confirm what they stored.
    */
   @callable()
   async getPublicToken(): Promise<string | null> {
     const state = this.ensureState() as any;
+    const oauth = state.publicOAuth ?? null;
+    if (oauth?.accessToken) {
+      if (oauth.expiresAt && Date.now() + 60_000 >= oauth.expiresAt && oauth.refreshToken) {
+        try {
+          const { refreshTokens } = await import("./public-oauth");
+          const next = await refreshTokens(oauth);
+          this.setState({ ...state, publicOAuth: next });
+          return next.accessToken;
+        } catch (err) {
+          console.error("Public.com refresh grant failed:", err);
+          // Fall through: the stored access token may still be usable.
+        }
+      }
+      return oauth.accessToken as string;
+    }
     return (state.publicToken as string | undefined) ?? null;
+  }
+
+  /** Which credential is active, or null when not connected. */
+  @callable()
+  async getPublicTokenSource(): Promise<"oauth" | "token" | null> {
+    const state = this.ensureState() as any;
+    if (state.publicOAuth?.accessToken) return "oauth";
+    if (state.publicToken) return "token";
+    return null;
+  }
+
+  /** The stored OAuth token set, for connect/callback bookkeeping. */
+  @callable()
+  async getPublicOAuthRecord(): Promise<any> {
+    const state = this.ensureState() as any;
+    return state.publicOAuth ?? null;
+  }
+
+  /** Persist the OAuth token set and drop the pending PKCE session. */
+  @callable()
+  async savePublicOAuthTokens(tokens: unknown): Promise<void> {
+    const state = this.ensureState() as any;
+    const next = { ...state, publicOAuth: tokens };
+    delete next.publicOAuthPending;
+    this.setState(next);
+  }
+
+  /** Drop the OAuth token set (Disconnect). The pasted token is separate. */
+  @callable()
+  async clearPublicOAuthTokens(): Promise<void> {
+    const state = this.ensureState() as any;
+    const next = { ...state };
+    delete next.publicOAuth;
+    delete next.publicOAuthPending;
+    this.setState(next);
+  }
+
+  /** Store the in-flight PKCE session (state + verifier) between redirects. */
+  @callable()
+  async setPublicOAuthPending(pending: unknown): Promise<void> {
+    const state = this.ensureState() as any;
+    this.setState({ ...state, publicOAuthPending: pending });
+  }
+
+  /** The in-flight PKCE session, if any. Validity (age/state) is checked by the caller. */
+  @callable()
+  async getPublicOAuthPending(): Promise<any> {
+    const state = this.ensureState() as any;
+    return state.publicOAuthPending ?? null;
+  }
+
+  /** Clear the pending PKCE session after it is consumed or rejected. */
+  @callable()
+  async clearPublicOAuthPending(): Promise<void> {
+    const state = this.ensureState() as any;
+    const next = { ...state };
+    delete next.publicOAuthPending;
+    this.setState(next);
   }
 
   /** The stored model preference, if any. Unset means use the default. */
