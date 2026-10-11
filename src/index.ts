@@ -103,7 +103,21 @@ export default {
         }
       }
 
-      return agent.fetch(request);
+      // Bypass DO fetch (SDK throws before onRequest); use RPC instead.
+      // verified.payload is already parsed and signature-checked.
+      const headers: Record<string, string> = {};
+      request.headers.forEach((v, k) => { headers[k] = v; });
+      try {
+        const result = await (agent as any).handleWebhookRpc(
+          verified.provider,
+          verified.payload,
+          headers,
+        );
+        return new Response(result.message, { status: result.status });
+      } catch (err) {
+        console.error("Webhook RPC failed:", err);
+        return new Response("Webhook processing failed", { status: 500 });
+      }
     }
 
     // HTTP webhook endpoint (legacy Slack apps)
