@@ -942,6 +942,13 @@ export function createApp() {
     return c.json({ events });
   });
 
+  // TEMPORARY DEBUG: inspect webhook DO state
+  app.get("/api/dashboard/debug-webhooks", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const state = await agent.debugWebhookState();
+    return c.json(state);
+  });
+
   app.post("/api/dashboard/notify-slack", requireAuth, async (c) => {
     const body = await c.req.json<{ message: string }>();
     const agent = getAgent(c);
