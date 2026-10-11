@@ -12,6 +12,7 @@ import type {
   StripeCheckoutStatus,
   StripeConfig,
   WebhookEvent,
+  ToolTrace,
 } from "./types";
 import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
@@ -894,6 +895,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
   /**
    * Answer a question by letting the model call Public.com's MCP tools.
    *
+   * Returns a full trace so the UI can show which tools ran and what each
+   * returned - without that, a plausible-sounding answer is unverifiable.
+   *
    * Read-only unless PUBLIC_ALLOW_TRADING is "true": an order-placing tool is
    * refused before it is called, because their guide warns that a trade through
    * an MCP client is a real order using real money.
@@ -903,25 +907,30 @@ Do not claim to have completed a payment unless you have received confirmation.`
     question: string,
     tools: McpTool[],
     session: McpSession,
-  ): Promise<{ answer: string; calls: Array<{ name: string; args: unknown }> }> {
-    const calls: Array<{ name: string; args: unknown }> = [];
-    const tradingAllowed = String((this.env as any).PUBLIC_ALLOW_TRADING || "").trim().toLowerCase() === "true";
+  ): Promise<{ answer: string; trace: ToolTrace[] }> {
+    const trace: ToolTrace[] = [];
+    const tradingAllowed =
+      String((this.env as any).PUBLIC_ALLOW_TRADING || "").trim().toLowerCase() === "true";
 
     const toolList = tools
-      .map((t) => "- " + t.name + (t.description ? ": " + String(t.description).slice(0, 300) : ""))
+      .map((t) => "- " + t.name + (t.description ? ": " + String(t.description).slice(0, 200) : ""))
       .join("\n");
 
-    const messages: Array<{ role: string; content: string }> = [
+    // Messages use the chat-completions shape. A tool result MUST carry the
+    // tool_call_id it answers, or the model cannot match it to its own request.
+    const messages: Array<Record<string, unknown>> = [
       {
         role: "system",
         content: [
           "You answer questions about tradeable instruments using Public.com's data.",
-          "Call the available tools to gather real data before answering; never invent prices, symbols or balances.",
-          "Be concise and state which instruments you compared and why.",
-          "This is not investment advice, and you should say so when recommending anything.",
+          "You have tools available. Always call them to get real data: prices, chains, greeks, balances.",
+          "Never invent a price, symbol, balance or expiry. If a tool returns nothing, say so.",
+          "Prefer several focused calls over one vague one - for example quote the candidates, then pull the option chain for the ones worth comparing.",
+          "Be concise. State which instruments you compared and why.",
+          "This is not investment advice; say so when recommending anything.",
           tradingAllowed
-            ? "Order-placing tools are enabled. Before calling one, state the instrument, side, size and price, and only proceed if the user has clearly asked for it."
-            : "You cannot place or modify orders in this session. If asked, say so plainly.",
+            ? "Order-placing tools are enabled, but only call one when the user has clearly asked to trade."
+            : "Trading is disabled on this deployment. Do not attempt order-placing tools; explain that reads work and trading is off.",
           "",
           "Available tools:",
           toolList,
@@ -931,62 +940,81 @@ Do not claim to have completed a payment unless you have received confirmation.`
     ];
 
     // Bounded: without a cap a model can call tools indefinitely.
-    for (let turn = 0; turn < 6; turn++) {
+    for (let turn = 0; turn < 8; turn++) {
       const response: any = await this.env.AI.run(
         "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as never,
-        { messages, tools: this.toAiToolSpecs(tools) } as never,
+        { messages, tools: this.toAiToolSpecs(tools), max_tokens: 2048 } as never,
       );
 
       const toolCalls = response?.tool_calls;
       if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-        return { answer: String(response?.response ?? "").trim(), calls };
+        return { answer: String(response?.response ?? "").trim(), trace };
       }
 
-      messages.push({ role: "assistant", content: String(response?.response ?? "") });
+      // Echo the assistant's own tool_calls back verbatim, ids included.
+      messages.push({
+        role: "assistant",
+        content: String(response?.response ?? ""),
+        tool_calls: toolCalls,
+      });
 
       for (const call of toolCalls) {
-        const name = String(call?.name ?? call?.function?.name ?? "");
-        const rawArgs = call?.arguments ?? call?.function?.arguments ?? {};
+        // Chat-completions shape: {id, type, function:{name, arguments}}.
+        // Legacy models answered {name, arguments} at the top level.
+        const id = String(call?.id ?? "");
+        const fn = call?.function ?? {};
+        const name = String(fn.name ?? call?.name ?? "");
+        const rawArgs = fn.arguments ?? call?.arguments ?? {};
         const args = typeof rawArgs === "string" ? safeJson(rawArgs) : rawArgs;
         if (!name) continue;
 
         if (!tradingAllowed && isOrderPlacingTool(name)) {
-          messages.push({
-            role: "tool",
-            content:
-              "Refused: " +
-              name +
-              " would place or modify an order, and this session is read-only. Tell the user it is blocked and that PUBLIC_ALLOW_TRADING would enable it.",
-          });
+          const refusal =
+            "Refused: " + name + " would place or modify an order, and this deployment is read-only.";
+          trace.push({ name, args, ok: false, refused: true, result: refusal });
+          messages.push({ role: "tool", content: refusal, tool_call_id: id });
           continue;
         }
 
-        calls.push({ name, args });
-        let output: string;
         try {
-          output = await callTool(token, name, args, session);
+          const output = await callTool(token, name, args, session);
+          const firstLine = output.split("\n").find((l) => l.trim() !== "") || "(empty)";
+          trace.push({ name, args, ok: true, result: output, summary: firstLine.slice(0, 200) });
+          messages.push({ role: "tool", content: output.slice(0, 6000), tool_call_id: id });
         } catch (err) {
-          output = "Tool error: " + String(err);
+          const msg = String(err);
+          trace.push({ name, args, ok: false, result: msg });
+          messages.push({ role: "tool", content: "Tool error: " + msg, tool_call_id: id });
         }
-        messages.push({ role: "tool", content: output.slice(0, 8000) });
       }
     }
 
     return {
-      answer: "I stopped after several tool calls without reaching an answer. Try narrowing the question.",
-      calls,
+      answer:
+        "I stopped after several tool calls without reaching an answer. Try narrowing the question.",
+      trace,
     };
   }
 
-  /** Translate MCP tool definitions into the Workers AI tool schema. */
+  /**
+   * Translate MCP tool definitions into the Workers AI chat-completions tool
+   * schema: [{type:"function", function:{name, description, parameters}}].
+   *
+   * The flat {name, description, parameters} form is the LEGACY schema. Sending
+   * it makes the model report that the provided function definitions do not
+   * cover the task, and it then avoids the tools.
+   */
   private toAiToolSpecs(tools: McpTool[]): Array<Record<string, unknown>> {
     return tools.map((t) => ({
-      name: t.name,
-      description: t.description ? String(t.description).slice(0, 500) : t.name,
-      parameters:
-        t.inputSchema && typeof t.inputSchema === "object"
-          ? t.inputSchema
-          : { type: "object", properties: {} },
+      type: "function",
+      function: {
+        name: t.name,
+        description: t.description ? String(t.description).slice(0, 600) : t.name,
+        parameters:
+          t.inputSchema && typeof t.inputSchema === "object"
+            ? t.inputSchema
+            : { type: "object", properties: {} },
+      },
     }));
   }
 

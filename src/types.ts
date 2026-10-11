@@ -188,3 +188,22 @@ export interface WebhookEvent {
   /** AI analysis of the event, attached when analysis succeeds. */
   aiInsight?: string;
 }
+
+/**
+ * One tool call made while answering a Public.com question.
+ *
+ * Surfaced to the UI so the answer can be checked against what actually ran:
+ * a fluent answer that called no tools, or called only get_portfolio, is not
+ * evidence about an instrument.
+ */
+export interface ToolTrace {
+  name: string;
+  args: unknown;
+  ok: boolean;
+  /** Set when the call was blocked locally rather than by Public.com. */
+  refused?: boolean;
+  /** Full tool output, truncated for transport. */
+  result: string;
+  /** First non-empty line, for the collapsed view. */
+  summary?: string;
+}

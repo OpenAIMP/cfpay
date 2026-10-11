@@ -96,8 +96,8 @@ export function createApp() {
       const session: McpSession = {};
       const tools = await listTools(token, session);
       if (tools.length === 0) return c.json({ error: "Public.com returned no tools for this account." }, 502);
-      const { answer, calls } = await agent.answerInstrumentQuestion(token, message, tools, session);
-      return c.json({ answer, calls });
+      const { answer, trace } = await agent.answerInstrumentQuestion(token, message, tools, session);
+      return c.json({ answer, trace });
     } catch (err) {
       return c.json({ error: String(err) }, 502);
     }
