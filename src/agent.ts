@@ -1437,7 +1437,6 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // Webhooks: Incoming webhook handler (onRequest)
   // ===========================================================================
   async onRequest(request: Request): Promise<Response> {
-    console.log("[webhook] onRequest hit:", request.method, request.url);
     const url = new URL(request.url);
 
     // Provider identified by the X-Webhook-Provider header set by the Worker
@@ -1769,6 +1768,29 @@ Do not claim to have completed a payment unless you have received confirmation.`
     seen[deliveryId] = new Date().toISOString();
     this.setState({ ...state, githubProcessedDeliveries: seen });
     return false;
+  }
+
+  /**
+   * Webhook entrypoint via RPC (bypasses DO fetch).
+   * The Agents SDK fetch throws on POST /webhooks/* before reaching onRequest,
+   * so the Worker calls this directly instead of agent.fetch(request).
+   */
+  @callable()
+  async handleWebhookRpc(
+    provider: "github" | "stripe" | "slack",
+    payload: any,
+    headers: Record<string, string>,
+  ): Promise<{ ok: boolean; status: number; message: string }> {
+    // GitHub dedupe (same logic as onRequest)
+    if (provider === "github") {
+      const deliveryId = headers["x-github-delivery"] ?? headers["X-Github-Delivery"] ?? "";
+      const duplicate = await this.isDuplicateGitHubDelivery(deliveryId);
+      if (duplicate) {
+        return { ok: false, status: 409, message: "Duplicate webhook delivery" };
+      }
+    }
+    await this.processWebhookEvent(provider, payload);
+    return { ok: true, status: 200, message: "OK" };
   }
 
   // ===========================================================================
