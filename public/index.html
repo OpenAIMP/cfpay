@@ -204,12 +204,6 @@
           <div id="publicNotice"></div>
 
           <div id="publicConnectBox">
-            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem;">
-              <button class="btn" onclick="connectPublicOAuth()">Connect Public</button>
-              <span style="color:var(--muted);font-size:0.8rem;">Sign in on Public's own page and come straight back here - no token to paste. Read-only scopes only.</span>
-            </div>
-            <details>
-              <summary style="cursor:pointer;color:var(--muted);font-size:0.78rem;margin-bottom:0.5rem;">Or connect with a personal access token</summary>
             <div class="form-group">
               <label for="publicToken">Public.com personal access token</label>
               <input type="password" id="publicToken" placeholder="Paste your token" autocomplete="off" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;box-sizing:border-box;" />
@@ -225,6 +219,20 @@
               <a class="btn" href="https://public.com/settings/developer" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;background:var(--bg);border:1px solid var(--border);color:var(--text);">Get a token &nearr;</a>
               <a class="btn" href="https://public.com/api/docs/templates/hosted-mcp" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;background:var(--bg);border:1px solid var(--border);color:var(--text);">Setup guide &nearr;</a>
             </div>
+
+            <!-- The token path above is primary because it works. Public.com authorises
+                 only clients registered with them and offers no way to register one; a
+                 Client ID Metadata Document is refused, and so is the client_id Anthropic
+                 uses for Claude. Verified against production. The button below is kept so
+                 the attempt can be made on demand, and it reports what Public.com returns
+                 instead of sending the user to an error page. -->
+            <details style="margin-top:0.9rem;">
+              <summary style="cursor:pointer;color:var(--muted);font-size:0.78rem;">Sign in with Public.com instead (currently unavailable)</summary>
+              <p style="color:var(--muted);font-size:0.78rem;line-height:1.65;margin:0.5rem 0 0;">
+                Public.com only authorises applications registered with them, and provides
+                no way to register one. The access token above is unaffected.
+              </p>
+              <button class="btn" onclick="connectPublicOAuth()" style="margin-top:0.5rem;">Try Public.com sign-in</button>
             </details>
           </div>
 
