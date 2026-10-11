@@ -1437,8 +1437,8 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // Webhooks: Incoming webhook handler (onRequest)
   // ===========================================================================
   async onRequest(request: Request): Promise<Response> {
+    console.log("[webhook] onRequest hit:", request.method, request.url);
     const url = new URL(request.url);
-    console.log("[webhook-debug] onRequest called:", request.method, url.pathname);
 
     // Provider identified by the X-Webhook-Provider header set by the Worker
     // when forwarding verified webhooks, or by the /webhooks/<provider> path.
@@ -1689,16 +1689,13 @@ Do not claim to have completed a payment unless you have received confirmation.`
     };
 
     const state = this.ensureState();
-    console.log("[webhook-debug] processWebhookEvent: existing events:", (state.webhookEvents || []).length, "provider:", provider);
     const webhookEvents = [...(state.webhookEvents || []), event].slice(-MAX_STORED_WEBHOOK_EVENTS);
-    console.log("[webhook-debug] processWebhookEvent: new events count:", webhookEvents.length);
 
     this.setState({
       ...state,
       webhookEvents,
       totalWebhooksReceived: (state.totalWebhooksReceived || 0) + 1,
     });
-    console.log("[webhook-debug] processWebhookEvent: setState completed, total:", (state.totalWebhooksReceived || 0) + 1);
     if (this.env.SLACK_WEBHOOK_URL) {
       try {
         await sendSlackNotification(
@@ -1821,7 +1818,6 @@ Do not claim to have completed a payment unless you have received confirmation.`
   async getWebhookEvents(provider: string | null, limit: number): Promise<WebhookEvent[]> {
     const state = this.ensureState();
     const events = state.webhookEvents || [];
-    console.log("[webhook-debug] getWebhookEvents: returning", events.length, "events, provider filter:", provider);
     let filtered = events;
     if (provider) {
       filtered = events.filter((e) => e.provider === provider);
