@@ -14,9 +14,10 @@ import type {
   WebhookEvent,
   ToolTrace,
 } from "./types";
+import type { UsageCost } from "./models";
 import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
-import { defaultModelId, normaliseToolCalls, resolveModelId } from "./models";
+import { computeCost, defaultModelId, normaliseToolCalls, resolveModelId } from "./models";
 import {
   formatAmount,
   generateId,
@@ -923,8 +924,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
     tools: McpTool[],
     session: McpSession,
     model?: string | null,
-  ): Promise<{ answer: string; trace: ToolTrace[]; model: string }> {
+  ): Promise<{ answer: string; trace: ToolTrace[]; model: string; cost: UsageCost | null }> {
     const trace: ToolTrace[] = [];
+    // Summed across every round of the tool loop: one question is several model
+    // calls, so reporting only the last would understate the cost.
+    let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
     // Resolved once per question: the user's stored choice, else the configured
     // default from src/models.json.
     const modelId = resolveModelId(model);
@@ -965,12 +969,25 @@ Do not claim to have completed a payment unless you have received confirmation.`
         { messages, tools: this.toAiToolSpecs(tools), max_tokens: 2048 } as never,
       );
 
+      if (response?.usage) {
+        usage.prompt_tokens += Number(response.usage.prompt_tokens || 0);
+        usage.completion_tokens += Number(response.usage.completion_tokens || 0);
+        usage.total_tokens +=
+          Number(response.usage.total_tokens || 0) ||
+          Number(response.usage.prompt_tokens || 0) + Number(response.usage.completion_tokens || 0);
+      }
+
       // Models answer in either the legacy or the current tool-call shape.
       // Normalising here is what makes the follow-up request valid: echoing a
       // legacy call back as tool_calls fails validation with AiError 8007.
       const toolCalls = normaliseToolCalls(response?.tool_calls);
       if (toolCalls.length === 0) {
-        return { answer: String(response?.response ?? "").trim(), trace, model: modelId };
+        return {
+          answer: String(response?.response ?? "").trim(),
+          trace,
+          model: modelId,
+          cost: computeCost(modelId, usage),
+        };
       }
 
       // Echo the assistant's own tool_calls back verbatim, ids included.
@@ -1011,6 +1028,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
         "I stopped after several tool calls without reaching an answer. Try narrowing the question.",
       trace,
       model: modelId,
+      cost: computeCost(modelId, usage),
     };
   }
 

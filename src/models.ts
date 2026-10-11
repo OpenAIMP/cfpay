@@ -70,6 +70,44 @@ export function resolveModelId(requested?: string | null): string {
   return defaultModelId();
 }
 
+/* ------------------------------- pricing -------------------------------- */
+
+/**
+ * What one question cost, from the token usage the model reports.
+ *
+ * Rates live in models.json per million tokens, so this is computed from the
+ * configured prices rather than assumed. A model with no configured price
+ * returns nulls for the cost fields rather than a misleading zero.
+ */
+export interface UsageCost {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  inputCost: number | null;
+  outputCost: number | null;
+  totalCost: number | null;
+}
+
+export function computeCost(modelId: string, usage: unknown): UsageCost | null {
+  if (!usage || typeof usage !== "object") return null;
+  const u = usage as any;
+  const promptTokens = Number(u.prompt_tokens ?? 0);
+  const completionTokens = Number(u.completion_tokens ?? 0);
+  const totalTokens = Number(u.total_tokens ?? promptTokens + completionTokens);
+  if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens)) return null;
+
+  const info = CATALOGUE.models.find((m) => m.id === modelId);
+  const inRate = typeof info?.inputPerMTok === "number" ? info.inputPerMTok : null;
+  const outRate = typeof info?.outputPerMTok === "number" ? info.outputPerMTok : null;
+
+  const inputCost = inRate === null ? null : (promptTokens / 1e6) * inRate;
+  const outputCost = outRate === null ? null : (completionTokens / 1e6) * outRate;
+  const totalCost =
+    inputCost === null || outputCost === null ? null : inputCost + outputCost;
+
+  return { promptTokens, completionTokens, totalTokens, inputCost, outputCost, totalCost };
+}
+
 /* --------------------------- tool-call shapes ---------------------------- */
 
 /** A tool call in the shape the chat-completions API requires. */

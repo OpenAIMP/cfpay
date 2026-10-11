@@ -229,7 +229,7 @@
             </div>
             <div class="form-group" style="margin-top:0.9rem;">
               <label for="publicModel">Model</label>
-              <select id="publicModel" onchange="selectPublicModel()" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;box-sizing:border-box;"></select>
+              <div id="publicModelPicker"></div>
               <p id="publicModelNote" style="color:var(--muted);font-size:0.75rem;line-height:1.5;margin:0.35rem 0 0;"></p>
             </div>
           </div>
@@ -765,48 +765,95 @@ async function loadStats() {
       }
     }
 
-    // Populate the picker from src/models.json via the API. The choice persists
-    // server-side; an unknown stored id resolves to the configured default, so a
-    // stale value cannot break the tab.
+    // The model picker.
+    //
+    // Deliberately not a <select>: option text is truncated to the control
+    // width, so the price would be cut off on any real label. This lists
+    // models with their rate and context window in a block that has room for
+    // both.
+    let publicModels = [];
+    let publicSelectedModel = '';
+
+    function modelById(id) {
+      return publicModels.filter(m => m.id === id)[0] || null;
+    }
+
+    function renderModelPicker() {
+      const host = document.getElementById('publicModelPicker');
+      if (!host) return;
+      if (!publicModels.length) {
+        host.innerHTML = '<div class="loading">Loading models...</div>';
+        return;
+      }
+      host.innerHTML = publicModels.map(m => {
+        const isSel = m.id === publicSelectedModel;
+        const rate = (m.inputPerMTok != null && m.outputPerMTok != null)
+          ? '$' + m.inputPerMTok + ' in / $' + m.outputPerMTok + ' out per M tokens'
+          : 'price not configured';
+        const ctx = m.contextWindow ? (m.contextWindow / 1000) + 'k context' : '';
+        const bits = [rate, ctx].filter(Boolean).join('  \u00b7  ');
+        return '<label style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.5rem 0.6rem;margin-top:0.3rem;border:1px solid '
+          + (isSel ? 'var(--green)' : 'var(--border)')
+          + ';border-radius:6px;cursor:pointer;background:' + (isSel ? 'rgba(34,197,94,0.07)' : 'transparent') + ';">'
+          + '<input type="radio" name="publicModelChoice" value="' + escapeHtml(m.id) + '"'
+          + (isSel ? ' checked' : '') + ' onchange="selectPublicModel(this.value)" style="margin-top:0.2rem;">'
+          + '<span style="flex:1;">'
+          + '<span style="font-size:0.85rem;color:var(--text);">' + escapeHtml(m.label || m.id) + '</span>'
+          + (m.id === publicModels[0].id ? '' : '')
+          + '<br><span style="font-size:0.75rem;color:var(--muted);">' + bits + '</span>'
+          + (m.description ? '<br><span style="font-size:0.72rem;color:var(--muted);">' + escapeHtml(m.description) + '</span>' : '')
+          + '<br><code style="font-size:0.68rem;color:var(--muted);">' + escapeHtml(m.id) + '</code>'
+          + '</span></label>';
+      }).join('');
+    }
+
     async function loadPublicModels() {
-      const sel = document.getElementById('publicModel');
       const note = document.getElementById('publicModelNote');
-      if (!sel) return;
+      const host = document.getElementById('publicModelPicker');
+      if (!host) return;
       try {
         const res = await api('/api/public/models');
-        const models = Array.isArray(res.models) ? res.models : [];
-        sel.innerHTML = models.map(m => {
-          const def = (m.id === res.defaultModel) ? ' (default)' : '';
-          const price = (m.inputPerMTok != null)
-            ? ' \u2014 $' + m.inputPerMTok + ' in / $' + m.outputPerMTok + ' out per M tokens'
+        publicModels = Array.isArray(res.models) ? res.models : [];
+        publicSelectedModel = res.selected;
+        renderModelPicker();
+        const chosen = modelById(publicSelectedModel);
+        if (note) {
+          note.textContent = chosen
+            ? 'Using ' + (chosen.label || chosen.id) + (res.selected === res.defaultModel ? ' (the configured default).' : '.')
             : '';
-          return '<option value="' + escapeHtml(m.id) + '"' + (m.id === res.selected ? ' selected' : '') + '>'
-            + escapeHtml(m.label || m.id) + def + price + '</option>';
-        }).join('');
-        const chosen = models.filter(m => m.id === res.selected)[0];
-        let text = chosen && chosen.description ? chosen.description : '';
-        if (chosen && chosen.contextWindow) text += ' Context: ' + chosen.contextWindow.toLocaleString() + ' tokens.';
-        note.textContent = text;
+        }
       } catch (err) {
-        sel.innerHTML = '<option value="">(could not load models)</option>';
-        note.textContent = err.message;
+        host.innerHTML = '<div class="status-msg error">Could not load models: ' + escapeHtml(err.message) + '</div>';
       }
     }
 
-    async function selectPublicModel() {
-      const sel = document.getElementById('publicModel');
+    async function selectPublicModel(value) {
       const note = document.getElementById('publicModelNote');
-      const previous = note.textContent;
       try {
-        const res = await api('/api/public/model', 'POST', { model: sel.value });
-        if (res.error) { note.textContent = res.error; return; }
+        const res = await api('/api/public/model', 'POST', { model: value });
+        if (res.error) { if (note) note.textContent = res.error; return; }
         await loadPublicModels();
-        note.textContent = (note.textContent || previous) + '  Selected.';
+        if (note) {
+          const m = modelById(res.model);
+          note.textContent = 'Now using ' + (m ? (m.label || m.id) : res.model) + '.';
+        }
       } catch (err) {
-        note.textContent = err.message;
+        if (note) note.textContent = err.message;
       }
     }
 
+    // Per-question cost, from the token usage the model reported summed across
+    // every round of the tool loop.
+    function costLine(cost) {
+      if (!cost) return '';
+      const tok = cost.totalTokens ? cost.totalTokens.toLocaleString() + ' tokens' : '';
+      const usd = (cost.totalCost != null) ? '$' + cost.totalCost.toFixed(6) : 'cost n/a';
+      const parts = [tok, usd].filter(Boolean);
+      if (cost.promptTokens || cost.completionTokens) {
+        parts.push('(' + cost.promptTokens.toLocaleString() + ' in / ' + cost.completionTokens.toLocaleString() + ' out)');
+      }
+      return parts.join('  \u00b7  ');
+    }
     async function loadPublicTools() {
       const el = document.getElementById('publicToolList');
       try {
@@ -867,9 +914,11 @@ async function loadStats() {
           const trace = Array.isArray(res.trace) ? res.trace : [];
           const names = trace.map(c => c.name);
           const modelNote = res.model ? 'Model: ' + res.model + ' - ' : '';
+          const cost = costLine(res.cost);
           document.getElementById('publicTools').textContent = modelNote + (names.length
             ? 'tools used: ' + names.join(', ')
             : 'no tools were called.');
+          if (cost) document.getElementById('publicTools').textContent += '  |  ' + cost;
           // Inline the trace with the answer so a claim can be traced to a result.
           container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
             + renderToolTrace(trace) + '</div>';
