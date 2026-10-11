@@ -139,6 +139,14 @@ export function handleAsMetadata(request: Request, env: Env): Response {
 
 /* --------------------------- dynamic registration ----------------------- */
 
+/**
+ * RFC 7636 §4.1: a code_challenge is 43-128 characters from [A-Z a-z 0-9 - _].
+ * S256 challenges are always 43 chars, but the full range is accepted.
+ */
+export function isValidCodeChallenge(value: string): boolean {
+  return /^[A-Za-z0-9_-]{43,128}$/.test(value);
+}
+
 function isSafeRedirectUri(uri: string): boolean {
   let parsed: URL;
   try {
@@ -225,7 +233,7 @@ async function resolveAuthorizeRequest(
     return { error: oauthError("unsupported_response_type", "response_type must be code") };
   }
   const codeChallenge = params.get("code_challenge") ?? "";
-  if (!codeChallenge || (params.get("code_challenge_method") ?? "") !== "S256") {
+  if (!isValidCodeChallenge(codeChallenge) || (params.get("code_challenge_method") ?? "") !== "S256") {
     return { error: oauthError("invalid_request", "PKCE with code_challenge_method=S256 is required") };
   }
   return { clientId, redirectUri, codeChallenge, client };
@@ -317,11 +325,22 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
 
 /* -------------------------------- token --------------------------------- */
 
-async function issue(scope: string, env: Env): Promise<Record<string, unknown>> {
+async function issue(scope: string, env: Env, clientId: string): Promise<Record<string, unknown>> {
   const now = Math.floor(Date.now() / 1000);
   return {
     access_token: await sign({ t: "access", sc: scope, exp: now + ACCESS_TTL_S }, env),
-    refresh_token: await sign({ t: "refresh", sc: scope, exp: now + REFRESH_TTL_S }, env),
+    // Refresh tokens carry a unique id and the issuing client, so the refresh
+    // grant can enforce single-use rotation and client binding.
+    refresh_token: await sign(
+      {
+        t: "refresh",
+        jti: b64url(crypto.getRandomValues(new Uint8Array(16))),
+        cid: clientId,
+        sc: scope,
+        exp: now + REFRESH_TTL_S,
+      },
+      env,
+    ),
     token_type: "Bearer",
     expires_in: ACCESS_TTL_S,
     scope,
@@ -350,7 +369,7 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
     if (b64url(new Uint8Array(digest)) !== claims.cc) {
       return oauthError("invalid_grant", "PKCE verification failed");
     }
-    return json(await issue(claims.sc ?? SCOPE, env));
+    return json(await issue(claims.sc ?? SCOPE, env, claims.cid));
   }
 
   if (grantType === "refresh_token") {
@@ -358,7 +377,23 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
     if (!claims || claims.t !== "refresh") return oauthError("invalid_grant", "unknown refresh_token");
     const now = Math.floor(Date.now() / 1000);
     if (typeof claims.exp !== "number" || now > claims.exp) return oauthError("invalid_grant", "refresh_token expired");
-    return json(await issue(claims.sc ?? SCOPE, env));
+    // Refresh tokens are bound to the client they were issued to. Tokens
+    // minted before client binding existed carry no cid and are rejected:
+    // re-authorize to obtain a bound token.
+    if (typeof claims.cid !== "string" || !claims.cid || (form.get("client_id") ?? "") !== claims.cid) {
+      return oauthError("invalid_grant", "client mismatch");
+    }
+    if (typeof claims.jti !== "string" || !claims.jti) {
+      return oauthError("invalid_grant", "unknown refresh_token");
+    }
+    // Single-use rotation, consumed atomically on the agent instance: the old
+    // token dies here, and presenting it again afterwards signals theft.
+    const agent = env.CfmailAgent.get(env.CfmailAgent.idFromName("agent")) as any;
+    const rotation = await agent.rotateOAuthRefreshToken(claims.jti);
+    if (!rotation?.ok) {
+      return oauthError("invalid_grant", "refresh_token already used");
+    }
+    return json(await issue(claims.sc ?? SCOPE, env, claims.cid));
   }
 
   return oauthError("unsupported_grant_type", "supported: authorization_code, refresh_token");
