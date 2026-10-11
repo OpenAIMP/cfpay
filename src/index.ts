@@ -81,8 +81,10 @@ export default {
       // team/channel), but the dashboard, REST API and MCP server all read the
       // "agent" instance — so routing by that derived name recorded verified
       // events into a Durable Object nothing ever displayed.
-      // Dedupe runs inside the DO (onRequest); getAgentByName provides the RPC-capable stub.
-      const agent = await getAgentByName(env.CfmailAgent as any, "agent");
+      // Use idFromName directly: getAgentByName resolves to a different
+      // instance than the dashboard reads. No RPC needed here (dedupe is inside the DO).
+      const agentId = env.CfmailAgent.idFromName("agent");
+      const agent = env.CfmailAgent.get(agentId);
 
       // Slack message events also become a conversation in the Slack tab:
       // handleSlackEvent records them on this same central instance (which the
