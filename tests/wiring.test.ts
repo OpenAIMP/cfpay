@@ -864,3 +864,65 @@ describe("pinned versions stay coherent", () => {
     ).toBe(declared);
   });
 });
+
+describe("the QA agent and the dashboard agree on their contract", () => {
+  // These guards exist because the mismatch they cover was invisible to both the
+  // compiler and the existing tests. QAAgent seeded the browser's localStorage
+  // with "cfpay_api_key" while public/index.html reads "cfmail_api_key", so every
+  // authenticated QA check rendered the login page and then asserted against that
+  // login page's text. The check could not fail for the reason it existed, and
+  // could pass without verifying anything.
+  //
+  // A key name and a DOM id are strings, so no type check can relate the two
+  // files. Asserting the contract is the only thing that catches a drift.
+  const qa = read("src/qa-agent.ts");
+  const html = read("public/index.html");
+
+  it("seeds the same localStorage key the dashboard reads", () => {
+    const declared = qa.match(/DASHBOARD_API_KEY_STORAGE_KEY\s*=\s*"([^"]+)"/);
+    expect(declared, "qa-agent.ts must declare the storage key as a constant").not.toBeNull();
+    const key = declared?.[1] as string;
+
+    // The dashboard must read that exact key. getItem is the read path that
+    // matters: a set the dashboard never reads is the original bug.
+    expect(html, `index.html must read localStorage key "${key}"`).toContain(
+      `localStorage.getItem('${key}')`,
+    );
+
+    // ...and QAAgent must not seed a different key anywhere. This is the precise
+    // regression: a second, hard-coded key name that the dashboard ignores.
+    const seeded = [...qa.matchAll(/localStorage\.setItem\(\s*(?:"([^"]+)"|([A-Z_]+))/g)]
+      .map((m) => m[1] ?? m[2])
+      .filter((name) => name !== "DASHBOARD_API_KEY_STORAGE_KEY");
+    expect(seeded, "qa-agent.ts must not hard-code a second localStorage key").toEqual([]);
+  });
+
+  it("checks the containers the dashboard actually populates", () => {
+    // The tab check counts rows inside these container ids and treats the paired
+    // empty-state text as a failure. If a container is renamed in index.html the
+    // check would report "container missing" - true, but it would no longer be
+    // measuring the thing it was written to measure.
+    const contract: [string, string][] = [
+      ["emailList", "No emails yet"],
+      ["paymentList", "No payments yet"],
+      ["webhookList", "No webhook events yet"],
+    ];
+
+    for (const [containerId, emptyText] of contract) {
+      expect(qa, `the tab check must probe #${containerId}`).toContain(`containerId: "${containerId}"`);
+      expect(html, `index.html must contain #${containerId}`).toContain(`id="${containerId}"`);
+      expect(html, `index.html must still emit "${emptyText}"`).toContain(emptyText);
+    }
+  });
+
+  it("keeps the tab check from passing on page-wide text alone", () => {
+    // The old implementation scraped the whole document for words like "Payment"
+    // and treated any hit as a pass. Those words live in the tab bar, so the
+    // check passed on an empty or unauthenticated page. Guard against a return to
+    // that shape: the tab check must count rendered rows.
+    expect(qa).toContain("el.querySelectorAll('.card, .item').length");
+    // And it must still report the login page explicitly rather than reporting a
+    // missing container, which hides the real cause.
+    expect(qa).toContain("Dashboard showed the login page");
+  });
+});
