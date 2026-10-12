@@ -357,20 +357,6 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-  /**
-   * RPC: Test email attachments via the dashboard UI.
-   * Uses CDP to fill the Send Email form, attach a test file, submit, and verify.
-   * This is a true end-to-end UI test of the attachment flow.
-   */
-  @callable()
-  async testEmailAttachmentUI(
-    apiKey: string,
-    toEmail: string,
-  ): Promise<{ ok: boolean; detail: string; error?: string }> {
-    const env = this.env as Env;
-    if (!env.BROWSER) {
-      return { ok: false, detail: "Browser binding not configured" };
-    }
 
     let browser: any = null;
     try {
