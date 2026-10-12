@@ -2009,23 +2009,22 @@ Do not claim to have completed a payment unless you have received confirmation.`
     error?: string;
   }> {
     try {
-      const { browserScreenshot, browserExtract } = await import("agents/browser");
       const env = this.env as any;
       if (!env.BROWSER) {
         return { ok: false, url, textLength: 0, error: "Browser binding not configured" };
       }
 
-      // Extract page text and take a screenshot in parallel (stateless).
+      // Use the raw BROWSER binding Quick Actions (stateless, no agents/browser import needed).
       const [extractResult, shotResult] = await Promise.all([
-        browserExtract(env.BROWSER, { url }),
-        browserScreenshot(env.BROWSER, { url }),
+        env.BROWSER.quickAction("extract", { url }),
+        env.BROWSER.quickAction("screenshot", { url }),
       ]);
 
       const text = typeof extractResult === "string" ? extractResult : JSON.stringify(extractResult);
       let screenshot: string | undefined;
-      if (shotResult && (shotResult as any).data) {
-        const data = (shotResult as any).data as ArrayBuffer | Uint8Array;
-        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+      const shotData = (shotResult as any)?.data ?? shotResult;
+      if (shotData) {
+        const bytes = shotData instanceof Uint8Array ? shotData : new Uint8Array(shotData as ArrayBuffer);
         let binary = "";
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
         screenshot = `data:image/png;base64,${btoa(binary)}`;
