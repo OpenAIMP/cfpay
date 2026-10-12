@@ -919,9 +919,21 @@ export function createApp() {
   });
 
   app.post("/api/dashboard/send-email", requireAuth, async (c) => {
-    const body = await c.req.json<{ to: string; subject: string; body: string }>();
-    const agent = getAgent(c);
-    const result = await agent.sendOutboundEmail(body.to, body.subject, body.body);
+    const body = await c.req.json<{
+      to: string;
+      subject: string;
+      body: string;
+      attachments?: { filename: string; type: string; content: string }[];
+    }>();
+    // Use EmailAgent (via DO RPC) which supports attachments
+    const { getAgentByName } = await import("agents");
+    const emailAgent = getAgentByName(c.env.EMAIL_AGENT, "email") as any;
+    const result = await emailAgent.sendThroughAgent({
+      to: body.to,
+      subject: body.subject,
+      body: body.body,
+      attachments: body.attachments,
+    });
     return c.json(result);
   });
 
