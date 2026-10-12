@@ -380,6 +380,14 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
     try {
       let text: string;
+      // Read the reply through readCompletion, which handles BOTH response envelopes.
+      //
+      // Reading `response.response` directly was why chat answered "I could not generate
+      // a response": the default model is @cf/openai/gpt-oss-120b, which returns its text
+      // under choices[0].message.content and carries no `response` field at all. The
+      // model answered correctly and this code discarded the answer, then reported that
+      // it could not. The tool loop already used readCompletion for exactly this reason;
+      // this path was missed.
       try {
         const response = await this.env.AI.run(
           defaultModelId() as never,
@@ -387,16 +395,40 @@ Do not claim to have completed a payment unless you have received confirmation.`
             messages,
           } as never,
         );
-        text = (response as { response?: string }).response ?? "I could not generate a response.";
+        text = readCompletion(response).text.trim();
+        if (!text) {
+          // An empty completion is a real failure worth naming, rather than a generic
+          // message that hides which model was used or that one answered at all.
+          console.warn("Primary model returned no text; using the fallback model.");
+          const fallback = await this.env.AI.run(
+            "@cf/meta/llama-3.1-8b-instruct" as never,
+            { messages } as never,
+          );
+          text = readCompletion(fallback).text.trim();
+        }
       } catch (modelError) {
         console.warn("Primary model failed, trying fallback:", modelError);
-        const fallbackResponse = await this.env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct" as never,
-          {
-            messages,
-          } as never,
-        );
-        text = (fallbackResponse as { response?: string }).response ?? "I could not generate a response.";
+        text = "";
+        try {
+          const fallbackResponse = await this.env.AI.run(
+            "@cf/meta/llama-3.1-8b-instruct" as never,
+            { messages } as never,
+          );
+          text = readCompletion(fallbackResponse).text.trim();
+        } catch (fallbackError) {
+          // Name the failure. "I could not generate a response" gave nothing to act on:
+          // it did not say whether the model refused, errored, or returned an envelope
+          // this code did not understand.
+          console.error("Both models failed for a chat turn:", fallbackError);
+        }
+      }
+
+      if (!text) {
+        // Last resort, and specific: the caller learns that inference failed and that the
+        // request was recorded, rather than receiving a bare apology.
+        text =
+          "I could not reach a model to answer that. The message has been recorded, and " +
+          "nothing was sent or charged. Please try again shortly.";
       }
 
       // Annotated as ChatMessage[] so the object literals below are
@@ -764,6 +796,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
         PAYMENT_CLAIM_REUSED_PREFIX +
           " This payment has already been used for a request; each on-chain payment can be redeemed only once.",
       );
+    }
+
+    // Any other explicit refusal is final. Falling through to RPC here would present
+    // the same payment to the same ledger a second time.
+    if (data && data.error) {
+      throw new Error(String((viaA2A && viaA2A.text) || "The payments agent refused this request."));
     }
 
     // A2A could not complete. Fall back to RPC, which fails closed when the
@@ -1161,6 +1199,35 @@ Do not claim to have completed a payment unless you have received confirmation.`
       return { text: textOut, data: dataPart?.data };
     } catch (error) {
       console.error("A2A call to payments agent threw:", error);
+
+      // Tell "the other agent refused this" apart from "I could not reach the other
+      // agent". Collapsing both into null was a money bug, and it is the one the
+      // dashboard reports as "Payment already used": a REFUSAL was reported as
+      // unreachable, so the caller fell through to the direct RPC path and presented
+      // the same payment a second time. On the live x402 reconciliation path - where
+      // the browser re-POSTs the same signature while it waits for the chain - the
+      // first attempt has already been charged and fulfilled, and the second is then
+      // truthfully told the payment is spent. The dashboard is entitled to treat that
+      // phrase as final (isRetryableVerificationError excludes it), so the fix is to
+      // stop producing a retryable-looking error for a reused claim.
+      const message = error instanceof Error ? error.message : String(error);
+
+      // The canonical reuse phrase. api.ts maps it to HTTP 409, and the dashboard
+      // recognises it as final - which is correct when the FIRST attempt succeeded.
+      if (message.includes("already been used") || message.includes("already been redeemed")) {
+        throw new Error(
+          PAYMENT_CLAIM_REUSED_PREFIX +
+            " This payment has already been used for a request; each on-chain payment can be redeemed only once.",
+        );
+      }
+
+      // Any other explicit refusal is final too. Falling through would present the same
+      // payment to the same ledger again, which on the reconciliation path means
+      // charging twice for one request.
+      if (message.includes("Unknown operation") || message.includes("Refused")) {
+        return { text: message, data: { ok: false, error: "refused" } };
+      }
+
       return null;
     }
   }
@@ -1580,7 +1647,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     trace: ToolTrace[];
     model: string;
     cost: UsageCost | null;
-    /** Last finish_reason, so  "stopped" can be told from "ran out of rounds". */
+    /** Last finish_reason, so "stopped" can be told from "ran out of rounds". */
     finishReason: string;
   }> {
     const trace: ToolTrace[] = [];
@@ -1623,7 +1690,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const resultIndexes: number[] = [];
 
     // Bounded: without a cap a model can call tools indefinitely.
-    // Bounded by tool calls, not by rounds: a round may make several calls, and  
+    // Bounded by tool calls, not by rounds: a round may make several calls, and 
     // the failure this guards against is unbounded backtracking, which shows up
     // as call count rather than round count.
     const MAX_TOOL_CALLS = 12;

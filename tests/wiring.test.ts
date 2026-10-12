@@ -192,6 +192,61 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("a payment refusal is never reported as an unreachable agent", () => {
+  const agent = readCode("src/agent.ts");
+
+  it("itself distinguishes a refusal from an unreachable agent", () => {
+    // The money bug: returning null for both meant a REFUSAL fell through to the RPC
+    // path and presented the same payment twice. The dashboard then reported "Payment
+    // already used" after the first attempt had already been charged and fulfilled.
+    // This assertion exists because the fix was written once, lost in a concurrent
+    // rewrite of this file, and only rediscovered by a user hitting the error again.
+    const start = agent.indexOf("private async callPaymentsAgentOverA2A");
+    expect(start, "the A2A client must exist").toBeGreaterThan(-1);
+    const end = agent.indexOf("private paymentsAgent(", start);
+    expect(end, "the client must end before paymentsAgent").toBeGreaterThan(start);
+    const client = agent.slice(start, end);
+
+    expect(client.length).toBeGreaterThan(0);
+    expect(client, "must recognise the canonical reuse phrase").toMatch(
+      /already been used|already been redeemed/,
+    );
+    expect(client, "must rethrow the prefix api.ts maps to 409").toContain(
+      "PAYMENT_CLAIM_REUSED_PREFIX",
+    );
+    expect(client, "must return other refusals as data, not null").toMatch(
+      /error: "refused"/,
+    );
+  });
+
+  it("does not retry an explicit refusal over the RPC path", () => {
+    // Falling through on a refusal presents the same payment to the same ledger again.
+    const start = agent.indexOf("async processPaidRequest(");
+    const proc = agent.slice(start, start + 4000);
+    expect(proc, "a refusal must be raised, not retried").toMatch(
+      /if \(data && data\.error\) \{[\s\S]{0,200}?throw new Error/,
+    );
+  });
+
+  it("keeps no NUL bytes in any source file", () => {
+    // Stray U+0000 made git treat agent.ts as BINARY, so `git diff` showed nothing for
+    // it and three regressions in that file went unseen. A binary-looking source file
+    // is what let the fix above vanish without a reviewable diff.
+    for (const f of [
+      "src/agent.ts",
+      "src/api.ts",
+      "src/email-agent.ts",
+      "src/payments-agent.ts",
+      "src/webhook-agent.ts",
+      "src/slack-agent.ts",
+      "src/index.ts",
+      "src/a2a.ts",
+    ]) {
+      const raw = read(f);
+      expect(raw.includes("\u0000"), f + " must not contain a NUL byte").toBe(false);
+    }
+  });
+});
 describe("every capability agent is a tool, and the model cannot spend by default", () => {
   const tools = readCode("src/agent-tools.ts");
   const host = readCode("src/agent.ts");
