@@ -101,3 +101,17 @@ Seven `@callable()` QA methods, all behind `requireAuth`, exposed as `POST /api/
 Each tab is clicked, the click is asserted to have landed, and the data container is checked for real content (not just the tab existing).
 
 **Not covered:** Chat tab (interactive), QA tab itself (self-test would be circular), Dashboard home (covered by `qaDashboard`), Send Email form (covered by `testEmailAttachmentUI`).
+
+### How tabs are selected
+
+The tab list is **hardcoded** in `qaDashboardTabs` (`src/qa-agent.ts`) — not discovered from the DOM:
+
+```ts
+const tabs = [
+  { name: "Emails", tab: "emails", containerId: "emailList", emptyText: "No emails yet" },
+  { name: "Payments", tab: "payments", containerId: "paymentList", emptyText: "No payments yet" },
+  { name: "Webhooks", tab: "webhooks", containerId: "webhookList", emptyText: "No webhook events yet" },
+];
+```
+
+Each entry maps a tab button ID → the data container it populates → the expected empty-state text. The `emptyText` lets the check distinguish "loaded but empty" from "failed to load". Adding a new tab requires a code change to this array — the assertions are tab-specific and can't be inferred generically.
