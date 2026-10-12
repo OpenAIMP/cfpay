@@ -38,8 +38,8 @@ export interface Env {
   // Cloudflare Browser binding for autonomous QA (issue #32)
   BROWSER?: any;
   // GitHub OAuth for dashboard sign-on (additive; API-key auth untouched)
-  GITHUB_CLIENT_ID?: string;
-  GITHUB_CLIENT_SECRET?: string;
+  GH_CLIENT_ID?: string;
+  GH_CLIENT_SECRET?: string;
   // Webhook secrets (incoming verification)
   GITHUB_WEBHOOK_SECRET?: string;
   STRIPE_WEBHOOK_SECRET?: string;

@@ -68,8 +68,8 @@ async function exchangeCodeForToken(
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
-      client_id: env.GITHUB_CLIENT_ID,
-      client_secret: env.GITHUB_CLIENT_SECRET,
+      client_id: env.GH_CLIENT_ID,
+      client_secret: env.GH_CLIENT_SECRET,
       code,
       redirect_uri: redirectUri,
     }),
@@ -117,14 +117,14 @@ export async function getOAuthUserFromRequest(
 
 /** GET /auth/login — start the GitHub OAuth flow. */
 export function handleAuthLogin(request: Request, env: Env): Response {
-  if (!env.GITHUB_CLIENT_ID) {
+  if (!env.GH_CLIENT_ID) {
     return new Response("GitHub OAuth not configured", { status: 503, headers: noStoreHeaders() });
   }
   const url = new URL(request.url);
   const state = crypto.randomUUID();
   const redirectUri = `${url.origin}/auth/callback`;
   const authorize = new URL("https://github.com/login/oauth/authorize");
-  authorize.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
+  authorize.searchParams.set("client_id", env.GH_CLIENT_ID);
   authorize.searchParams.set("redirect_uri", redirectUri);
   authorize.searchParams.set("scope", "read:user");
   authorize.searchParams.set("state", state);
