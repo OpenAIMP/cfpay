@@ -24,6 +24,10 @@
       {
         "name": "QA_AGENT",
         "class_name": "QAAgent"
+      },
+      {
+        "name": "WEBHOOK_AGENT",
+        "class_name": "WebhookAgent"
       }
     ]
   },
@@ -32,7 +36,7 @@
     { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] },
     { "tag": "v3", "new_sqlite_classes": ["PaymentsAgent"] },
 { "tag": "v4", "new_sqlite_classes": ["EmailAgent"] },
-  { "tag": "v5", "new_sqlite_classes": ["QAAgent"] }
+    { "tag": "v5", "new_sqlite_classes": ["WebhookAgent"] }
   ],
   "send_email": [
     {

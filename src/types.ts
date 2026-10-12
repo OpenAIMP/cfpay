@@ -23,6 +23,8 @@ export interface Env {
   EMAIL_AGENT: DurableObjectNamespace;
   /** Autonomous QA agent (Think-based). */
   QA_AGENT: DurableObjectNamespace;
+  /** Owns the webhook event log and the GitHub delivery registry. */
+  WEBHOOK_AGENT: DurableObjectNamespace;
   /**
    * This Worker's own origin, used when one agent calls another over A2A.
    *
