@@ -13,6 +13,12 @@ export interface Env {
   X402_FACILITATOR_URL: string;
   DASHBOARD_API_KEY: string;
   CfmailAgent: DurableObjectNamespace;
+  /**
+   * The payments capability, extracted from CfmailAgentSQLite into its own
+   * Durable Object. Owns the ledger, Stripe checkout state and the replay
+   * registries for both payment rails.
+   */
+  PAYMENTS_AGENT: DurableObjectNamespace;
   SLACK_BOT_TOKEN: string;
   SLACK_SIGNING_SECRET: string;
   SLACK_APP_TOKEN: string;

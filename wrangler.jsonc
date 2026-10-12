@@ -12,12 +12,17 @@
       {
         "name": "CfmailAgent",
         "class_name": "CfmailAgentSQLite"
+      },
+      {
+        "name": "PAYMENTS_AGENT",
+        "class_name": "PaymentsAgent"
       }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_classes": ["CfmailAgent"] },
-    { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] }
+    { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] },
+    { "tag": "v3", "new_sqlite_classes": ["PaymentsAgent"] }
   ],
   "send_email": [
     {

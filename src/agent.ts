@@ -650,6 +650,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
     // the same transaction map to a single key.
     const claimKey = claim?.txHash.toLowerCase();
     if (claimKey) {
+      // Prefer the payments agent as the authority on redemption. It is the same
+      // DO for every request, so its check-and-record is atomic; the local
+      // registry is only a fallback for when that binding is unavailable.
+      const pa = this.paymentsAgent();
+      if (pa) {
+        const claimed = await pa.isX402Claimed(claimKey);
+        if (claimed) {
+          throw new Error(
+            `${PAYMENT_CLAIM_REUSED_PREFIX} This payment has already been used for a request; each on-chain payment can be redeemed only once.`,
+          );
+        }
+      }
       const consumedClaims = state.x402ProcessedClaims || {};
       if (consumedClaims[claimKey]) {
         throw new Error(
@@ -690,19 +702,28 @@ Do not claim to have completed a payment unless you have received confirmation.`
     // entry-time snapshot is stale. Mark the x402 claim consumed only now that
     // fulfilment succeeded, mirroring stripeProcessedEvents.
     const latest = this.ensureState();
-    this.setState({
-      ...latest,
-      payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
-      totalPaymentsReceived: latest.totalPaymentsReceived + 1,
-      ...(claimKey
-        ? {
-            x402ProcessedClaims: {
-              ...(latest.x402ProcessedClaims || {}),
-              [claimKey]: new Date().toISOString(),
-            },
-          }
-        : {}),
-    });
+    // The ledger lives in the payments agent now. Record there when it is
+    // reachable; fall back to local state so a rolling deploy cannot lose a
+    // payment that the caller has already been charged for.
+    const pa = this.paymentsAgent();
+    if (pa) {
+      await pa.recordPayment(payment);
+      if (claimKey) await pa.claimX402(claimKey);
+    } else {
+      this.setState({
+        ...latest,
+        payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
+        totalPaymentsReceived: latest.totalPaymentsReceived + 1,
+        ...(claimKey
+          ? {
+              x402ProcessedClaims: {
+                ...(latest.x402ProcessedClaims || {}),
+                [claimKey]: new Date().toISOString(),
+              },
+            }
+          : {}),
+      });
+    }
 
     return {
       success: emailResult.success,
@@ -950,6 +971,23 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // ===========================================================================
 
   /**
+   * The payments capability agent.
+   *
+   * Returns null when the binding is absent, so this agent still functions if the
+   * payments DO has not been deployed yet. Callers fall back to writing their own
+   * state in that case, which keeps a rolling deploy safe.
+   */
+  private paymentsAgent(): any | null {
+    const ns = (this.env as any).PAYMENTS_AGENT;
+    if (!ns) return null;
+    try {
+      return ns.get(ns.idFromName("payments"));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Aggregate state for the A2A executor.
    *
    * Counts and types only. The A2A endpoint is reachable by other agents, so it
@@ -967,14 +1005,60 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * boundary rejects anything else. The Worker frames events as SSE when streamed
    * is true.
    */
-  @callable()
+  /**
+   * Answer a question about emails, payments and webhooks from the aggregate
+   * snapshot. Facts are computed here and the model only phrases them, so it
+   * cannot invent a figure it was not given. Read-only.
+   */
+  async answerAboutState(question: string): Promise<string> {
+    const snap = await this.a2aSnapshot();
+    const facts = [
+      "Emails handled: " + snap.emails,
+      "Payments on the ledger: " + snap.payments,
+      "Webhook events received: " + snap.webhooks,
+      "Webhook providers: " + (Object.entries(snap.webhookProviders).map(function (e) { return e[0] + " (" + e[1] + ")"; }).join(", ") || "none"),
+      "Recent payment descriptions: " + (snap.recentPaymentDescriptions.join("; ") || "none"),
+      "Recent webhook types: " + (snap.recentWebhookTypes.join("; ") || "none"),
+    ].join("\n");
+    try {
+      const response: any = await this.env.AI.run(
+        "@cf/openai/gpt-oss-120b" as never,
+        {
+          messages: [
+            {
+              role: "system",
+              content: [
+                "You answer questions about a mail and payment agent, using only the facts given.",
+                "You cannot act: do not offer to send email, move funds or change anything.",
+                "If the facts do not contain the answer, say so rather than guessing. Be brief.",
+              ].join("\n"),
+            },
+            { role: "user", content: "Facts:\n" + facts + "\n\nQuestion: " + question },
+          ],
+          max_tokens: 400,
+        } as never,
+      );
+      const text = String(response?.response ?? "").trim();
+      if (text) return text;
+      if (Array.isArray(response?.choices) && response.choices.length) {
+        const alt = String(response.choices[0]?.message?.content ?? "").trim();
+        if (alt) return alt;
+      }
+    } catch {
+      // Fall through to the raw facts rather than returning nothing.
+    }
+    return facts;
+  }  @callable()
   async handleA2A(body: unknown, origin: string): Promise<unknown> {
-    const { createA2ATransport, handleCollecting } = await import("./a2a");
+    const { createA2ATransport, handleCollecting, cfmailCard } = await import("./a2a");
     const a2a = createA2ATransport(
       this.ctx.storage.sql,
-      this.env,
       origin,
-      () => this.a2aSnapshot(),
+      cfmailCard(origin),
+      {
+        card: cfmailCard,
+        answer: (question: string) => this.answerAboutState(question),
+      },
     );
     // Collected, not streamed: an async iterable cannot cross the RPC boundary.
     return await handleCollecting(a2a.transport, body);
@@ -1472,11 +1556,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
         createdAt: new Date().toISOString(),
       };
 
-      this.setState({
-        ...latest,
-        payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
-        totalPaymentsSent: latest.totalPaymentsSent + 1,
-      });
+      const pa = this.paymentsAgent();
+      if (pa) {
+        await pa.recordPayment(payment);
+      } else {
+        this.setState({
+          ...latest,
+          payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
+          totalPaymentsSent: latest.totalPaymentsSent + 1,
+        });
+      }
 
       return {
         success: response.ok,

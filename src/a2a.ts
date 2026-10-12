@@ -41,47 +41,6 @@ export const A2A_CARD_PATHS = ["/.well-known/agent-card.json", "/.well-known/age
 /** Path that serves the JSON-RPC endpoint. */
 export const A2A_RPC_PATH = "/a2a";
 
-/**
- * The agent card.
- *
- * Deliberately static, so a caller can discover the agent without a database
- * read and without a credential. `url` is filled in per request from the actual
- * origin, so the card is correct on any hostname rather than hard-coded.
- */
-export function agentCard(origin: string): AgentCard {
-  return {
-    name: "CFmail Agent",
-    description:
-      "Inspects the state of a CFmail agent: emails it has handled, payments on its ledger, and inbound webhook events. Read-only.",
-    version: "0.1.0",
-    protocolVersion: "0.3.0",
-    url: origin + A2A_RPC_PATH,
-    preferredTransport: "JSONRPC",
-    capabilities: {
-      pushNotifications: false,
-      stateTransitionHistory: false,
-      streaming: true,
-    },
-    defaultInputModes: ["text/plain"],
-    defaultOutputModes: ["text/plain"],
-    provider: { organization: "OpenAIMP", url: origin },
-    skills: [
-      {
-        id: "inspect-state",
-        name: "Inspect agent state",
-        description:
-          "Answer questions about emails handled, payments recorded and webhook events received. Cannot send email, move funds or place trades.",
-        tags: ["read-only", "email", "payments", "webhooks"],
-        examples: [
-          "How many emails has this agent handled?",
-          "What payments are on the ledger?",
-          "Which webhook providers have sent events recently?",
-        ],
-      },
-    ],
-  };
-}
-
 /** True when the presented credential authorises a /a2a call. */
 export function a2aAuthorised(request: Request, env: Env): boolean {
   const expected = (env.DASHBOARD_API_KEY ?? "").trim();
@@ -162,30 +121,48 @@ function messageText(message: Message): string {
  * Built from the caller-supplied accessors rather than by reaching into the DO
  * directly, so this class has no dependency on the agent's internal shape.
  */
-export interface StateSnapshot {
-  emails: number;
-  payments: number;
-  webhooks: number;
-  webhookProviders: Record<string, number>;
-  recentPaymentDescriptions: string[];
-  recentWebhookTypes: string[];
+/**
+ * A capability exposed over A2A.
+ *
+ * Each agent supplies its own card and its own answer function. This module
+ * knows nothing about what the capability is, which is what lets the same
+ * transport serve the payments agent and the cfmail agent without either
+ * leaking into the other.
+ */
+export interface A2ACapability {
+  /** The card served at the well-known paths. `url` must be the request origin. */
+  card(origin: string): AgentCard;
+  /**
+   * Answer one question, returning text.
+   *
+   * The implementation owns its own truth: it should compute facts and may use
+   * Workers AI only to phrase them, so a model cannot invent a figure it was not
+   * given. Throwing is fine - the executor reports the failure as the answer.
+   */
+  answer(question: string): Promise<string>;
 }
 
-export class ReadOnlyExecutor implements AgentExecutor {
-  constructor(private snapshot: () => Promise<StateSnapshot>) {}
+/**
+ * Executor for any capability.
+ *
+ * Publishes the A2A lifecycle (submitted, working, message, completed) and
+ * delegates the actual answer. It has no tool surface, so a prompt cannot talk
+ * it into acting: it can only return text.
+ */
+export class CapabilityExecutor implements AgentExecutor {
+  constructor(private capability: A2ACapability) {}
 
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
     const { taskId, contextId, userMessage, task } = requestContext;
 
     if (!task) {
-      const initial: Task = {
+      eventBus.publish({
         id: taskId,
         contextId,
         kind: "task",
         history: [userMessage],
         status: { state: "submitted", timestamp: new Date().toISOString() },
-      };
-      eventBus.publish(initial);
+      } as Task);
     }
 
     eventBus.publish({
@@ -198,47 +175,9 @@ export class ReadOnlyExecutor implements AgentExecutor {
 
     const question = messageText(userMessage) || "Summarise the current state.";
 
-    // The only facts available to the model are the ones passed here. There is no
-    // tool surface, so a prompt cannot talk it into sending mail or moving funds.
-    const state = await this.snapshot();
-    const facts = [
-      `Emails handled: ${state.emails}`,
-      `Payments on the ledger: ${state.payments}`,
-      `Webhook events received: ${state.webhooks}`,
-      `Webhook providers: ${
-        Object.entries(state.webhookProviders)
-          .map(([p, n]) => `${p} (${n})`)
-          .join(", ") || "none"
-      }`,
-      `Recent payment descriptions: ${state.recentPaymentDescriptions.slice(0, 5).join("; ") || "none"}`,
-      `Recent webhook types: ${state.recentWebhookTypes.slice(0, 5).join("; ") || "none"}`,
-    ].join("\n");
-
     let answer: string;
     try {
-      const response: any = await this.env.AI.run(
-        defaultModelId() as never,
-        {
-          messages: [
-            {
-              role: "system",
-              content: [
-                "You answer questions about a CFmail agent's state, using only the facts given.",
-                "You have no ability to act: do not offer to send email, move funds or change anything.",
-                "If the facts do not contain the answer, say so plainly rather than guessing.",
-                "Be brief. One short paragraph or a few lines.",
-              ].join("\n"),
-            },
-            { role: "user", content: "Facts:\n" + facts + "\n\nQuestion: " + question },
-          ],
-          max_tokens: 512,
-        } as never,
-      );
-      answer = String(response?.response ?? "").trim();
-      // Newer models answer under choices[0].message instead of response.
-      if (!answer && Array.isArray(response?.choices) && response.choices.length) {
-        answer = String(response.choices[0]?.message?.content ?? "").trim();
-      }
+      answer = (await this.capability.answer(question)).trim();
     } catch (error) {
       answer = "The agent could not answer: " + String(error);
     }
@@ -268,14 +207,71 @@ export class ReadOnlyExecutor implements AgentExecutor {
     // Nothing to cancel: execute() has no long-running work and publishes its
     // final state inline.
   };
-
-  env!: Env;
-  withEnv(env: Env): this {
-    this.env = env;
-    return this;
-  }
 }
 
+/* --------------------------- capability cards --------------------------- */
+
+/** Card for the payments capability. */
+export function paymentsCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Payments Agent",
+    description:
+      "Owns the CFmail payment ledger: payments received and sent, Stripe card checkouts, and replay protection for both rails. Read-only over A2A.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain"],
+    defaultOutputModes: ["text/plain"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "payment-ledger",
+        name: "Payment ledger",
+        description:
+          "Report on payments received and sent, by currency and status. Cannot move funds, refund, or create a payment.",
+        tags: ["read-only", "payments", "x402", "stripe"],
+        examples: [
+          "How many payments have been received?",
+          "What currencies are on the ledger?",
+          "Are there any failed payments?",
+        ],
+      },
+    ],
+  };
+}
+
+/** Card for the cfmail capability. */
+export function cfmailCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Agent",
+    description:
+      "Inspects the state of a CFmail agent: emails it has handled, payments on its ledger, and inbound webhook events. Read-only.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain"],
+    defaultOutputModes: ["text/plain"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "inspect-state",
+        name: "Inspect agent state",
+        description:
+          "Answer questions about emails handled, payments recorded and webhook events received. Cannot send email, move funds or place trades.",
+        tags: ["read-only", "email", "payments", "webhooks"],
+        examples: [
+          "How many emails has this agent handled?",
+          "What payments are on the ledger?",
+          "Which webhook providers have sent events recently?",
+        ],
+      },
+    ],
+  };
+}
 /* ------------------------------ plumbing --------------------------------- */
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
@@ -296,13 +292,13 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
  */
 export function createA2ATransport(
   sql: SqlStorage,
-  env: Env,
   origin: string,
-  snapshot: () => Promise<StateSnapshot>,
+  card: AgentCard,
+  capability: A2ACapability,
 ) {
   const store = new AgentTaskStore(sql);
-  const executor = new ReadOnlyExecutor(snapshot).withEnv(env);
-  const handler = new DefaultRequestHandler(agentCard(origin), store, executor);
+  const executor = new CapabilityExecutor(capability);
+  const handler = new DefaultRequestHandler(card, store, executor);
   return { handler, transport: new JsonRpcTransportHandler(handler), store };
 }
 
