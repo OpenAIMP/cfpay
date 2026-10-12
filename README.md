@@ -123,7 +123,8 @@ The agent can also **pay other x402-gated services** using the `payExternalEndpo
 ```bash
 git clone <your-repo-url>
 cd cfmail-agent
-npm install
+# --legacy-peer-deps is required: wrangler peers on a newer workers-types
+npm install --legacy-peer-deps
 ```
 
 ### 2. Configure wrangler.jsonc
@@ -436,6 +437,85 @@ Directly, over A2A, or not at all — never through another agent's state.
   agent. A Durable Object cannot re-enter itself: if CFmail were awaiting an A2A call
   to Payments, and Payments called back into CFmail, the pair would deadlock. Email
   being a third agent is what makes that safe.
+
+## Framework
+
+This repo runs on the Cloudflare Agents framework. The versions are pinned together
+deliberately: the Worker and the dashboard client must be the same version, so they
+change in the same commit.
+
+| Package | Version | Why |
+|---|---|---|
+| `agents` | `0.28.0` | Durable Object agents, routing, A2A and MCP entry points |
+| `@cloudflare/think` | `0.20.2` | Chat-capable agent base, and the `agentTool()` dispatch target |
+| `ai` | `^7.0.0` | Peer of `agents@0.28` |
+| `@modelcontextprotocol/client` | `2.0.0` | Required peer — `agents/mcp/client` imports it directly |
+| `@modelcontextprotocol/server` | `2.0.0` | Required peer — `agents/mcp/server` imports it directly |
+| `@modelcontextprotocol/sdk` | `1.30.0` | The version `agents@0.28` declares |
+| `@cloudflare/workers-types` | `^5.20261006.1` | Peer requirement of the current `wrangler` |
+
+Install with peer resolution relaxed; `npm install` alone stops on a `wrangler` /
+`workers-types` peer conflict:
+
+```bash
+npm install --legacy-peer-deps
+```
+
+CI already sets this. `.github/workflows/deploy.yml` runs `npm install` with
+`legacy-peer-deps=true`, so a push deploys without special handling.
+
+### Two things that break if you change versions carelessly
+
+**The dashboard client is pinned to the Worker's version.** `public/index.html`
+imports `https://esm.sh/agents@0.28.0/client`. If the two drift, the WebSocket still
+connects and `onStateUpdate` simply never fires, so the dashboard goes silently stale
+rather than failing — the single most expensive bug in this repo's history. Change the
+pin in `package.json` and the pin in `public/index.html` in the **same commit**.
+
+**The MCP 2.0 split packages are not optional.** `agents@0.28` imports
+`@modelcontextprotocol/client` and `@modelcontextprotocol/server` from its own MCP
+entry points. Without them the Worker fails to **bundle** — a build error that a
+typecheck does not catch, so `wrangler deploy --dry-run` is worth running before
+pushing a dependency change.
+
+### Adopting the framework's agent tools
+
+The framework's agents-as-tools pattern is `agentTool(ChildClass, { description,
+inputSchema })` for model-selected dispatch, plus `runAgentTool(ChildClass, options)`
+for explicit fan-out. What was measured here, rather than assumed:
+
+- `agentTool` is exported from `agents/agent-tools`, **not** from the package root.
+- `runAgentTool` resolves on a plain `Agent` subclass. Re-basing the existing agents
+  onto `Think` is **not** required to call it.
+- `ChatCapableAgentClass` is a constructor shape (`new (ctx, env) => T`), so a `Think`
+  subclass satisfies it structurally.
+- `Think<Env, State, Props> extends Agent<Env, State, Props>`, so it is available as a
+  base class when a child needs a chat turn of its own.
+- `agentTool` dispatches through the **child's chat loop**: the child runs its own
+  model turn with its own tools and messages. That is a different mechanism from a
+  capability call, and it is why it is not used for email here.
+
+### Why email is a shared tool and not an `agentTool()`
+
+Email is exposed as one definition in `src/email-tool.ts`, reachable three ways:
+direct Durable Object RPC, A2A at `/a2a/email`, and the model's tool list. The
+operation is dispatched by the owning agent, and the facts come back as data.
+
+An `agentTool()` would make the email agent answer a **chat turn** of its own, which
+means a second model in the path of every send — a second place for a send to be
+mis-described, and a `Think` conversation the caller cannot see. For a capability
+whose whole job is "send this exact message and tell me whether it left", an operation
+call is the honest shape. The framework primitive remains available and the tool
+definition is deliberately shaped so it can be handed to `agentTool` as its input
+schema if a chat-driven email agent is ever wanted.
+
+### Rollback
+
+The state before this migration is tagged:
+
+```bash
+git checkout pre-think-migration
+```
 
 ## Remote MCP Server
 
