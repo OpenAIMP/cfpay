@@ -192,6 +192,48 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("the dashboard explains a spent payment instead of a generic failure", () => {
+  const html = read("public/index.html");
+
+  it("handles 409 explicitly", () => {
+    // Before this, a 409 fell through to the generic branch, so a user whose FIRST
+    // attempt succeeded was told their payment was unusable with no pointer to the
+    // request that had been processed.
+    expect(html).toContain("response.status === 409");
+    expect(html).toMatch(/already been redeemed/);
+  });
+
+  it("does not offer a retry that cannot succeed", () => {
+    // Re-presenting a spent claim can only produce the same 409, so the branch must
+    // clear the pending payment rather than leaving the button offering a retry.
+    const at = html.indexOf("response.status === 409");
+    const block = html.slice(at, at + 1400);
+    expect(block).toContain("pendingPayment = null");
+    expect(block, "no continue/retry from a spent claim").not.toContain("continue;");
+  });
+
+  it("says what is known rather than what is assumed", () => {
+    // A 409 proves the claim was spent, not that this session spent it. The copy must
+    // not claim the request succeeded; it points at where to check.
+    const at = html.indexOf("response.status === 409");
+    const block = html.slice(at, at + 1400);
+    expect(block).toMatch(/already processed/);
+    expect(block).toMatch(/Payments tab/);
+    expect(block, "must not assert success outright").not.toMatch(/success/i);
+  });
+
+  it("keeps the document well formed", () => {
+    // A div-nesting mistake in this file once made the whole webhooks panel render
+    // nothing, because an unclosed div pushed content inside a hidden ancestor.
+    const stripped = html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<!--[\s\S]*?-->/g, "");
+    const opens = (stripped.match(/<div\b/g) || []).length;
+    const closes = (stripped.match(/<\/div>/g) || []).length;
+    expect(opens, "open and close div counts must match").toBe(closes);
+  });
+});
 describe("a payment refusal is never reported as an unreachable agent", () => {
   const agent = readCode("src/agent.ts");
 

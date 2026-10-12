@@ -693,6 +693,34 @@
           else pendingPayment = null;
           return;
         }
+        // 409 means the payment claim was already consumed. Before this branch existed,
+        // a 409 fell through to the generic text below, which said only that an
+        // unexpected error occurred - so a user whose FIRST attempt had actually
+        // succeeded was told their payment was unusable, with nothing pointing at the
+        // request that had in fact been processed.
+        //
+        // The wording is careful about what is and is not known. A 409 is proof the
+        // claim was spent, not proof that this session spent it, so it does not claim
+        // the request succeeded. It says where to check.
+        if (response.status === 409) {
+          // No retry: presenting the same claim again can only produce the same 409.
+          pendingPayment = null;
+          resultDiv.innerHTML = '<div class="status-msg info">This payment has already been redeemed. It was used for a request previously, so it was not run again, and no second payment was sent.</div>';
+          const info = resultDiv.querySelector('.status-msg');
+          info.appendChild(document.createElement('br'));
+          info.appendChild(document.createTextNode('If you completed a payment a moment ago, that request was already processed: the ledger entry appears in the Payments tab and the answer was emailed to you.'));
+          info.appendChild(document.createElement('br'));
+          const txLine = document.createElement('span');
+          txLine.style.fontFamily = 'monospace';
+          txLine.style.fontSize = '0.8rem';
+          txLine.textContent = 'Transaction: ' + paymentAttempt.txHash;
+          info.appendChild(txLine);
+          if (detail) {
+            info.appendChild(document.createElement('br'));
+            info.appendChild(document.createTextNode(detail));
+          }
+          return;
+        }
         pendingPayment = null;
         resultDiv.innerHTML = '<div class="status-msg error">Verification returned an unexpected error; no automatic retry was attempted: </div>';
         resultDiv.querySelector('.status-msg').appendChild(document.createTextNode(detail));
