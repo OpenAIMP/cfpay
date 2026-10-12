@@ -126,5 +126,88 @@ export function createCfmailMcpHandler(env: Env) {
     },
   );
 
+  // Read-only diagnostics. This exists because the dashboard reported 0 payments and
+  // nothing said why: the stats route swallowed the error and returned zeros. A
+  // health surface has to be able to fail loudly, so this reports each hop of the
+  // ledger read separately and returns the real error text rather than a zero.
+  //
+  // Nothing here writes, sends, or spends — it only observes, which is why it is
+  // appropriate for a read-only tool surface.
+  server.registerTool(
+    "cfmail_ledger_diagnostics",
+    {
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      title: "Ledger diagnostics",
+      description:
+        "Report whether the payment ledger is reachable and consistent, hop by hop: dashboard totals, the merged ledger read, and the ledger's own totals from the payments agent. Returns the real error text when a hop fails instead of a zero.",
+      inputSchema: {},
+    },
+    async () => {
+      const probe: Record<string, unknown> = {};
+
+      // Hop 1: what the dashboard's stats route calls.
+      try {
+        probe.getPaymentTotals = await agent.getPaymentTotals();
+      } catch (error) {
+        probe.getPaymentTotals = { error: String(error) };
+      }
+
+      // Hop 2: the ledger read the Payments tab uses.
+      try {
+        const ledger = await agent.getPayments(null, 100);
+        probe.getPayments = {
+          rows: Array.isArray(ledger) ? ledger.length : null,
+          received: Array.isArray(ledger) ? ledger.filter((p: any) => p.direction === "received").length : null,
+          sent: Array.isArray(ledger) ? ledger.filter((p: any) => p.direction === "sent").length : null,
+        };
+      } catch (error) {
+        probe.getPayments = { error: String(error) };
+      }
+
+      // Hop 3: the payments agent directly, bypassing the monolith entirely, so a
+      // failure can be attributed to the hop rather than to the ledger.
+      try {
+        const ns = (env as any).PAYMENTS_AGENT;
+        if (!ns) {
+          probe.paymentsAgentDirect = { error: "PAYMENTS_AGENT binding is absent" };
+        } else {
+          const stub = ns.get(ns.idFromName("payments"));
+          const totals = await stub.paymentTotals();
+          const rows = await stub.listPayments(null, 100);
+          probe.paymentsAgentDirect = {
+            totals,
+            rows: Array.isArray(rows) ? rows.length : null,
+          };
+        }
+      } catch (error) {
+        probe.paymentsAgentDirect = { error: String(error) };
+      }
+
+      // Hop 4: the email agent, same reasoning.
+      try {
+        const ns = (env as any).EMAIL_AGENT;
+        if (!ns) {
+          probe.emailAgentDirect = { error: "EMAIL_AGENT binding is absent" };
+        } else {
+          const stub = ns.get(ns.idFromName("email"));
+          probe.emailAgentDirect = {
+            totals: await stub.emailTotals(),
+            quota: await stub.sendQuota(),
+          };
+        }
+      } catch (error) {
+        probe.emailAgentDirect = { error: String(error) };
+      }
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(probe, null, 2) }],
+      };
+    },
+  );
   return createMcpHandler(server, { route: "/mcp" });
 }
