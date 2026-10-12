@@ -851,9 +851,16 @@ export function createApp() {
         : firstNetwork?.ethAmount
           ? `${formatEthAmount(firstNetwork.ethAmount)} ETH per request`
           : "N/A";
+      // Mail counts come from the mail resource for the same reason the payment
+      // counts come from the ledger: this instance's own counters only see mail that
+      // it handled, so they under-report once another agent owns the resource.
+      const emailTotals = await agent.getEmailTotals().catch((error: unknown) => {
+        console.error("Dashboard email totals failed:", error);
+        return { received: 0, sent: 0, stored: 0 };
+      });
       return c.json({
-        totalEmailsReceived: state.totalEmailsReceived || 0,
-        totalEmailsSent: state.totalEmailsSent || 0,
+        totalEmailsReceived: emailTotals.received,
+        totalEmailsSent: emailTotals.sent,
         totalPaymentsReceived: totals.received,
         totalPaymentsSent: totals.sent,
         totalRevenue,

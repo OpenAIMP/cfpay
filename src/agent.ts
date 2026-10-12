@@ -934,36 +934,92 @@ Do not claim to have completed a payment unless you have received confirmation.`
     direction: string | null,
     limit: number,
   ): Promise<EmailRecord[]> {
-    const state = this.ensureState();
+    // The email agent owns the mail resource now. This instance still holds mail
+    // written before the split and outbound copies written since, so the read is
+    // authoritative from the agent and the local copies are merged in rather than
+    // dropped - dropping them would make old mail vanish from the dashboard.
+    const ea = (this.env as any).EMAIL_AGENT;
+    if (!ea) {
+      // Fail loudly rather than answering from a stale copy: a wrong answer about
+      // what the agent received is worse than an error.
+      throw new Error("The email agent is unavailable, so mail cannot be read.");
+    }
+    const stub = ea.get(ea.idFromName("email"));
+    await this.migrateLegacyEmails(stub);
 
-    const filtered = direction
-      ? state.emails.filter((email) => email.direction === direction)
-      : state.emails;
+    const remote: EmailRecord[] = await stub.listEmails(direction, limit);
+    const local = this.ensureState().emails.filter(
+      (e) => !e.from.startsWith("slack:") && !e.to.startsWith("slack:"),
+    );
 
-    return filtered.slice(-limit).reverse();
+    // Deduplicate by id. The agent's copy wins: it is authoritative, and a local
+    // duplicate would otherwise double-count the same message.
+    const byId = new Map<string, EmailRecord>();
+    for (const email of [...local, ...remote]) {
+      if (email && email.id) byId.set(email.id, email);
+    }
+    const merged = [...byId.values()].filter((e) => !direction || e.direction === direction);
+    merged.sort((a, b) => String(a.receivedAt).localeCompare(String(b.receivedAt)));
+    return merged.slice(-limit).reverse();
   }
 
   /**
-   * Emails only. Slack conversations are stored in the same emails[] array
-   * (from "slack:<user>"), so callers that present mail must exclude them.
+   * Adopt this instance's pre-split mail into the email agent, once.
+   *
+   * Slack messages are skipped by the agent itself, since they belong to SlackAgent.
+   * The local copies stay: they are the only record if the adoption turns out to be
+   * wrong, and clearing them would be the irreversible half of a migration.
+   */
+  private async migrateLegacyEmails(stub: any): Promise<void> {
+    const state = this.ensureState();
+    if ((state as any).emailsBackfilledAt) return;
+    const legacy = Array.isArray(state.emails) ? state.emails : [];
+
+    try {
+      if (legacy.length > 0) {
+        const outcome = await stub.backfillEmails(legacy);
+        console.log(
+          "Email backfill: adopted " + outcome.adopted + ", skipped " + outcome.skipped,
+        );
+      }
+      this.setState({ ...this.ensureState(), emailsBackfilledAt: new Date().toISOString() } as any);
+    } catch (error) {
+      // Leave the marker unset so the next read retries. Not marking it done is the
+      // safe failure: a retry is cheap, a lost message is not.
+      console.error("Email backfill failed; will retry on the next read:", error);
+    }
+  }
+
+  /**
+   * Mail totals, from the mail resource.
+   *
+   * @callable() matters here: without the decorator the method is not on the RPC
+   * surface, and the dashboard reaches it through an any-typed stub, so neither the
+   * type checker nor the build would notice.
+   */
+  @callable()
+  async getEmailTotals(): Promise<{ received: number; sent: number; stored: number }> {
+    const ea = (this.env as any).EMAIL_AGENT;
+    if (!ea) return { received: 0, sent: 0, stored: 0 };
+    const stub = ea.get(ea.idFromName("email"));
+    await this.migrateLegacyEmails(stub);
+    return await stub.emailTotals();
+  }
+
+  /**
+   * Mail only.
+   *
+   * Kept so the dashboard's call site does not change, but it no longer filters:
+   * Slack messages live in SlackAgent, so mail read from the email agent cannot
+   * contain them. The filtering this used to do was a symptom of two channels
+   * sharing one array.
    */
   @callable()
   async getEmailsExcludingSlack(
     direction: string | null,
     limit: number,
   ): Promise<EmailRecord[]> {
-    const state = this.ensureState();
-
-    let emails = state.emails.filter(
-      (email) =>
-        !email.from.startsWith("slack:") && !email.to.startsWith("slack:"),
-    );
-
-    if (direction) {
-      emails = emails.filter((email) => email.direction === direction);
-    }
-
-    return emails.slice(-limit).reverse();
+    return await this.getEmails(direction, limit);
   }
 
   // ===========================================================================

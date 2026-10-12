@@ -192,6 +192,51 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("the email migration cannot double-count or absorb Slack", () => {
+  const agent = readCode("src/agent.ts");
+  const eagent = readCode("src/email-agent.ts");
+
+  it("backfills once, guarded by a marker", () => {
+    // The guard is a stored marker, not a per-read run. Without it every read would
+    // re-adopt the monolith's history, which is the duplicate the migration exists to
+    // avoid.
+    expect(agent).toContain("emailsBackfilledAt");
+    expect(agent).toMatch(/if\s*\(\(state as any\)\.emailsBackfilledAt\)\s*return/);
+    expect(agent).toContain("migrateLegacyEmails");
+  });
+
+  it("keeps the marker unset when the backfill fails, so it retries", () => {
+    // Marking a failed migration as done would strand the history permanently. The
+    // marker is set on the success path only.
+    const fn = agent.slice(
+      agent.indexOf("private async migrateLegacyEmails"),
+      agent.indexOf("async getEmailTotals"),
+    );
+    expect(fn).toMatch(/catch[\s\S]*?console\.error/);
+    expect(fn, "the marker must be set only inside try").not.toMatch(
+      /catch[\s\S]{0,200}?emailsBackfilledAt: new Date/,
+    );
+  });
+
+  it("never adopts Slack messages into the mail resource", () => {
+    // Slack conversations live in the monolith's emails[] with a slack: sender. Adopting
+    // them here would recreate exactly the trap this split removes: every consumer of
+    // mail having to filter them out.
+    expect(eagent).toMatch(/startsWith\("slack:"\)/);
+    const backfill = eagent.slice(
+      eagent.indexOf("async backfillEmails"),
+      eagent.indexOf("/* -------------------------------- send"),
+    );
+    expect(backfill).toContain("skipped++");
+  });
+
+  it("exposes the email totals method with @callable()", () => {
+    // Reached through an any-typed stub from api.ts, so a missing decorator fails at
+    // runtime with no build signal - the exact bug that made the dashboard read 0
+    // payments.
+    expect(agent).toMatch(/@callable\(\)\s*async getEmailTotals\s*\(/);
+  });
+});
 describe("the Slack boundary is enforced by absence, not by a check", () => {
   const sagent = readCode("src/slack-agent.ts");
 

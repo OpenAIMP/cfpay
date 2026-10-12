@@ -196,6 +196,12 @@ export interface AgentState {
    * attempt retries on the next read rather than being silently forgotten.
    */
   paymentsBackfilledAt?: string;
+  /**
+   * Set once this instance's pre-split mail has been adopted by the email agent.
+   * Absent means the migration still has to run, so a failed attempt retries on the
+   * next read rather than being silently forgotten.
+   */
+  emailsBackfilledAt?: string;
   webhookEvents?: WebhookEvent[];
   totalWebhooksReceived?: number;
   /** Card checkouts awaiting or after fulfilment, keyed by requestId. */

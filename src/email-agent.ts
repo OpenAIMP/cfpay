@@ -150,7 +150,55 @@ export class EmailAgent extends Think<Env, EmailState> {
     return { used, limit: SEND_LIMIT, remaining: Math.max(0, SEND_LIMIT - used), windowMs: SEND_WINDOW_MS };
   }
 
-  /* -------------------------------- send --------------------------------- */
+  /* ------------------------------ migration ------------------------------ */
+
+  /**
+   * Adopt mail recorded before this agent was authoritative.
+   *
+   * Idempotent by id, so re-running cannot duplicate the history. Slack conversations
+   * are NOT adopted: they are stored in the monolith's emails[] with a `slack:` sender
+   * and belong to SlackAgent now. Importing them here would recreate the exact problem
+   * this split removes - every consumer of mail having to remember to filter them out.
+   */
+  @callable()
+  async backfillEmails(records: EmailRecord[]): Promise<{ adopted: number; skipped: number }> {
+    const s = this.state_();
+    const seen = new Set(s.emails.map((e) => e.id));
+
+    let adopted = 0;
+    let skipped = 0;
+    const added: EmailRecord[] = [];
+
+    for (const record of Array.isArray(records) ? records : []) {
+      if (!record || !record.id || seen.has(record.id)) {
+        skipped++;
+        continue;
+      }
+      // Slack messages are a different resource and a different agent.
+      if (String(record.from || "").startsWith("slack:") || String(record.to || "").startsWith("slack:")) {
+        skipped++;
+        continue;
+      }
+      seen.add(record.id);
+      added.push(record);
+      adopted++;
+    }
+
+    if (adopted > 0) {
+      const received = added.filter((r) => r.direction === "inbound").length;
+      const sent = added.filter((r) => r.direction === "outbound").length;
+      this.commit({
+        ...s,
+        emails: [...s.emails, ...added].slice(-MAX_STORED_EMAILS),
+        totalReceived: s.totalReceived + received,
+        totalSent: s.totalSent + sent,
+      });
+    }
+
+    return { adopted, skipped };
+  }
+
+  /* -------------------------------- send --------------------------------- */  /* -------------------------------- send --------------------------------- */
 
   /**
    * Send a message through the EMAIL binding and record it.
