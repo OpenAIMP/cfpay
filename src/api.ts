@@ -970,6 +970,25 @@ export function createApp() {
     return c.json({ events });
   });
 
+  // Autonomous QA (issue #32): run a browser check against a URL.
+  app.post("/api/dashboard/qa/check", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const url = body.url as string;
+    if (!url || !/^https?:\/\//.test(url)) {
+      return c.json({ error: "Valid http(s) url required" }, 400);
+    }
+    const agent = getAgent(c);
+    const result = await agent.qaCheck(url, body.checks);
+    return c.json(result);
+  });
+
+  // Autonomous QA: check the dashboard itself.
+  app.post("/api/dashboard/qa/dashboard", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const result = await agent.qaDashboard();
+    return c.json(result);
+  });
+
   // TEMPORARY DEBUG: inspect webhook DO state
   app.get("/api/dashboard/debug-webhooks", requireAuth, async (c) => {
     const agent = getAgent(c);

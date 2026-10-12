@@ -120,6 +120,7 @@
         <div class="tab" data-tab="slack" onclick="switchTab('slack')">Slack</div>
         <div class="tab" data-tab="webhooks" onclick="switchTab('webhooks')">Webhooks</div>
 <div class="tab" data-tab="public" onclick="switchTab('public')">Public.com</div>
+        <div class="tab" data-tab="qa" onclick="switchTab('qa')">QA</div>
       </div>
       <div id="overview" class="panel active">
         <div class="card">
@@ -239,6 +240,23 @@
             </details>
           </div>
         </div>
+      <div id="qa" class="panel">
+        <div class="card">
+          <h3 style="font-size:1.1rem;margin-bottom:0.5rem;">Autonomous QA</h3>
+          <p style="color:var(--muted);font-size:0.85rem;margin-bottom:1rem;">Run browser-based checks against any URL. Uses Cloudflare Browser tools.</p>
+          <div class="form-group">
+            <input type="text" id="qaUrl" placeholder="https://pay.openaimp.com" style="width:100%;" />
+          </div>
+          <div class="form-group">
+            <input type="text" id="qaChecks" placeholder='Text to find (comma-separated), e.g. PaymentAgent, Dashboard' style="width:100%;" />
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
+            <button class="btn" onclick="runQACheck()">Run QA Check</button>
+            <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
+          </div>
+          <div id="qaResult"></div>
+        </div>
+      </div>
 
         <div class="card" id="publicConnectedBox" style="display:none;">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
@@ -380,8 +398,52 @@
       if (tab === 'pay') checkMetaMask();
       if (tab === 'webhooks') loadWebhooks();
       if (tab === 'public') loadPublicStatus();
+      // QA tab needs no preload
     }
     async function init() { loadStats(); checkMetaMask(); await loadPaymentOptions(); }
+    async function runQACheck() {
+      const url = document.getElementById('qaUrl').value.trim();
+      const checksRaw = document.getElementById('qaChecks').value.trim();
+      const resultEl = document.getElementById('qaResult');
+      if (!url) { resultEl.innerHTML = '<p style="color:red;">Enter a URL</p>'; return; }
+      resultEl.innerHTML = '<p style="color:var(--muted);">Running QA check...</p>';
+      const checks = checksRaw ? { textContains: checksRaw.split(',').map(s => s.trim()).filter(Boolean) } : undefined;
+      try {
+        const res = await api('/api/dashboard/qa/check', 'POST', { url, checks });
+        renderQAResult(res, resultEl);
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">QA failed: ' + (e.message || e) + '</p>';
+      }
+    }
+    async function runQADashboard() {
+      const resultEl = document.getElementById('qaResult');
+      resultEl.innerHTML = '<p style="color:var(--muted);">Checking dashboard...</p>';
+      try {
+        const res = await api('/api/dashboard/qa/dashboard', 'POST');
+        renderQAResult(res, resultEl);
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">QA failed: ' + (e.message || e) + '</p>';
+      }
+    }
+    function renderQAResult(res, el) {
+      if (res.error) { el.innerHTML = '<p style="color:red;">Error: ' + res.error + '</p>'; return; }
+      let html = '<div style="margin-top:1rem;">';
+      html += '<p><strong>URL:</strong> ' + res.url + '</p>';
+      html += '<p><strong>Result:</strong> <span style="color:' + (res.ok ? 'green' : 'red') + ';">' + (res.ok ? 'PASS' : 'FAIL') + '</span></p>';
+      html += '<p><strong>Text extracted:</strong> ' + res.textLength + ' chars</p>';
+      if (res.checks) {
+        html += '<ul style="margin:0.5rem 0;">';
+        for (const c of res.checks) {
+          html += '<li style="color:' + (c.passed ? 'green' : 'red') + ';">' + (c.passed ? '✓' : '✗') + ' ' + c.name + (c.detail ? ' — ' + c.detail : '') + '</li>';
+        }
+        html += '</ul>';
+      }
+      if (res.screenshot) {
+        html += '<img src="' + res.screenshot + '" style="max-width:100%;border:1px solid var(--border);border-radius:4px;margin-top:0.5rem;" />';
+      }
+      html += '</div>';
+      el.innerHTML = html;
+    }
     const NETWORKS = {
       'eip155:8453': { chainId: '0x2105', name: 'Base', rpc: 'https://mainnet.base.org', explorer: 'https://basescan.org', usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' },
       'eip155:84532': { chainId: '0x14a34', name: 'Base Sepolia', rpc: 'https://sepolia.base.org', explorer: 'https://sepolia.basescan.org', usdc: '0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24' },
@@ -1178,7 +1240,7 @@ async function loadStats() {
     }
   </script>
 <script type="module">
-  import { AgentClient } from "https://esm.sh/agents@0.28.0/client";
+  import { AgentClient } from "https://esm.sh/agents@0.4.1/client";
 
   // The dashboard's live updates come from the agents SDK state-sync socket.
   //
