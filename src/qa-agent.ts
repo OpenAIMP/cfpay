@@ -83,10 +83,15 @@ export class QAAgent extends Think<Env> {
     }
 
     try {
-      // CDP-based browser check (replaces raw Puppeteer)
-      const { connectBrowser, CdpSession } = await import("agents/browser");
-      const browser = await connectBrowser(env.BROWSER);
-      const cdp = new CdpSession(browser);
+      // CDP-based browser check (replaces raw Puppeteer).
+      //
+      // connectBrowser resolves to a CdpConnection already - its declared return type is
+      // Promise<CdpConnection> - so the connection is used directly. The previous code
+      // wrapped it in `new CdpSession(browser)`, which passed a CdpConnection where the
+      // constructor expects a WebSocket, and CdpSession is only a deprecated alias for
+      // CdpConnection anyway.
+      const { connectBrowser } = await import("agents/browser");
+      const cdp = await connectBrowser(env.BROWSER);
 
       const { targetId } = (await cdp.send("Target.createTarget", {
         url,
@@ -129,6 +134,7 @@ export class QAAgent extends Think<Env> {
         return { ok, url, textLength: text.length, screenshot, checks };
       } finally {
         await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+        cdp.close();
       }
     } catch (err) {
       return {
