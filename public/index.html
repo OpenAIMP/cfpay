@@ -326,6 +326,7 @@
               <div class="form-group"><label>Send report to</label><input type="email" id="qaEmailTo" placeholder="you@example.com" /></div>
               <div style="display:flex;gap:0.5rem;">
                 <button class="btn" onclick="emailQAReport()">Email QA Report</button>
+                <button class="btn" onclick="testEmailAttachment()" style="background:var(--muted);margin-left:0.5rem;">Test Attachment via UI</button>
                 
               </div>
               <div id="qaEmailResult" style="margin-top:0.5rem;"></div>
@@ -466,6 +467,17 @@
         if (res.emailed) { result.innerHTML = '<div class="status-msg success">QA report emailed with dashboard screenshot!</div>'; }
         else { result.innerHTML = '<div class="status-msg error">Failed: ' + (res.error || 'Unknown error') + '</div>'; }
       } catch (e) { result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; }
+    }
+    async function testEmailAttachment() {
+      const toEmail = document.getElementById("qaEmailTo").value;
+      const result = document.getElementById("qaEmailResult");
+      if (!toEmail) { result.innerHTML = "<div class=\"status-msg error\">Enter an email address</div>"; return; }
+      result.innerHTML = "<div class=\"loading\">QAAgent testing email attachment via UI...</div>";
+      try {
+        const res = await api("/api/dashboard/qa/test-attachment", "POST", { toEmail });
+        if (res.ok) { result.innerHTML = "<div class=\"status-msg success\">PASS: " + res.detail + "</div>"; }
+        else { result.innerHTML = "<div class=\"status-msg error\">FAIL: " + (res.detail || res.error || "Unknown") + "</div>"; }
+      } catch (e) { result.innerHTML = "<div class=\"status-msg error\">Error: " + e.message + "</div>"; }
     }
     function renderQAResult(res, el) {
       if (res.error) { el.innerHTML = '<p style="color:red;">Error: ' + res.error + '</p>'; return; }
