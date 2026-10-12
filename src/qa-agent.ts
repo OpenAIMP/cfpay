@@ -204,9 +204,6 @@ export class QAAgent extends Think<Env> {
     // Run the tab checks
     const tabResult = await this.qaDashboardTabs(apiKey);
 
-    // Also get a main dashboard screenshot
-    const dashResult = await this.qaDashboard(apiKey);
-
     // Build plain text report (EmailAgent sends text only)
     const tabLines = tabResult.tabs
       .map((t: any) => `- ${t.name}: ${t.passed ? "PASS" : "FAIL"} - ${t.detail}`)
