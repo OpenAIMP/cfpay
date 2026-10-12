@@ -174,6 +174,34 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("the agent-tool primitive stays wired", () => {
+  // agentTool requires a chat-capable child, which means Think. Think extends Agent, so
+  // the @callable() surface and A2A inherited unchanged - which is why both the
+  // deterministic path and this dispatch path can coexist.
+  const emailAgent = read("src/email-agent.ts");
+  const tools = read("src/agent-tools.ts");
+
+  it("re-bases EmailAgent on Think without losing its capability surface", () => {
+    expect(emailAgent).toContain("extends Think<")
+    // Think's required members. Without them the class does not satisfy the base.
+    expect(emailAgent).toContain("override getModel()")
+    expect(emailAgent).toContain("override getSystemPrompt()")
+    expect(emailAgent).toContain("override getTools()")
+    // The re-base must not cost the resource its methods: agentTool dispatches the
+    // SAME agent, so every existing caller still has to reach it.
+    for (const method of ["recordInbound", "listEmails", "emailTotals", "sendQuota", "sendThroughAgent", "handleA2A"]) {
+      expect(emailAgent, method + " must survive the Think re-base").toContain("async " + method + "(")
+    }
+  });
+
+  it("exposes the email agent through agentTool", () => {
+    expect(tools).toContain("agentTool")
+    expect(tools).toContain('from "agents/agent-tools"')
+    expect(tools).toContain("export const emailAgentTool")
+    // The child must be the EmailAgent class, not a lookalike.
+    expect(tools).toContain("agentTool<typeof emailInput>(EmailAgent,")
+  });
+});
 describe("pinned versions stay coherent", () => {
   const pkg = JSON.parse(read("package.json"));
 
