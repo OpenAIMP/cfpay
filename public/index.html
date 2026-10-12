@@ -321,6 +321,15 @@
           <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
             <button class="btn" onclick="runQACheck()">Run QA Check</button>
             <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
+            <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);">
+              <h4 style="margin-bottom:0.5rem;font-size:0.9rem;">Email QA Report</h4>
+              <div class="form-group"><label>Send report to</label><input type="email" id="qaEmailTo" placeholder="you@example.com" /></div>
+              <div style="display:flex;gap:0.5rem;">
+                <button class="btn" onclick="emailQAReport()">Email QA Report</button>
+                <button class="btn" onclick="testEmailAttachment()" style="background:var(--muted);">Test Attachment via UI</button>
+              </div>
+              <div id="qaEmailResult" style="margin-top:0.5rem;"></div>
+            </div>
           </div>
           <div id="qaResult"></div>
         </div>
@@ -446,6 +455,28 @@
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">QA failed: ' + (e.message || e) + '</p>';
       }
+    }
+    async function emailQAReport() {
+      const toEmail = document.getElementById('qaEmailTo').value;
+      const result = document.getElementById('qaEmailResult');
+      if (!toEmail) { result.innerHTML = '<div class="status-msg error">Enter an email address</div>'; return; }
+      result.innerHTML = '<div class="loading">Running QA and sending report with screenshots...</div>';
+      try {
+        const res = await api('/api/dashboard/qa/email-report', 'POST', { toEmail });
+        if (res.emailed) { result.innerHTML = '<div class="status-msg success">QA report emailed with dashboard screenshot!</div>'; }
+        else { result.innerHTML = '<div class="status-msg error">Failed: ' + (res.error || 'Unknown error') + '</div>'; }
+      } catch (e) { result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; }
+    }
+    async function testEmailAttachment() {
+      const toEmail = document.getElementById('qaEmailTo').value;
+      const result = document.getElementById('qaEmailResult');
+      if (!toEmail) { result.innerHTML = '<div class="status-msg error">Enter an email address</div>'; return; }
+      result.innerHTML = '<div class="loading">QAAgent testing email attachment via UI automation...</div>';
+      try {
+        const res = await api('/api/dashboard/qa/test-attachment', 'POST', { toEmail });
+        if (res.ok) { result.innerHTML = '<div class="status-msg success">PASS: ' + res.detail + '</div>'; }
+        else { result.innerHTML = '<div class="status-msg error">FAIL: ' + (res.detail || res.error || 'Unknown') + '</div>'; }
+      } catch (e) { result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; }
     }
     function renderQAResult(res, el) {
       if (res.error) { el.innerHTML = '<p style="color:red;">Error: ' + res.error + '</p>'; return; }
