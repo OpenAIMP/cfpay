@@ -210,7 +210,16 @@ export class QAAgent extends Think<Env> {
       try {
         const sessionId = await cdp.attachToTarget(targetId);
 
-        // Set API key in localStorage before navigating (dashboard reads it from there)
+        // Navigate FIRST. localStorage is origin-scoped: seeding it on the
+        // about:blank target (opaque origin) before navigating meant the
+        // dashboard never saw the key and always showed the login page.
+        await cdp.send("Page.navigate", { url }, { sessionId });
+        // Wait for the navigation to commit so the evaluate below runs on the
+        // dashboard's origin, not about:blank.
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+
+        // Seed the key the dashboard reads from localStorage during init, then
+        // reload so init runs with the key present.
         if (apiKey) {
           await cdp.send(
             "Runtime.evaluate",
@@ -221,10 +230,9 @@ export class QAAgent extends Think<Env> {
             },
             { sessionId },
           );
+          await cdp.send("Page.reload", {}, { sessionId });
         }
 
-        // Navigate to the URL
-        await cdp.send("Page.navigate", { url }, { sessionId });
         // Wait for page load
         await new Promise((resolve) => setTimeout(resolve, 4000));
 
@@ -361,8 +369,16 @@ export class QAAgent extends Think<Env> {
       try {
         const sessionId = await cdp.attachToTarget(targetId);
 
-        // Seed the key the dashboard actually reads, then navigate. Order
-        // matters: the dashboard reads it during init on load.
+        // Navigate FIRST. localStorage is origin-scoped: seeding it on the
+        // about:blank target (opaque origin) before navigating meant the
+        // dashboard never saw the key and always showed the login page.
+        await cdp.send("Page.navigate", { url: origin }, { sessionId });
+        // Wait for the navigation to commit so the seed below runs on the
+        // dashboard's origin, not about:blank.
+        await new Promise((r) => setTimeout(r, 3000));
+
+        // Seed the key the dashboard reads during init, then reload so init
+        // runs with the key present.
         await cdp.send(
           "Runtime.evaluate",
           {
@@ -372,7 +388,7 @@ export class QAAgent extends Think<Env> {
           },
           { sessionId },
         );
-        await cdp.send("Page.navigate", { url: origin }, { sessionId });
+        await cdp.send("Page.reload", {}, { sessionId });
         await new Promise((r) => setTimeout(r, 4000));
 
         // Fail loudly if we are looking at the login page. Without this the
@@ -702,7 +718,11 @@ export class QAAgent extends Think<Env> {
       try {
         const sessionId = await cdp.attachToTarget(targetId);
 
-        // Seed the key the dashboard reads, then load it.
+        // Navigate FIRST: localStorage is origin-scoped, so seeding on the
+        // about:blank target (opaque origin) would leave the dashboard without
+        // the key. Seed on the dashboard origin, then reload so init reads it.
+        await cdp.send("Page.navigate", { url: origin }, { sessionId });
+        await new Promise((r) => setTimeout(r, 3000));
         await cdp.send(
           "Runtime.evaluate",
           {
@@ -712,7 +732,7 @@ export class QAAgent extends Think<Env> {
           },
           { sessionId },
         );
-        await cdp.send("Page.navigate", { url: origin }, { sessionId });
+        await cdp.send("Page.reload", {}, { sessionId });
         await new Promise((r) => setTimeout(r, 4000));
 
         // Open the Send Email tab and wait for the form to exist, rather than
