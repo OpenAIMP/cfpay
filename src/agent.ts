@@ -75,6 +75,7 @@ const AGENT_TOOL_DISPATCH = {
   paymentAgent: { cls: PaymentsAgent, displayName: "Payments Agent" },
   webhookAgent: { cls: WebhookAgent, displayName: "Webhook Agent" },
   slackAgent: { cls: SlackAgent, displayName: "Slack Agent" },
+  qaAgent: { cls: QAAgent, displayName: "QA Agent" },
 } as const;
 
 /**

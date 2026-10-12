@@ -21,7 +21,7 @@
  * check that declarations still exist, not to exercise behaviour.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const root = join(__dirname, "..");
@@ -192,6 +192,42 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("the tool list and the dispatch registry cannot drift apart", () => {
+  const agent = readCode("src/agent.ts");
+
+  it("registers a dispatch entry for every advertised agent tool", () => {
+    // These are two halves of one wiring. QAAgent was added to the tool list and not to
+    // the registry, so a model that called it fell through to the MCP path and failed as
+    // an unknown tool: advertised but unreachable, which reads to a user as a broken agent.
+    const advertised = [...agent.matchAll(/name: "(\w+Agent)"/g)].map((m) => m[1]);
+    const registered = [...agent.matchAll(/^\s{2}(\w+Agent): \{ cls:/gm)].map((m) => m[1]);
+
+    expect(advertised.length, "the tool list must advertise something").toBeGreaterThan(0);
+    for (const name of advertised) {
+      expect(registered, name + " is advertised but has no dispatch entry").toContain(name);
+    }
+  });
+
+  it("points every registry entry at a class that exists", () => {
+    // A registry entry naming a class that does not exist fails at runtime, not at build
+    // time, because runAgentTool receives the class as a value.
+    //
+    // Search the source directory rather than deriving a filename: my first version
+    // converted the class name to kebab case, which turned QAAgent into qaagent.ts and
+    // reported a missing file for a class that is plainly there. Deriving a path from a
+    // name is a guess; looking for the declaration is a check.
+    const files = readdirSync(join(root, "src")).filter((f) => f.endsWith(".ts"));
+    const allSource = files.map((f) => readCode("src/" + f)).join("\n");
+
+    const registered = [...agent.matchAll(/cls: (\w+?),/g)].map((m) => m[1]);
+    expect(registered.length).toBeGreaterThan(0);
+    for (const cls of registered) {
+      expect(allSource, cls + " must be declared somewhere in src").toMatch(
+        new RegExp("class " + cls + "\\b"),
+      );
+    }
+  });
+});
 describe("QAAgent is a full peer, and the chat rename holds", () => {
   const qa = readCode("src/qa-agent.ts");
   const tools = readCode("src/agent-tools.ts");
