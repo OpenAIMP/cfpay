@@ -53,6 +53,7 @@ export { PaymentsAgent } from "./payments-agent";
 export { EmailAgent } from "./email-agent";
 export { WebhookAgent } from "./webhook-agent";
 export { SlackAgent } from "./slack-agent";
+export { QAAgent } from "./qa-agent";
 
 const app = createApp();
 

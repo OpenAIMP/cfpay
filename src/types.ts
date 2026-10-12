@@ -21,6 +21,8 @@ export interface Env {
   PAYMENTS_AGENT: DurableObjectNamespace;
   /** Owns the mail resource; other agents send through it. */
   EMAIL_AGENT: DurableObjectNamespace;
+  /** Autonomous QA agent (Think-based). */
+  QA_AGENT: DurableObjectNamespace;
   /** Owns the webhook event log and the GitHub delivery registry. */
   WEBHOOK_AGENT: DurableObjectNamespace;
   /** Owns the Slack credential and the Slack message history. */
