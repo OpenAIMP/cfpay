@@ -267,7 +267,7 @@ export function paymentsCard(origin: string): AgentCard {
   return {
     name: "CFmail Payments Agent",
     description:
-      "Owns the CFmail payment ledger: payments received and sent, Stripe card checkouts, and replay protection for both rails. Read-only over A2A.",
+      "Owns the CFmail payment ledger and the Pay And Process capability: payments received and sent, Stripe card checkouts, and replay protection for both rails. Reads and writes over A2A.",
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_PAYMENTS_RPC_PATH,
@@ -281,12 +281,13 @@ export function paymentsCard(origin: string): AgentCard {
         id: "payment-ledger",
         name: "Payment ledger",
         description:
-          "Report on payments received and sent, by currency and status. Cannot move funds, refund, or create a payment.",
-        tags: ["read-only", "payments", "x402", "stripe"],
+          "Report on payments received and sent, and process a paid request. Write operations are payment.process, checkout.create and checkout.fulfil; all require a bearer credential. This agent cannot move funds or refund.",
+        tags: ["payments", "x402", "stripe", "write"],
         examples: [
           "How many payments have been received?",
           "What currencies are on the ledger?",
           "Are there any failed payments?",
+          "Process this paid request and email the answer.",
         ],
       },
     ],
