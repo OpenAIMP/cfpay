@@ -209,5 +209,73 @@ export function createCfmailMcpHandler(env: Env) {
       };
     },
   );
+  // QA and browser diagnostics. Same reasoning as the ledger probe above: the QA tab
+  // reported a message that has two possible causes, and the difference decides the fix.
+  server.registerTool(
+    "cfmail_qa_diagnostics",
+    {
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+      title: "QA diagnostics",
+      description:
+        "Report whether the QA agent is reachable and whether the Browser Rendering binding is provisioned, distinguishing a missing binding from a refused session. Returns real error text.",
+      inputSchema: {},
+    },
+    async () => {
+      const probe: Record<string, unknown> = {};
+
+      // Is the binding present at all?
+      const browser = (env as any).BROWSER;
+      probe.browserBindingPresent = Boolean(browser);
+      if (!browser) {
+        probe.browserBinding = { error: "BROWSER is absent from env - the binding is not configured on this Worker." };
+      } else {
+        probe.browserBindingShape = {
+          hasFetch: typeof browser.fetch === "function",
+          type: typeof browser,
+        };
+
+        // Now the decisive test: ask for a session exactly as connectBrowser does, and
+        // report the status and whether a WebSocket came back. This distinguishes
+        // "not provisioned" from "provisioned but refused".
+        try {
+          const res = await browser.fetch("https://localhost/v1/devtools/browser", {
+            headers: { Upgrade: "websocket" },
+          });
+          probe.sessionRequest = {
+            status: res.status,
+            ok: res.ok,
+            returnedWebSocket: Boolean(res.webSocket),
+            sessionHeader: res.headers?.get?.("cf-browser-session-id") ?? null,
+          };
+        } catch (error) {
+          probe.sessionRequest = { error: String(error) };
+        }
+      }
+
+      // And the agent itself, so a failure can be attributed to the route rather than the
+      // binding. Its qaDashboard is the same check the dashboard's second button runs.
+      try {
+        const ns = (env as any).QA_AGENT;
+        if (!ns) {
+          probe.qaAgentDirect = { error: "QA_AGENT binding is absent" };
+        } else {
+          const stub = ns.get(ns.idFromName("qa"));
+          const snapshot = await stub.a2aSnapshot();
+          probe.qaAgentDirect = { snapshot };
+        }
+      } catch (error) {
+        probe.qaAgentDirect = { error: String(error) };
+      }
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(probe, null, 2) }],
+      };
+    },
+  );
   return createMcpHandler(server, { route: "/mcp" });
 }
