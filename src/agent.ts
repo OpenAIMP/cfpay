@@ -1148,11 +1148,35 @@ Do not claim to have completed a payment unless you have received confirmation.`
     direction: string | null,
     limit: number,
   ): Promise<PaymentRecord[]> {
-    const state = this.ensureState();
+    const local = this.ensureState().payments;
+
+    // Read BOTH ledgers. Payments recorded by the payments agent are authoritative,
+    // but this instance still holds entries written before the split and any written
+    // while the binding was unreachable. Consulting only the local list meant a card
+    // payment settled by the agent appeared in the webhook feed and nowhere else -
+    // the Stripe tab reported a payment the Payments tab could not see.
+    const pa = this.paymentsAgent();
+    if (pa) {
+      try {
+        const remote: PaymentRecord[] = await pa.listPayments(direction, limit * 2);
+        const byId = new Map<string, PaymentRecord>();
+        for (const payment of [...local, ...remote]) {
+          // The remote copy wins on a collision: it is the authoritative ledger.
+          if (payment && payment.id) byId.set(payment.id, payment);
+        }
+        const merged = [...byId.values()].filter(
+          (payment) => !direction || payment.direction === direction,
+        );
+        merged.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+        return merged.slice(-limit).reverse();
+      } catch (error) {
+        console.error("Payments agent read failed; falling back to local state:", error);
+      }
+    }
 
     const filtered = direction
-      ? state.payments.filter((payment) => payment.direction === direction)
-      : state.payments;
+      ? local.filter((payment) => payment.direction === direction)
+      : local;
 
     return filtered.slice(-limit).reverse();
   }

@@ -362,18 +362,35 @@ export class PaymentsAgent extends Agent<Env, PaymentsState> {
       reference: card?.reference ?? claim?.txHash,
     });
 
-    const aiResponse = await this.generateFulfilmentResponse(request);
+    // Record BEFORE doing the work. This ordering is load-bearing: once a payment
+    // has been consumed it must appear on the ledger even if the work that follows
+    // fails. Recording last meant a fulfilment failure left an on-chain payment
+    // spent, unredeemable and invisible on the ledger - the money took the loss.
+    await this.recordPayment(payment);
 
-    const emailResult = await this.sendFulfilmentEmail(
-      senderEmail,
-      aiResponse,
-      payment.id,
-      payment.amount + " " + payment.currency + " on " + payment.network,
-    );
+    try {
+      const aiResponse = await this.generateFulfilmentResponse(request);
 
-    await this.recordPayment({ ...payment, relatedEmailId: emailResult.emailId });
+      const emailResult = await this.sendFulfilmentEmail(
+        senderEmail,
+        aiResponse,
+        payment.id,
+        payment.amount + " " + payment.currency + " on " + payment.network,
+      );
 
-    return { success: emailResult.success, response: aiResponse, paymentId: payment.id };
+      return { success: emailResult.success, response: aiResponse, paymentId: payment.id };
+    } catch (error) {
+      // The ledger entry stands; only the work failed. Return rather than throw, so
+      // the caller does not retry a payment that is already consumed.
+      console.error("Fulfilment failed after payment " + payment.id + " was recorded:", error);
+      return {
+        success: false,
+        response:
+          "Your payment was received and recorded, but the request could not be completed. " +
+          "Quote request ID " + payment.id + " and it will be handled manually.",
+        paymentId: payment.id,
+      };
+    }
   }
 
   /**
