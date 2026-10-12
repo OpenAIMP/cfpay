@@ -2118,16 +2118,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
         createdAt: new Date().toISOString(),
       };
 
+      // The ledger is the payments agent's, exclusively. There is no local fallback:
+      // a second writer is what let a card payment settle into one store while the
+      // dashboard read the other. Failing closed is the honest outcome - the transfer
+      // has already been broadcast, and recording it nowhere is better than recording
+      // it somewhere no reader consults.
       const pa = this.paymentsAgent();
-      if (pa) {
-        await pa.recordPayment(payment);
-      } else {
-        this.setState({
-          ...latest,
-          payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
-          totalPaymentsSent: latest.totalPaymentsSent + 1,
-        });
+      if (!pa) {
+        throw new Error(
+          "The payments agent is unavailable, so this outgoing payment could not be recorded.",
+        );
       }
+      await pa.recordPayment(payment);
 
       return {
         success: response.ok,
