@@ -75,3 +75,29 @@ try {
 3. **Watch the daily budget.** 10 browser-minutes/day on Free — heavy QA testing can exhaust it.
 4. **Keep browser work in the DO, not the handler.** All `connectBrowser` calls already live in QAAgent methods; do not add browser code to API routes.
 5. **Close what you open.** Every `connectBrowser` must have a matching `Target.closeTarget` + `browser.close()` in a `finally` block. Verify this on every new QA method.
+
+## QAAgent capabilities (as of 2026-10-12)
+
+Seven `@callable()` QA methods, all behind `requireAuth`, exposed as `POST /api/dashboard/qa/*`:
+
+| Endpoint | Method | What it proves |
+|---|---|---|
+| `/qa/check` | `qaCheck(url, checks)` | Browser-check any URL with text assertions |
+| `/qa/dashboard` | `qaDashboard(apiKey)` | Dashboard loads, key elements present, screenshot captured |
+| `/qa/tabs` | `qaDashboardTabs(apiKey)` | Tab click-through with data verification (see below) |
+| `/qa/email-report` | `qaAndEmailReport(apiKey, toEmail)` | Tab checks + dashboard screenshot, emailed as PNG attachment |
+| `/qa/test-attachment` | `testEmailAttachmentUI(apiKey, toEmail)` | End-to-end Send Email form: fill fields, attach file via `DataTransfer`, submit via real button, verify success |
+| `/qa/payment-flow` | `qaPaymentFlow(apiKey)` | Payment request flow |
+| `/qa/edge-cases` | `qaEdgeCases(apiKey)` | Edge-case / negative-path checks |
+
+### Tab coverage
+
+`qaDashboardTabs` clicks through and verifies loaded data for **3 tabs**:
+
+- **Emails** (`emails` → `emailList`)
+- **Payments** (`payments` → `paymentList`)
+- **Webhooks** (`webhooks` → `webhookList`)
+
+Each tab is clicked, the click is asserted to have landed, and the data container is checked for real content (not just the tab existing).
+
+**Not covered:** Chat tab (interactive), QA tab itself (self-test would be circular), Dashboard home (covered by `qaDashboard`), Send Email form (covered by `testEmailAttachmentUI`).
