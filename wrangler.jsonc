@@ -57,4 +57,11 @@
     "APP_BASE_URL": "https://pay.openaimp.com",
     "PAYMENT_CONFIG": "{\"networks\":{\"eip155:8453\":{\"chainId\":\"0x2105\",\"name\":\"Base\",\"usdc\":\"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"},\"eip155:84532\":{\"chainId\":\"0x14a34\",\"name\":\"Base Sepolia\",\"usdc\":\"0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"},\"eip155:11155111\":{\"chainId\":\"0xaa36a7\",\"name\":\"Ethereum Sepolia\",\"usdc\":\"0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"}}}"
   }
+,
+  "secrets": {
+    "required": ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]
+  },
+  "browser": {
+    "binding": "BROWSER"
+  }
 }
