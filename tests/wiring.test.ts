@@ -192,6 +192,50 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("chat is an operation, not a resource-less agent", () => {
+  const agent = readCode("src/agent.ts");
+
+  it("stays read-only: chat cannot act on any resource", () => {
+    // Chat owns no state, so making it a fifth agent would mean a Durable Object with
+    // nothing authoritative in it. It is an operation instead, and the operation must
+    // not become a back door to the writes the other agents deliberately withhold.
+    const start = agent.indexOf("async handleA2AMessage(");
+    expect(start, "handleA2AMessage must exist").toBeGreaterThan(-1);
+    const boundary = agent.slice(start, agent.indexOf("\n  async chat(", start));
+    expect(boundary.length).toBeGreaterThan(0);
+
+    for (const write of ["sendOutboundEmail", "notifySlack", "sendWebhook", "payExternalEndpoint"]) {
+      expect(boundary, "chat must not call " + write).not.toMatch(
+        new RegExp("\\b" + write + "\\s*\\("),
+      );
+    }
+  });
+
+  it("routes the three chat operations and refuses anything else", () => {
+    const start = agent.indexOf("async handleA2AMessage(");
+    const boundary = agent.slice(start);
+    for (const op of ['case "chat.summary"', 'case "chat.facts"', 'case "chat.send"']) {
+      expect(boundary).toContain(op);
+    }
+    expect(boundary).toContain("unknown_operation");
+  });
+
+  it("offers a path with no model in it", () => {
+    // chat.facts returns the numbers with no inference, so a caller that wants a figure
+    // does not have to pay for a model turn to get it - and cannot get a misphrased one.
+    const start = agent.indexOf('case "chat.facts"');
+    const end = agent.indexOf("case ", start + 10);
+    const factsCase = agent.slice(start, end > start ? end : start + 400);
+    expect(factsCase).toContain("a2aSnapshot");
+    expect(factsCase).not.toMatch(/AI\.run|answerAboutState/);
+  });
+
+  it("keeps the plumbing helper that a card rewrite once deleted", () => {
+    // A greedy edit removed isAsyncIterable along with a card. It compiled in tests,
+    // which read files, and only failed at type check - the build is the guard.
+    expect(read("src/a2a.ts")).toContain("function isAsyncIterable");
+  });
+});
 describe("the email migration cannot double-count or absorb Slack", () => {
   const agent = readCode("src/agent.ts");
   const eagent = readCode("src/email-agent.ts");

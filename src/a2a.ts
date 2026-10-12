@@ -308,22 +308,22 @@ export function cfmailCard(origin: string): AgentCard {
   return {
     name: "CFmail Agent",
     description:
-      "Inspects the state of a CFmail agent: emails it has handled, payments on its ledger, and inbound webhook events. Read-only.",
+      "The chat channel and the aggregate view: asks and answers questions about mail, payments and webhook events across this Worker. Read-only. Cannot send mail, post to Slack, move funds or change anything.",
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_RPC_PATH,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
-    defaultInputModes: ["text/plain"],
-    defaultOutputModes: ["text/plain"],
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
     provider: { organization: "OpenAIMP", url: origin },
     skills: [
       {
-        id: "inspect-state",
-        name: "Inspect agent state",
+        id: "chat",
+        name: "Chat and aggregate state",
         description:
-          "Answer questions about emails handled, payments recorded and webhook events received. Cannot send email, move funds or place trades.",
-        tags: ["read-only", "email", "payments", "webhooks"],
+          "Answer a question in natural language over the aggregate state, or return the raw facts without inference. Reads mail and payment counts and webhook activity. Read-only: every operation here answers, none acts, and the resources that do act are separate agents with their own rules.",
+        tags: ["read-only", "chat", "email", "payments", "webhooks"],
         examples: [
           "How many emails has this agent handled?",
           "What payments are on the ledger?",
@@ -333,32 +333,6 @@ export function cfmailCard(origin: string): AgentCard {
     ],
   };
 }
-/* ------------------------------ plumbing --------------------------------- */
-
-function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
-  return (
-    value != null &&
-    typeof (value as Record<string, unknown>)[Symbol.asyncIterator as unknown as string] === "function"
-  );
-}
-
-/**
- * Build the request handler and transport for one DO instance.
- *
- * The card carries the agent's own URL, and the SDK validates the incoming
- * JSON-RPC request against that card. So the handler must be built with the
- * origin the request actually arrived on - a hard-coded or placeholder origin
- * would make the card disagree with the endpoint a client called, and the SDK
- * would reject it. Hence a handler per request rather than one per instance.
- */
-/**
- * Card for the email capability.
- *
- * Declares write capability, because it has one: any caller holding the bearer
- * credential may send. A card that understates what an agent will do is as
- * misleading as one that overstates it, so send is listed explicitly along with
- * the rate limit that bounds it.
- */
 export function emailCard(origin: string): AgentCard {
   return {
     name: "CFmail Email Agent",
@@ -462,6 +436,24 @@ export function slackCard(origin: string): AgentCard {
     ],
   };
 }
+/* ------------------------------ plumbing --------------------------------- */
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    value != null &&
+    typeof (value as Record<string, unknown>)[Symbol.asyncIterator as unknown as string] === "function"
+  );
+}
+
+/**
+ * Build the request handler and transport for one DO instance.
+ *
+ * The card carries the agent's own URL, and the SDK validates the incoming
+ * JSON-RPC request against that card. So the handler must be built with the
+ * origin the request actually arrived on - a hard-coded or placeholder origin
+ * would make the card disagree with the endpoint a client called, and the SDK
+ * would reject it. Hence a handler per request rather than one per instance.
+ */
 export function createA2ATransport(
   sql: SqlStorage,
   origin: string,

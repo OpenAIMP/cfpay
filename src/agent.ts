@@ -1191,7 +1191,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
       // Fall through to the raw facts rather than returning nothing.
     }
     return facts;
-  }  @callable()
+  }
+
+  @callable()
   async handleA2A(body: unknown, origin: string): Promise<unknown> {
     const { createA2ATransport, handleCollecting, cfmailCard } = await import("./a2a");
     const a2a = createA2ATransport(
@@ -1200,22 +1202,97 @@ Do not claim to have completed a payment unless you have received confirmation.`
       cfmailCard(origin),
       {
         card: cfmailCard,
-        // The monolith's A2A surface stays read-only: it reports on emails,
-        // payments and webhooks. Writes belong to the agent that owns the resource.
-        handle: async (message: any) => {
-          const parts: any[] = Array.isArray(message?.parts) ? message.parts : [];
-          const question =
-            parts
-              .filter((x) => x && x.kind === "text" && typeof x.text === "string")
-              .map((x) => x.text as string)
-              .join("\n")
-              .trim() || "Summarise the current state.";
-          return { text: await this.answerAboutState(question) };
-        },
+        handle: (message: any, context: { taskId: string; contextId: string }) =>
+          this.handleA2AMessage(message, context),
       },
     );
     // Collected, not streamed: an async iterable cannot cross the RPC boundary.
     return await handleCollecting(a2a.transport, body);
+  }
+
+  /**
+   * Route one A2A message for the chat channel.
+   *
+   * Chat owns no resource - it reads mail, payments and webhooks and produces a reply -
+   * so it is not a fifth agent. Making it one would mean a Durable Object with no
+   * authoritative state, which is a service wearing an agent's shape. It is an
+   * operation on the endpoint that already generates the text instead.
+   *
+   * THE SURFACE REMAINS READ-ONLY, and that is the point. `chat.send` produces a
+   * conversational reply and mutates nothing: it cannot send mail, post to Slack, move
+   * funds or record a payment. Those belong to the agents that own those resources, and
+   * each of them decides what a caller may do. What this exposes is the ability to ask
+   * questions, which is what chat is for.
+   *
+   * It does spend Workers AI tokens, so it is behind the bearer credential like every
+   * other A2A call. A caller that wants facts without inference can omit the operation
+   * and get the composed snapshot instead.
+   */
+  async handleA2AMessage(
+    message: any,
+    // Unused: each call is self-contained. Kept to satisfy the interface.
+    context: { taskId: string; contextId: string },
+  ): Promise<{ text: string; data?: unknown }> {
+    const parts: any[] = Array.isArray(message?.parts) ? message.parts : [];
+
+    const text = parts
+      .filter((x) => x && x.kind === "text" && typeof x.text === "string")
+      .map((x) => x.text as string)
+      .join("\n")
+      .trim();
+
+    const dataPart = parts.find((x) => x && x.kind === "data" && x.data && typeof x.data === "object");
+    const op = dataPart ? String((dataPart.data as any).operation || "") : "";
+
+    if (!op) {
+      // No operation: answer from the facts. This is the read-only path and needs no
+      // inference beyond phrasing.
+      return { text: await this.answerAboutState(text || "Summarise the current state.") };
+    }
+
+    const args = (dataPart?.data as any) ?? {};
+    switch (op) {
+      case "chat.summary":
+        return { text: await this.answerAboutState(String(args.question || text || "Summarise.")) };
+
+      case "chat.facts": {
+        // The snapshot with no model in the path at all, for a caller that wants numbers
+        // rather than prose and should not pay for inference to get them.
+        const snap = await this.a2aSnapshot();
+        return { text: "Current state.", data: snap };
+      }
+
+      case "chat.send": {
+        const message_ = String(args.message || text || "").trim();
+        if (!message_) {
+          return { text: "chat.send needs a message.", data: { ok: false, error: "missing_message" } };
+        }
+        try {
+          const result = await this.chat(message_);
+          return {
+            text: result.response,
+            data: { ok: true, response: result.response, historyLength: result.history.length },
+          };
+        } catch (error) {
+          // Reported as an outcome rather than thrown, so a caller can tell a refusal
+          // from a transport failure.
+          return {
+            text: "Chat failed: " + String(error),
+            data: { ok: false, error: "chat_failed" },
+          };
+        }
+      }
+
+      default:
+        return {
+          text: `Unknown operation: ${op}`,
+          data: {
+            ok: false,
+            error: "unknown_operation",
+            supported: ["chat.summary", "chat.facts", "chat.send"],
+          },
+        };
+    }
   }
 
   @callable()
