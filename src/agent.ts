@@ -2440,7 +2440,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
       let screenshot: string | undefined;
       try {
         const page = await browser.newPage();
-        await page.goto(url, { waitUntil: "networkidle0", timeout: 30000 });
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
         // Runs in the PAGE's context, so `document` is the browser's. The Worker
         // has no document, which is why this is cast rather than typed via a DOM
         // lib: adding DOM to the Worker's globals would let a real mistake compile.
