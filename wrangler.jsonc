@@ -59,7 +59,7 @@
   }
 ,
   "secrets": {
-    "required": ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]
+    "required": ["GH_CLIENT_ID", "GH_CLIENT_SECRET"]
   },
   "browser": {
     "binding": "BROWSER"
