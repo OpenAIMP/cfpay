@@ -65,7 +65,12 @@ export class QAAgent extends Think<Env> {
     try {
       const page = await browser.newPage();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      const text = (await page.evaluate(() => document.body.innerText)) as string;
+      // Runs in the PAGE's context, so `document` is the browser's. Cast rather than
+      // typed via a DOM lib: the Worker genuinely has no document, and widening the
+      // globals would let a genuine mistake in Worker code compile.
+      const text = (await page.evaluate(
+        () => (globalThis as unknown as { document: { body: { innerText: string } } }).document.body.innerText,
+      )) as string;
       const shot = (await page.screenshot()) as Uint8Array;
       let binary = "";
       for (let i = 0; i < shot.length; i++) binary += String.fromCharCode(shot[i]);

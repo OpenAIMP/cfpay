@@ -992,8 +992,8 @@ export function createApp() {
     if (!url || !/^https?:\/\//.test(url)) {
       return c.json({ error: "Valid http(s) url required" }, 400);
     }
-    const qaAgent = getAgent(c);
-    const result = await agent.qaCheck(url, body.checks);
+    const qaAgent = getQAAgent(c);
+    const result = await qaAgent.qaCheck(url, body.checks);
     return c.json(result);
   });
 
