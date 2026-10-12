@@ -1101,16 +1101,23 @@ describe("browser teardown cannot fail a QA run", () => {
 
   it("routes browser teardown through the tested helper", () => {
     expect(qa).toContain("closeConnectionQuietly");
-    // Exactly the two browser methods, so a new one cannot quietly reintroduce
-    // the raw pattern (and a removal is caught too).
+    // Every browser teardown goes through the helper. Counted exactly, so both a
+    // new raw close() and a removed release are caught.
     const uses = qa.split("closeConnectionQuietly(").length - 1;
-    expect(uses, "both browser teardown sites must use the helper").toBe(2);
+    expect(uses, "every browser teardown must use the helper").toBe(4);
   });
 
   it("keeps the report's tab call inside a guard", () => {
     // It sat outside the try, so any rejection from qaDashboardTabs bypassed the
-    // method's own error handling and reached the route as a 500.
-    expect(qa).toContain("The tab check failed before a report could be built");
+    // method's own error handling and reached the route as a 500. The guard now
+    // also translates a browser refusal into an actionable message.
+    const start = qa.indexOf("async qaAndEmailReport(");
+    const body = qa.slice(start, qa.indexOf("async testEmailAttachmentUI(", start));
+    expect(body).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined)");
+    // The catch immediately after the tab call must translate the failure.
+    const catchAt = body.indexOf("} catch (err) {");
+    expect(catchAt).toBeGreaterThan(-1);
+    expect(body.slice(catchAt, catchAt + 400)).toContain("describeBrowserFailure(err)");
   });
 
   it("reports a refused send instead of claiming success", () => {
@@ -1135,5 +1142,72 @@ describe("the QA route names a serialization failure", () => {
     // Stringifying the value that just failed to serialize would throw again.
     expect(api).toContain("safeStringify");
     expect(api).toContain("Failed to serialize QA result");
+  });
+});
+
+describe("a QA report uses one browser session, not two", () => {
+  // Each connectBrowser call consumes a Browser Rendering session against a
+  // finite account limit. qaAndEmailReport used to open two - one for the tab
+  // check, one for the screenshot - and the refusal surfaced as
+  // "did not return a WebSocket", which points at wrangler.jsonc and sends you
+  // to the wrong file. Sessions are now opened in exactly one place.
+  const qa = read("src/qa-agent.ts");
+
+  it("opens browser sessions through a single helper", () => {
+    // Exactly one: inside openBrowserSession. Every other call site goes through
+    // it, which is what makes the session count auditable.
+    const direct = qa.split("await connectBrowser(").length - 1;
+    expect(direct, "every browser session must go through openBrowserSession").toBe(1);
+    expect(qa).toContain("private async openBrowserSession(");
+  });
+
+  it("hands the report's session to both checks instead of opening its own", () => {
+    // The two calls that used to each open a session must now receive one.
+    expect(qa).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined)");
+    expect(qa).toMatch(
+      /runBrowserCheck\(\s*env\.SELF_ORIGIN[\s\S]{0,200}?connection \?\? undefined,?\s*\)/,
+    );
+  });
+
+  it("closes only what it opened, so a shared session survives", () => {
+    // runBrowserCheck and qaDashboardTabs must respect ownership, or the second
+    // check would run against a closed connection.
+    expect(qa).toContain("const ownsConnection = !sharedConnection");
+    const guards = qa.split("if (ownsConnection)").length - 1;
+    expect(guards, "both shared-session methods must guard their close").toBe(2);
+  });
+
+  it("releases the report's session on every exit path", () => {
+    // A leak here reintroduces the exhaustion being fixed, so the release must
+    // exist in the finally AND before the early return in the catch.
+    const start = qa.indexOf("async qaAndEmailReport(");
+    const body = qa.slice(start, qa.indexOf("async testEmailAttachmentUI(", start));
+    const releases = body.split("closeConnectionQuietly(connection)").length - 1;
+    expect(releases, "both the early return and the finally must release").toBe(2);
+    expect(body).toContain("} finally {");
+  });
+
+  it("explains a session-limit refusal instead of blaming the binding", () => {
+    // The raw message names wrangler.jsonc; the account being out of sessions is
+    // the usual cause. The translation must say so.
+    expect(qa).toContain("describeBrowserFailure");
+    expect(qa).toContain("Browser Rendering session limit");
+    expect(qa).toContain("not a missing binding");
+    // And it must be idempotent, so it cannot double-wrap into
+    // "Browser check failed: Could not open a browser session: ...".
+    expect(qa).toContain("message.startsWith(\"Could not open a browser session\")");
+  });
+
+  it("does not leak a session from the report's early-return path", () => {
+    // The specific mistake made while writing this: the catch that handles a
+    // failed tab check returned without closing the connection it had opened.
+    const mStart = qa.indexOf("async qaAndEmailReport(");
+    const mEnd = qa.indexOf("async testEmailAttachmentUI(", mStart);
+    const report = qa.slice(mStart, mEnd);
+    const tabCatchAt = report.indexOf("} catch (err) {");
+    const tabCatch = report.slice(tabCatchAt, tabCatchAt + 400);
+    expect(tabCatch, "the tab-check catch must release the session").toContain(
+      "closeConnectionQuietly(connection)",
+    );
   });
 });

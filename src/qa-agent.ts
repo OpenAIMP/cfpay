@@ -41,6 +41,44 @@ export interface QACheckResult {
  */
 export const DASHBOARD_API_KEY_STORAGE_KEY = "cfmail_api_key";
 
+/**
+ * The slice of the CDP connection this agent uses.
+ *
+ * `connectBrowser` is declared to return CdpConnection, but the browser handle
+ * was previously typed `any`, which is how a `close().catch(...)` on a void
+ * method compiled cleanly and then threw at runtime. Naming the shape keeps that
+ * mistake visible to the compiler.
+ */
+interface CdpLike {
+  send(method: string, params?: unknown, options?: { sessionId?: string }): Promise<unknown>;
+  attachToTarget(targetId: string, options?: unknown): Promise<string>;
+  close(): void;
+}
+
+/**
+ * Turn a browser-layer failure into a message that names the likely cause.
+ *
+ * The raw text for a session-limit refusal points at wrangler.jsonc, which is
+ * almost never the problem, and it reached the dashboard as a bare
+ * "HTTP 500: Internal Server Error". Both are fixed by deciding here what the
+ * error actually means.
+ */
+function describeBrowserFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  // Idempotent: openBrowserSession already translated this, and re-wrapping
+  // produced "Browser check failed: Could not open a browser session: ...".
+  if (message.startsWith("Could not open a browser session")) return message;
+  if (/did not return a WebSocket/i.test(message)) {
+    return (
+      "Could not open a browser session: the Browser Rendering session limit " +
+      "appears to be reached. Sessions are short-lived, so waiting a few minutes " +
+      "and retrying usually succeeds. (The browser binding is configured; this is " +
+      "exhaustion, not a missing binding.)"
+    );
+  }
+  return `Browser check failed: ${message}`;
+}
+
 export class QAAgent extends Think<Env> {
   /** Last run, for the A2A summary. Not persisted: it is a convenience, not a record. */
   private lastRun: QACheckResult | null = null;
@@ -106,17 +144,43 @@ export class QAAgent extends Think<Env> {
     };
   }
   /**
+   * Open a Browser Rendering session, translating a refusal into something
+   * actionable.
+   *
+   * `connectBrowser` reports a session-limit refusal as "Browser Rendering
+   * binding did not return a WebSocket. Ensure the 'browser' binding is
+   * configured in wrangler.jsonc." The binding is usually fine - the account is
+   * out of concurrent sessions - so that message sends you to the wrong file.
+   * Sessions are per-invocation and short-lived, so the fix is to wait, not to
+   * reconfigure.
+   */
+  private async openBrowserSession(env: Env): Promise<CdpLike> {
+    const { connectBrowser } = await import("agents/browser");
+    try {
+      return (await connectBrowser(env.BROWSER)) as CdpLike;
+    } catch (err) {
+      throw new Error(describeBrowserFailure(err));
+    }
+  }
+
+  /**
    * Shared browser-check logic.
    */
   private async runBrowserCheck(
     url: string,
     textContains?: string[],
     apiKey?: string,
+    sharedConnection?: CdpLike,
   ): Promise<QACheckResult> {
     const env = this.env as Env;
     if (!env.BROWSER) {
       return { ok: false, url, textLength: 0, error: "Browser binding not configured" };
     }
+
+    // A caller that already holds a session passes it in. Opening a second one
+    // here is what exhausted the browser concurrency limit and produced the
+    // misleading "did not return a WebSocket" error.
+    const ownsConnection = !sharedConnection;
 
     try {
       // CDP-based browser check (replaces raw Puppeteer).
@@ -126,8 +190,7 @@ export class QAAgent extends Think<Env> {
       // wrapped it in `new CdpSession(browser)`, which passed a CdpConnection where the
       // constructor expects a WebSocket, and CdpSession is only a deprecated alias for
       // CdpConnection anyway.
-      const { connectBrowser } = await import("agents/browser");
-      const cdp = await connectBrowser(env.BROWSER);
+      const cdp = sharedConnection ?? (await this.openBrowserSession(env));
 
       const { targetId } = (await cdp.send("Target.createTarget", {
         url: "about:blank",
@@ -185,8 +248,10 @@ export class QAAgent extends Think<Env> {
         const ok = checks.every((c) => c.passed);
         return { ok, url, textLength: text.length, screenshot, checks };
       } finally {
+        // The target is always released. The connection is only closed by the
+        // owner, so a shared session survives for the next check.
         await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
-        cdp.close();
+        if (ownsConnection) cdp.close();
       }
     } catch (err) {
       return {
@@ -248,6 +313,7 @@ export class QAAgent extends Think<Env> {
   @callable()
   async qaDashboardTabs(
     apiKey: string,
+    sharedConnection?: CdpLike,
   ): Promise<{ ok: boolean; tabs: { name: string; passed: boolean; detail: string }[]; error?: string }> {
     const env = this.env as Env;
     if (!env.BROWSER) {
@@ -267,13 +333,15 @@ export class QAAgent extends Think<Env> {
       { name: "Webhooks", tab: "webhooks", containerId: "webhookList", emptyText: "No webhook events yet" },
     ];
 
-    let browser: any = null;
+    // Only opens a session when one was not supplied. This is what keeps a QA
+    // report to a single session instead of two.
+    const ownsConnection = !sharedConnection;
     const results: { name: string; passed: boolean; detail: string }[] = [];
+    let browser: CdpLike | null = sharedConnection ?? null;
 
     try {
-      const { connectBrowser } = await import("agents/browser");
-      browser = await connectBrowser(env.BROWSER);
-      const cdp = browser; // connectBrowser returns CdpConnection directly
+      const cdp: CdpLike = browser ?? (await this.openBrowserSession(env));
+      browser = cdp;
 
       const { targetId } = (await cdp.send("Target.createTarget", {
         url: "about:blank",
@@ -446,7 +514,8 @@ export class QAAgent extends Think<Env> {
       // A void close(): the teardown helper exists precisely because
       // `browser.close().catch(...)` throws here - close() returns undefined,
       // and that throw used to replace this method's return value with a 500.
-      closeConnectionQuietly(browser);
+      // Only the owner closes, so a shared session is left usable.
+      if (ownsConnection) closeConnectionQuietly(browser);
     }
 
     const ok = results.length > 0 && results.every((r) => r.passed);
@@ -463,21 +532,34 @@ export class QAAgent extends Think<Env> {
     apiKey: string,
     toEmail: string,
   ): Promise<{ ok: boolean; emailed: boolean; tabs: any[]; error?: string }> {
-    // Guarded deliberately: this call sat outside the try below, so any
-    // rejection from qaDashboardTabs bypassed this method's own error handling
-    // and surfaced as an opaque 500 on the route. That is exactly how a broken
-    // browser teardown turned a completed QA run into "Internal Server Error".
-    let tabResult: { ok: boolean; tabs: { name: string; passed: boolean; detail: string }[]; error?: string };
+    // ONE session for the whole report: the tab check and the screenshot both
+    // need a browser, and opening one each is what exhausted the Browser
+    // Rendering concurrency limit. A refusal there surfaces as "did not return a
+    // WebSocket", which reads like a configuration fault but is really
+    // exhaustion - so the count is reduced rather than the symptom retried.
+    const env = this.env as Env;
+    let connection: CdpLike | null = null;
+    let tabResult: {
+      ok: boolean;
+      tabs: { name: string; passed: boolean; detail: string }[];
+      error?: string;
+    };
+
     try {
-      tabResult = await this.qaDashboardTabs(apiKey);
+      if (env.BROWSER && apiKey) {
+        connection = await this.openBrowserSession(env);
+      }
+      tabResult = await this.qaDashboardTabs(apiKey, connection ?? undefined);
     } catch (err) {
+      // Released here as well as in the finally below: this early return would
+      // otherwise leak the session it opened, which is the exhaustion this
+      // whole change is meant to reduce.
+      if (connection) closeConnectionQuietly(connection);
       return {
         ok: false,
         emailed: false,
         tabs: [],
-        error: `The tab check failed before a report could be built: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        error: describeBrowserFailure(err),
       };
     }
 
@@ -512,8 +594,14 @@ export class QAAgent extends Think<Env> {
           error: "The email agent is unavailable, so the report was not sent.",
         };
       }
-      // Capture dashboard screenshot for attachment
-      const dashResult = await this.qaDashboard(apiKey);
+      // Capture dashboard screenshot for attachment, on the SAME session opened
+      // above rather than a second one.
+      const dashResult = await this.runBrowserCheck(
+        env.SELF_ORIGIN ?? "https://pay.openaimp.com",
+        ["PaymentAgent", "Dashboard", "Payments", "Emails"],
+        apiKey,
+        connection ?? undefined,
+      );
       const attachments: { filename: string; type: string; content: string }[] = [];
       if (dashResult.screenshot) {
         // screenshot is data:image/png;base64,... — strip prefix for attachment
@@ -549,6 +637,9 @@ export class QAAgent extends Think<Env> {
         tabs: tabResult.tabs,
         error: err instanceof Error ? err.message : String(err),
       };
+    } finally {
+      // Released on every path, including the early returns above.
+      if (connection) closeConnectionQuietly(connection);
     }
   }
 
@@ -584,12 +675,14 @@ export class QAAgent extends Think<Env> {
     }
 
     const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
-    let browser: any = null;
+    // Standalone check, so it owns its session - but the session is opened
+    // through the helper so a limit refusal is explained instead of surfacing as
+    // a raw "did not return a WebSocket".
+    let browser: CdpLike | null = null;
 
     try {
-      const { connectBrowser } = await import("agents/browser");
-      browser = await connectBrowser(env.BROWSER);
-      const cdp = browser;
+      const cdp = await this.openBrowserSession(env);
+      browser = cdp;
 
       const { targetId } = (await cdp.send("Target.createTarget", {
         url: "about:blank",
