@@ -925,13 +925,22 @@ export function createApp() {
       body: string;
       attachments?: { filename: string; type: string; content: string }[];
     }>();
-    // Use EmailAgent (via DO RPC) which supports attachments
-    const { getAgentByName } = await import("agents");
-    const emailAgent = getAgentByName(c.env.EMAIL_AGENT, "email") as any;
+    // Through the shared helper, which is how every other caller reaches this agent.
+    // The direct getAgentByName form was not awaited, so it returned a Promise: the
+    // compiler rejected it and at runtime .sendThroughAgent would have been undefined,
+    // failing the send rather than reporting why.
+    const { emailAgentStub } = await import("./email-tool");
+    const emailAgent = emailAgentStub(c.env as any);
+    if (!emailAgent) {
+      return c.json({ error: "The email agent is unavailable, so nothing was sent." }, 503);
+    }
     const result = await emailAgent.sendThroughAgent({
       to: body.to,
       subject: body.subject,
       body: body.body,
+      // Optional: absent means a plain send, which is the common case. The agent
+      // validates the caps and refuses an oversized message with a named reason
+      // before any send is attempted.
       attachments: body.attachments,
     });
     return c.json(result);

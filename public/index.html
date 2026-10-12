@@ -148,7 +148,7 @@
           <div class="form-group"><label>To</label><input type="email" id="sendTo" placeholder="recipient@example.com" /></div>
           <div class="form-group"><label>Subject</label><input type="text" id="sendSubject" placeholder="Subject" /></div>
           <div class="form-group"><label>Body</label><textarea id="sendBody" placeholder="Email content..."></textarea></div>
-          <div class="form-group"><label>Attachments</label><input type="file" id="sendAttachments" multiple style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);" /><div id="attachmentList" style="font-size:0.8rem;color:var(--muted);margin-top:0.25rem;"></div></div>
+          <div class="form-group"><label>Attachments</label><div style="font-size:0.8rem;color:var(--muted);margin-bottom:0.25rem;">Up to 5 files, 2&nbsp;MB each, 3&nbsp;MB total.</div><input type="file" id="sendAttachments" multiple style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);" /><div id="attachmentList" style="font-size:0.8rem;color:var(--muted);margin-top:0.25rem;"></div></div>
           <button class="btn" onclick="sendEmail()">Send Email</button>
           <div id="sendResult" style="margin-top:1rem;"></div>
         </div>
@@ -871,8 +871,12 @@ async function loadStats() {
         }
       }
       const res = await api('/api/dashboard/send-email', 'POST', { to, subject, body, attachments });
-      if (res.success) {
-        result.innerHTML = '<div class="status-msg success">Email sent successfully!</div>';
+      // `ok`, not `success`: the agent resolves to { ok, emailId, remaining, error }.
+      // Checking a field the server never sends reported every successful send as a
+      // failure, which is worse than no message at all - it invites a pointless retry.
+      if (res.ok) {
+        const attached = attachments.length > 0 ? " with " + attachments.length + " attachment(s)" : "";
+        result.innerHTML = '<div class="status-msg success">Email sent successfully' + attached + '!</div>';
         document.getElementById('sendTo').value='';
         document.getElementById('sendSubject').value='';
         document.getElementById('sendBody').value='';
@@ -880,7 +884,16 @@ async function loadStats() {
         const list = document.getElementById('attachmentList');
         if (list) list.innerHTML='';
       }
-      else { result.innerHTML = '<div class="status-msg error">Failed to send email</div>'; }
+      else {
+        // The reason matters: a rate limit names its retry window, and an oversized
+        // attachment names its actual size. A bare apology hides both.
+        const detail = res.error ? String(res.error) : 'The email agent refused the send.';
+        const el = document.createElement("div");
+        el.className = "status-msg error";
+        el.textContent = "Not sent: " + detail;
+        result.innerHTML = '';
+        result.appendChild(el);
+      }
     }
     // Show selected file names
     document.getElementById('sendAttachments')?.addEventListener('change', (e) => {

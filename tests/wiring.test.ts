@@ -403,6 +403,64 @@ describe("QAAgent is a full peer, and the chat rename holds", () => {
     }
   });
 });
+describe("the send-email page agrees with the agent's response shape", () => {
+  const html = read("public/index.html");
+  const agent = readCode("src/email-agent.ts");
+  const api = readCode("src/api.ts");
+
+  it("reads `ok`, which is what sendThroughAgent returns", () => {
+    // The UI checked `res.success` while the agent resolves to { ok, emailId, remaining,
+    // error }. A field the server never sends meant every successful send was reported as a
+    // failure, which invites a retry of something that already happened.
+    const start = html.indexOf("async function sendEmail()");
+    const block = html.slice(start, start + 1800);
+    expect(agent).toMatch(/sendThroughAgent\(\s*input[\s\S]{0,400}?Promise<\{ ok: boolean/);
+    expect(block, "must check ok").toMatch(/if \(res\.ok\)/);
+    expect(block, "must not check a field the server does not send").not.toMatch(/res\.success/);
+  });
+
+  it("passes attachments through to the agent", () => {
+    // The route originally dropped them: the request carried a list and the handler read
+    // only to, subject and body, so a file was silently not sent.
+    const start = api.indexOf('app.post("/api/dashboard/send-email"');
+    const block = api.slice(start, start + 1400);
+    expect(block, "the route must forward attachments").toContain("attachments: body.attachments");
+    expect(block, "and reach the agent that supports them").toContain("emailAgentStub");
+  });
+
+  it("does not use an un-awaited getAgentByName", () => {
+    // getAgentByName resolves to Promise<DurableObjectStub<T>>. Used without await, the stub
+    // is a Promise and the method call on it is undefined - a type error and a runtime throw.
+    // This mistake appeared in three files today; each is asserted here.
+    for (const [file, src] of [
+      ["src/api.ts", api],
+      ["src/qa-agent.ts", readCode("src/qa-agent.ts")],
+    ]) {
+      const stray = [...src.matchAll(/=\s*getAgentByName\(/g)];
+      for (const m of stray) {
+        const lineStart = src.lastIndexOf("\n", m.index ?? 0) + 1;
+        const line = src.slice(lineStart, (m.index ?? 0) + 40);
+        expect(line, file + " line must await: " + line.trim()).toMatch(/await\s+getAgentByName/);
+      }
+    }
+  });
+
+  it("reports a refusal reason rather than a bare apology", () => {
+    // A rate limit names its retry window and an oversized attachment names its size.
+    const start = html.indexOf("async function sendEmail()");
+    expect(start, "sendEmail must exist").toBeGreaterThan(-1);
+    // Anchored on the next function rather than a character count: my first version used
+    // a 2000-char window, the branch sat at 2100, and the guard reported a missing detail
+    // that was plainly there.
+    const next = html.indexOf("// Show selected file names", start);
+    const block = html.slice(start, next > start ? next : undefined);
+    expect(block, "must surface the agent's error text").toMatch(/res\.error/);
+  });
+
+  it("states the attachment limits before a file is chosen", () => {
+    expect(html).toMatch(/Up to 5 files/);
+  });
+});
 describe("the dashboard explains a spent payment instead of a generic failure", () => {
   const html = read("public/index.html");
 
