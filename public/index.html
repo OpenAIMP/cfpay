@@ -385,7 +385,28 @@
       if (body) opts.body = JSON.stringify(body);
       const res = await fetch(path, opts);
       if (res.status === 401) { localStorage.removeItem('cfmail_api_key'); location.reload(); }
-      return res.json();
+
+      // Read the body as text first. A 500 from the Worker is plain text, not JSON, so
+      // calling res.json() directly turned it into a parse error - `Unexpected token 'I'`
+      // - which hid both the status code and the fact that the request had failed.
+      const raw = await res.text();
+      let parsed = null;
+      if (raw) {
+        try { parsed = JSON.parse(raw); } catch { parsed = null; }
+      }
+
+      if (!res.ok) {
+        // Surface what the server actually said. A JSON error body is used as-is; a
+        // non-JSON one is truncated, because a Worker stack trace is not a user message.
+        const detail = parsed && (parsed.error || parsed.details)
+          ? String(parsed.error || parsed.details)
+          : raw ? raw.slice(0, 200) : res.statusText;
+        throw new Error("HTTP " + res.status + ": " + detail);
+      }
+
+      // A 2xx with an empty body is a legitimate response (204-style), and returning null
+      // is better than throwing on a success.
+      return parsed === null ? {} : parsed;
     }
     function switchTab(tab) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));

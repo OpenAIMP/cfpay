@@ -392,8 +392,35 @@ export function createApp() {
     return c.env.CfmailAgent.get(agentId) as any;
   }
 
-  function getQAAgent(c: any) {
-    return getAgentByName(c.env.QA_AGENT, "qa") as any;
+  /**
+   * The QA agent stub.
+   *
+   * Async, because getAgentByName resolves to Promise<DurableObjectStub<T>>. It is not
+   * marked async and then unwrapped with `as any`: that cast is what let four callers read
+   * properties of a Promise without the compiler objecting, so every QA route threw a
+   * TypeError and returned a plain-text 500 the dashboard could not parse.
+   */
+  async function getQAAgent(c: any) {
+    // Awaiting is the fix: getAgentByName resolves to Promise<DurableObjectStub<T>>, and
+    // the previous version returned that Promise while callers used it as a stub. Every QA
+    // route then read a property of a Promise, threw, and Hono turned it into a plain-text
+    // 500 that the dashboard reported as a JSON parse error.
+    //
+    // The result is narrowed to the methods this file calls rather than written as
+    // getAgentByName<Env, QAAgent>: that form makes the compiler expand QAAgent (which
+    // references Env) against Env (which references QA_AGENT) until it reports TS2589.
+    const stub = await getAgentByName(c.env.QA_AGENT as any, "qa");
+    return stub as unknown as {
+      qaCheck(url: string, checks?: { textContains?: string[]; apiKey?: string }): Promise<unknown>;
+      qaDashboard(apiKey?: string): Promise<unknown>;
+      qaDashboardTabs(
+        apiKey: string,
+      ): Promise<{ ok: boolean; tabs: { name: string; passed: boolean; detail: string }[]; error?: string }>;
+      qaAndEmailReport(
+        apiKey: string,
+        toEmail: string,
+      ): Promise<{ ok: boolean; emailed: boolean; tabs: unknown[]; error?: string }>;
+    };
   }
 
 
@@ -994,26 +1021,47 @@ export function createApp() {
     if (!url || !/^https?:\/\//.test(url)) {
       return c.json({ error: "Valid http(s) url required" }, 400);
     }
-    const authHeader = c.req.header("Authorization") || "";
-    const apiKey = authHeader.replace(/^Bearer\s+/i, "") || undefined;
-    const qaAgent = getQAAgent(c);
+    // X-API-Key is what the dashboard sends and what requireAuth checks. Reading
+    // Authorization instead meant this was always undefined, so the QA check ran with no
+    // key at all. The Authorization header is kept as a fallback for non-browser callers.
+    const presented = c.req.header("X-API-Key") || "";
+    const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const apiKey = presented || bearer || undefined;
+    const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaCheck(url, { ...body.checks, apiKey });
     return c.json(result);
   });
 
   // Autonomous QA: check the dashboard itself.
   app.post("/api/dashboard/qa/dashboard", requireAuth, async (c) => {
-    const authHeader = c.req.header("Authorization") || "";
-    const apiKey = authHeader.replace(/^Bearer\s+/i, "") || undefined;
-    const qaAgent = getQAAgent(c);
+    // X-API-Key is what the dashboard sends and what requireAuth checks. Reading
+    // Authorization instead meant this was always undefined, so the QA check ran with no
+    // key at all. The Authorization header is kept as a fallback for non-browser callers.
+    const presented = c.req.header("X-API-Key") || "";
+    const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const apiKey = presented || bearer || undefined;
+    const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaDashboard(apiKey);
     return c.json(result);
   });
 
   app.post("/api/dashboard/qa/tabs", requireAuth, async (c) => {
-    const authHeader = c.req.header("Authorization") || "";
-    const apiKey = authHeader.replace(/^Bearer\s+/i, "") || undefined;
-    const qaAgent = getQAAgent(c);
+    // X-API-Key is what the dashboard sends and what requireAuth checks. Reading
+    // Authorization instead meant this was always undefined, so the QA check ran with no
+    // key at all. The Authorization header is kept as a fallback for non-browser callers.
+    const presented = c.req.header("X-API-Key") || "";
+    const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const apiKey = presented || bearer || undefined;
+    const qaAgent = await getQAAgent(c);
+    if (!apiKey) {
+      // No key to give the browser: this request authenticated by OAuth session. The tab
+      // check needs one because it seeds localStorage before navigating, so without it
+      // the check would visit the login page and report a confusing failure.
+      return c.json(
+        { error: "The tab check needs an X-API-Key header; session auth is not enough." },
+        400,
+      );
+    }
     const result = await qaAgent.qaDashboardTabs(apiKey);
     return c.json(result);
   });
@@ -1024,12 +1072,16 @@ export function createApp() {
     if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
       return c.json({ error: "Valid toEmail required" }, 400);
     }
-    const authHeader = c.req.header("Authorization") || "";
-    const apiKey = authHeader.replace(/^Bearer\s+/i, "") || undefined;
+    // X-API-Key is what the dashboard sends and what requireAuth checks. Reading
+    // Authorization instead meant this was always undefined, so the QA check ran with no
+    // key at all. The Authorization header is kept as a fallback for non-browser callers.
+    const presented = c.req.header("X-API-Key") || "";
+    const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const apiKey = presented || bearer || undefined;
     if (!apiKey) {
       return c.json({ error: "API key required" }, 401);
     }
-    const qaAgent = getQAAgent(c);
+    const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaAndEmailReport(apiKey, toEmail);
     return c.json(result);
   });
