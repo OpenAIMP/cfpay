@@ -57,3 +57,23 @@ export const slackAgentToolSchema = {
   },
   required: ["operation"],
 } as const;
+/** QA capability operations. qa.check directs the Worker to load a caller-chosen URL. */
+export const qaAgentToolSchema = {
+  type: "object",
+  properties: {
+    operation: {
+      type: "string",
+      enum: ["qa.summary", "qa.check", "qa.dashboard"],
+      description: "Which QA operation to perform.",
+    },
+    url: { type: "string", description: "http(s) URL to load. Required for qa.check." },
+    checks: {
+      type: "object",
+      properties: {
+        textContains: { type: "array", items: { type: "string" }, description: "Strings that must appear in the page text." },
+      },
+      description: "Assertions for qa.check.",
+    },
+  },
+  required: ["operation"],
+} as const;

@@ -27,9 +27,11 @@ import { EmailAgent } from "./email-agent";
 import { PaymentsAgent } from "./payments-agent";
 import { WebhookAgent } from "./webhook-agent";
 import { SlackAgent } from "./slack-agent";
+import { QAAgent } from "./qa-agent";
 import {
   paymentAgentToolSchema,
   slackAgentToolSchema,
+  qaAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
 
@@ -135,4 +137,23 @@ export const slackAgentTool = agentTool<AgentToolInput>(SlackAgent, {
   ].join(" "),
   displayName: "Slack Agent",
   inputSchema: asZod<AgentToolInput>(slackAgentToolSchema),
+});
+/**
+ * Dispatch the QA agent.
+ *
+ * This tool can make the Worker load a caller-chosen URL, so a host that offers it is
+ * offering outbound browsing to its own model. That is the intended use for a QA
+ * capability, but it is worth knowing that the model chooses the destination here -
+ * unlike the A2A path, where the credential holder does.
+ */
+export const qaAgentTool = agentTool<AgentToolInput>(QAAgent, {
+  description: [
+    "Dispatch the QA agent to load a page and report whether it worked.",
+    "Use qa.check with a URL to assert expected text is present, or qa.dashboard to check",
+    "this Worker's own dashboard.",
+    "It reports what it observed: a page that failed to load is a failure.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "QA Agent",
+  inputSchema: asZod<AgentToolInput>(qaAgentToolSchema),
 });

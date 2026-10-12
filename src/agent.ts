@@ -1,14 +1,17 @@
 import { emailToolDefinition } from "./email-tool";
 import {
   paymentAgentToolSchema,
+  qaAgentToolSchema,
   slackAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
 import { EmailAgent } from "./email-agent";
 import { PaymentsAgent } from "./payments-agent";
 import { SlackAgent } from "./slack-agent";
+import { QAAgent } from "./qa-agent";
 import { WebhookAgent } from "./webhook-agent";
 import { Agent, callable } from "agents";
+import { Think } from "@cloudflare/think";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime from "postal-mime";
 import type {
@@ -25,6 +28,13 @@ import type {
   ToolTrace,
 } from "./types";
 import type { UsageCost } from "./models";
+import type { ToolSet } from "ai";
+import {
+  emailAgentTool,
+  qaAgentTool,
+  slackAgentTool,
+  webhookAgentTool,
+} from "./agent-tools";
 import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
 import {
@@ -87,6 +97,7 @@ const agentToolInputSchema = {
   payments: paymentAgentToolSchema,
   webhooks: webhookAgentToolSchema,
   slack: slackAgentToolSchema,
+  qa: qaAgentToolSchema,
 } as const;
 const DEFAULT_STATE: AgentState = {
   emails: [],
@@ -150,7 +161,49 @@ function isTrustedResponseUrl(value: unknown): value is string {
  */
 export const PAYMENT_CLAIM_REUSED_PREFIX = "PAYMENT_CLAIM_REUSED:";
 
-export class CfmailAgentSQLite extends Agent<Env, AgentState> {
+export class CfmailAgentSQLite extends Think<Env, AgentState> {
+  /* ---------------------------- Think surface ---------------------------- */
+
+  /**
+   * Used when this agent runs a chat turn through Think rather than the custom loop.
+   *
+   * The dashboard's chat speaks the custom loop, so this is not in that path today. It
+   * exists because Think declares it, and because a host that can be dispatched as a
+   * tool should be able to answer on its own terms.
+   */
+  override getModel(): string {
+    return defaultModelId();
+  }
+
+  override getSystemPrompt(): string {
+    return [
+      "You are the CFmail agent, operating over email, Slack, chat and webhooks.",
+      "You own no resource: mail, the ledger, webhook records and Slack each belong to a capability agent,",
+      "reachable as a tool by name. Prefer dispatching those to reach into their data, rather than assuming it.",
+      "Never claim a payment succeeded, a message was sent, or a check passed unless the agent that owns it said so.",
+    ].join(" ");
+  }
+
+  /**
+   * The child capability agents, as this agent's own tool set.
+   *
+   * Deliberately the same four tools the custom tool loop advertises, so a model reaching
+   * them through Think and a model reaching them through the dashboard's loop see the same
+   * surface. Two lists maintained separately is how one of them silently loses a tool.
+   *
+   * Payments is excluded here, matching AGENT_TOOL_ALLOW_PAYMENTS being unset: a payments
+   * tool lets the model choose to run a paid request, which is authority rather than
+   * convenience and belongs behind an explicit opt-in.
+   */
+  override getTools(): ToolSet {
+    return {
+      emailAgent: emailAgentTool,
+      webhookAgent: webhookAgentTool,
+      slackAgent: slackAgentTool,
+      qaAgent: qaAgentTool,
+    };
+  }
+
   initialState: AgentState = {
     ...DEFAULT_STATE,
     emails: [],
@@ -1380,7 +1433,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
           return { text: "chat.send needs a message.", data: { ok: false, error: "missing_message" } };
         }
         try {
-          const result = await this.chat(message_);
+          const result = await this.chatRpc(message_);
           return {
             text: result.response,
             data: { ok: true, response: result.response, historyLength: result.history.length },
@@ -1924,6 +1977,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
       },
     });
 
+    specs.push({
+      type: "function",
+      function: {
+        name: "qaAgent",
+        description:
+          "Dispatch the QA agent to load a page and report whether it worked, or to check this Worker's own dashboard.",
+        parameters: agentToolInputSchema.qa,
+      },
+    });
+
     return specs;
   }
 
@@ -1980,9 +2043,17 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return "The email tool is unavailable, so nothing was sent or read.";
   }
 
+  /**
+   * Answer one dashboard chat message.
+   *
+   * Named chatRpc, not chat: Think declares `chat(userMessage, callback): Promise<void>`
+   * as its streaming turn API, and this is a request/response call with a different
+   * contract. Overriding Think's would keep the name and lose the framework's chat
+   * machinery, so the two are kept separate. Think's chat is what a Think turn uses;
+   * this is what the dashboard's REST route calls.
+   */
   @callable()
-  async chat(
-
+  async chatRpc(
     message: string,
   ): Promise<{ response: string; history: ChatMessage[] }> {
     const response = await this.generateAIResponse(message, undefined, "dashboard");

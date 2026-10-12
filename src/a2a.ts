@@ -64,6 +64,9 @@ export const A2A_WEBHOOK_CARD_PATH = "/a2a/webhooks/agent-card.json";
 export const A2A_SLACK_RPC_PATH = "/a2a/slack";
 export const A2A_SLACK_CARD_PATH = "/a2a/slack/agent-card.json";
 
+export const A2A_QA_RPC_PATH = "/a2a/qa";
+export const A2A_QA_CARD_PATH = "/a2a/qa/agent-card.json";
+
 /** True when the presented credential authorises a /a2a call. */
 export function a2aAuthorised(request: Request, env: Env): boolean {
   const expected = (env.DASHBOARD_API_KEY ?? "").trim();
@@ -454,6 +457,42 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
  * would make the card disagree with the endpoint a client called, and the SDK
  * would reject it. Hence a handler per request rather than one per instance.
  */
+/**
+ * Card for the QA capability.
+ *
+ * The exposure is stated on the card rather than left to be inferred: qa.check makes
+ * this Worker launch a real browser against a URL the caller chooses. That is the same
+ * shape as server-side request forgery, bounded by the bearer credential and the
+ * http(s) scheme check, and a caller holding the credential can direct the browse.
+ */
+export function qaCard(origin: string): AgentCard {
+  return {
+    name: "CFmail QA Agent",
+    description:
+      "Runs browser checks against a URL and reports whether it loaded and whether expected text is present, with a screenshot. qa.check directs this Worker to load a caller-chosen http(s) URL, so it should be treated as a credentialed, outbound-capable operation rather than a read.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_QA_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "browser-qa",
+        name: "Browser QA",
+        description:
+          "Load an http(s) URL in a real browser and report pass/fail for the expected strings, plus a screenshot. qa.dashboard checks this Worker's own dashboard. All operations require a bearer credential.",
+        tags: ["qa", "browser", "outbound", "write"],
+        examples: [
+          "Check that https://example.com loads and contains Welcome.",
+          "Does the dashboard still render?",
+        ],
+      },
+    ],
+  };
+}
 export function createA2ATransport(
   sql: SqlStorage,
   origin: string,

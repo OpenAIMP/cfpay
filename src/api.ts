@@ -950,7 +950,8 @@ export function createApp() {
   app.post("/api/dashboard/chat", requireAuth, async (c) => {
     const body = await c.req.json<{ message: string }>();
     const agent = getAgent(c);
-    const result = await agent.chat(body.message);
+    // chatRpc, not chat: Think owns `chat` as its streaming turn API.
+    const result = await agent.chatRpc(body.message);
     return c.json(result);
   });
 

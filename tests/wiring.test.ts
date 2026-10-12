@@ -192,6 +192,62 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("QAAgent is a full peer, and the chat rename holds", () => {
+  const qa = readCode("src/qa-agent.ts");
+  const tools = readCode("src/agent-tools.ts");
+  const a2a = readCode("src/a2a.ts");
+  const index = readCode("src/index.ts");
+  const agent = readCode("src/agent.ts");
+
+  it("is chat-capable, dispatchable, and A2A-reachable", () => {
+    expect(qa, "must be a Think child").toContain("extends Think<");
+    expect(qa).toContain("override getModel()");
+    expect(qa).toContain("override getSystemPrompt()");
+    expect(qa).toContain("override getTools()");
+    expect(tools, "must be a tool target").toMatch(/agentTool<[^>]*>\(\s*QAAgent\s*,/);
+    expect(qa, "must answer A2A").toContain("async handleA2A(");
+    expect(a2a).toContain("export function qaCard(");
+    for (const p of ['"A2A_QA_CARD_PATH"', '"A2A_QA_RPC_PATH"', '"url.pathname === A2A_QA_RPC_PATH"']) {
+      expect(index, "route must exist: " + p).toContain(p.replace(/"/g, ""));
+    }
+  });
+
+  it("keeps the A2A summary free of screenshots", () => {
+    // A QA result carries a base64 screenshot. Returning that from a status call would be
+    // megabytes nobody asked for, so the summary must report state, not payload.
+    const start = qa.indexOf("async a2aSnapshot(");
+    const end = qa.indexOf("async handleA2A(", start);
+    const snap = qa.slice(start, end);
+    expect(snap).toContain("lastOk");
+    expect(snap, "must not return the screenshot in the summary").not.toContain("screenshot");
+  });
+
+  it("refuses a non-http(s) URL rather than guessing", () => {
+    const start = qa.indexOf('case "qa.check"');
+    const block = qa.slice(start, start + 700);
+    expect(block).toMatch(/https\?:/);
+    expect(block).toContain("bad_url");
+  });
+
+  it("keeps Think's chat and the dashboard's chat RPC separate", () => {
+    // Think declares chat(userMessage, callback): Promise<void>. The dashboard's call is
+    // request/response. Overriding Think's would keep the name and lose the framework's
+    // chat machinery, so the two must not collide.
+    expect(agent, "the RPC must not be named chat").not.toMatch(/^\s*async chat\(/m);
+    expect(agent).toContain("async chatRpc(");
+    expect(agent).toMatch(/@callable\(\)\s*async chatRpc\(/);
+  });
+
+  it("keeps the monolith a tool host and a Think agent", () => {
+    expect(agent).toContain("extends Think<");
+    expect(agent).toContain("override getTools(): ToolSet");
+    // The host's own tool set must list the same children the custom loop advertises,
+    // or the two dispatch paths drift.
+    for (const t of ["emailAgentTool", "webhookAgentTool", "slackAgentTool", "qaAgentTool"]) {
+      expect(agent, "tool set must include " + t).toContain(t);
+    }
+  });
+});
 describe("the dashboard explains a spent payment instead of a generic failure", () => {
   const html = read("public/index.html");
 
@@ -371,7 +427,12 @@ describe("chat is an operation, not a resource-less agent", () => {
     // not become a back door to the writes the other agents deliberately withhold.
     const start = agent.indexOf("async handleA2AMessage(");
     expect(start, "handleA2AMessage must exist").toBeGreaterThan(-1);
-    const boundary = agent.slice(start, agent.indexOf("\n  async chat(", start));
+    // End anchor must be a method that exists. When this was `async chat(` and the
+    // method was renamed, indexOf returned -1 and the slice covered nearly the whole
+    // file - so the guard failed on unrelated code rather than on the boundary.
+    const end = agent.indexOf("\n  async chatRpc(", start);
+    expect(end, "the chat boundary must be locatable").toBeGreaterThan(start);
+    const boundary = agent.slice(start, end);
     expect(boundary.length).toBeGreaterThan(0);
 
     for (const write of ["sendOutboundEmail", "notifySlack", "sendWebhook", "payExternalEndpoint"]) {
