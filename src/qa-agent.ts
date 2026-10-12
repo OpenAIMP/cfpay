@@ -49,11 +49,26 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
-   * No tools of its own: this agent IS the tool. It exposes capabilities through
-   * @callable() methods and A2A, which does not require an AI SDK tool set.
+   * Browser tools via CDP. These give the model direct browser control
+   * (browser_execute, browser_markdown, etc.) when dispatched via agentTool().
+   * The @callable() methods below use direct CDP for deterministic checks.
    */
-  override getTools(): Record<string, never> {
-    return {};
+  override getTools() {
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return {};
+    }
+    try {
+      // Dynamic import to avoid breaking if agents/browser/ai isn't available
+      const { createBrowserTools } = require("agents/browser/ai");
+      return createBrowserTools({
+        ctx: this.ctx,
+        browser: env.BROWSER,
+        loader: (env as any).LOADER,
+      });
+    } catch {
+      return {};
+    }
   }
   /**
    * Shared browser-check logic.
@@ -66,27 +81,55 @@ export class QAAgent extends Think<Env> {
     if (!env.BROWSER) {
       return { ok: false, url, textLength: 0, error: "Browser binding not configured" };
     }
-    const puppeteer = await import("@cloudflare/puppeteer");
-    const browser = await puppeteer.default.launch(env.BROWSER);
-    try {
-      const page = await browser.newPage();
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const text = (await page.evaluate(`document.body.innerText`)) as string;
-      const shot = (await page.screenshot()) as Uint8Array;
-      let binary = "";
-      for (let i = 0; i < shot.length; i++) binary += String.fromCharCode(shot[i]);
-      // btoa is available in Workers runtime
-      const screenshot = `data:image/png;base64,${btoa(binary)}`;
-      await page.close();
 
-      const checks =
-        textContains?.map((needle) => ({
-          name: `text contains "${needle}"`,
-          passed: text.includes(needle),
-        })) ?? [];
-      const ok = checks.every((c) => c.passed);
-      return { ok, url, textLength: text.length, screenshot, checks };
+    try {
+      // CDP-based browser check (replaces raw Puppeteer)
+      const { connectBrowser, CdpSession } = await import("agents/browser");
+      const browser = await connectBrowser(env.BROWSER);
+      const cdp = new CdpSession(browser);
+
+      const { targetId } = (await cdp.send("Target.createTarget", {
+        url,
+      })) as { targetId: string };
+
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+        // Wait for page load
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+
+        const { root } = (await cdp.send("DOM.getDocument", {}, { sessionId })) as {
+          root: { nodeId: number };
+        };
+        const { outerHTML } = (await cdp.send(
+          "DOM.getOuterHTML",
+          { nodeId: root.nodeId },
+          { sessionId },
+        )) as { outerHTML: string };
+
+        const text = outerHTML
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        const { data: screenshotData } = (await cdp.send(
+          "Page.captureScreenshot",
+          { format: "png" },
+          { sessionId },
+        )) as { data: string };
+        const screenshot = `data:image/png;base64,${screenshotData}`;
+
+        const checks =
+          textContains?.map((needle) => ({
+            name: `text contains "${needle}"`,
+            passed: text.includes(needle),
+          })) ?? [];
+        const ok = checks.every((c) => c.passed);
+        return { ok, url, textLength: text.length, screenshot, checks };
+      } finally {
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
     } catch (err) {
       return {
         ok: false,
@@ -94,8 +137,6 @@ export class QAAgent extends Think<Env> {
         textLength: 0,
         error: err instanceof Error ? err.message : String(err),
       };
-    } finally {
-      await browser.close();
     }
   }
 
