@@ -388,6 +388,19 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
 
   // ─── AI ─────────────────────────────────────────────────────
 
+  /**
+   * Answer one message and generate the reply.
+   *
+   * Runs a real tool loop: the capability agents are dispatched from here, which is what
+   * makes them used rather than merely offered. Before this the method was a single model
+   * call with no tools at all - the agents were wired into getTools() and into the tool
+   * list, but nothing in this path ever called runAgentTool, so a question about the
+   * ledger was answered from the system prompt instead of by asking the ledger's owner.
+   *
+   * Same shape as the Public.com loop, and for the same reasons: the model may answer in
+   * either envelope, tool calls may arrive in the legacy or current shape, and the loop is
+   * bounded by CALLS rather than rounds because one round can make several.
+   */
   async generateAIResponse(
     userMessage: string,
     emailContext?: string,
@@ -402,12 +415,14 @@ When a user wants to use a paid service or make a payment, respond with:
 When a user asks about pricing, respond with:
 "Each request costs 0.001 ETH or 0.01 USDC. You can pay via MetaMask at https://pay.openaimp.com"
 
+You have tools that reach the agents owning each resource: emailAgent for mail,
+webhookAgent for deliveries, slackAgent for Slack, qaAgent for browser checks. Prefer
+asking them over guessing - they hold the records and you do not.
+
 For general questions, be concise, professional, and helpful.
 Do not claim to have completed a payment unless you have received confirmation.`;
 
-    const messages: AiMessage[] = [
-      { role: "system", content: systemPrompt },
-    ];
+    const messages: AiMessage[] = [{ role: "system", content: systemPrompt }];
 
     if (emailContext) {
       messages.push({
@@ -415,10 +430,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
         content: `Email context:\n${emailContext}\n\nRequest: ${userMessage}`,
       });
     } else {
-      messages.push({
-        role: "user",
-        content: userMessage,
-      });
+      messages.push({ role: "user", content: userMessage });
     }
 
     // Only the current sender's history is included, so one user's messages
@@ -432,48 +444,89 @@ Do not claim to have completed a payment unless you have received confirmation.`
       });
     }
 
+    let text = "";
     try {
-      let text: string;
-      // Read the reply through readCompletion, which handles BOTH response envelopes.
-      //
-      // Reading `response.response` directly was why chat answered "I could not generate
-      // a response": the default model is @cf/openai/gpt-oss-120b, which returns its text
-      // under choices[0].message.content and carries no `response` field at all. The
-      // model answered correctly and this code discarded the answer, then reported that
-      // it could not. The tool loop already used readCompletion for exactly this reason;
-      // this path was missed.
-      try {
-        const response = await this.env.AI.run(
-          defaultModelId() as never,
-          {
-            messages,
-          } as never,
-        );
-        text = readCompletion(response).text.trim();
-        if (!text) {
-          // An empty completion is a real failure worth naming, rather than a generic
-          // message that hides which model was used or that one answered at all.
-          console.warn("Primary model returned no text; using the fallback model.");
-          const fallback = await this.env.AI.run(
+      const toolSpecs = this.toAiToolSpecs([]);
+
+      for (let turn = 0; turn < 6; turn++) {
+        let completion;
+        try {
+          const response: any = await this.env.AI.run(
+            defaultModelId() as never,
+            { messages, tools: toolSpecs, max_tokens: 2048 } as never,
+          );
+          completion = readCompletion(response);
+        } catch (modelError) {
+          // The fallback is deliberately NOT given the tools: it is a smaller model, and a
+          // failed tool round should degrade to plain text rather than to a different set
+          // of capabilities the operator did not choose.
+          console.warn("Primary model failed mid-turn, falling back without tools:", modelError);
+          const fallback: any = await this.env.AI.run(
             "@cf/meta/llama-3.1-8b-instruct" as never,
             { messages } as never,
           );
           text = readCompletion(fallback).text.trim();
+          break;
         }
-      } catch (modelError) {
-        console.warn("Primary model failed, trying fallback:", modelError);
-        text = "";
-        try {
-          const fallbackResponse = await this.env.AI.run(
-            "@cf/meta/llama-3.1-8b-instruct" as never,
-            { messages } as never,
-          );
-          text = readCompletion(fallbackResponse).text.trim();
-        } catch (fallbackError) {
-          // Name the failure. "I could not generate a response" gave nothing to act on:
-          // it did not say whether the model refused, errored, or returned an envelope
-          // this code did not understand.
-          console.error("Both models failed for a chat turn:", fallbackError);
+
+        // Models answer in either the legacy or the current tool-call shape. Normalising
+        // is what makes the follow-up request valid: echoing a legacy call back as
+        // tool_calls fails validation with AiError 8007.
+        const toolCalls = normaliseToolCalls(completion.toolCalls);
+        if (toolCalls.length === 0) {
+          text = completion.text.trim();
+          break;
+        }
+
+        // Echo the assistant's own calls back verbatim, ids included.
+        messages.push({
+          role: "assistant",
+          content: completion.text,
+          tool_calls: toolCalls,
+        } as never);
+
+        for (const call of toolCalls) {
+          const name = call.function?.name ?? "";
+          const id = call.id ?? "";
+          let args: unknown = {};
+          try {
+            args =
+              typeof call.function?.arguments === "string"
+                ? JSON.parse(call.function.arguments)
+                : (call.function?.arguments ?? {});
+          } catch {
+            // A malformed argument object is the model's error, not a crash: pass an empty
+            // object so the tool reports its own validation message back to the model.
+            args = {};
+          }
+
+          const target = AGENT_TOOL_DISPATCH[name as keyof typeof AGENT_TOOL_DISPATCH];
+          let output: string;
+          try {
+            output =
+              name === "email"
+                ? await this.callEmailTool((args ?? {}) as Record<string, unknown>)
+                : target
+                  ? await this.dispatchAgentTool(target, args)
+                  : "No such tool: " + name;
+          } catch (err) {
+            // Reported to the model as text so it can answer differently or try another
+            // route, rather than aborting the turn with no reply at all.
+            output = "Tool failed: " + String(err);
+          }
+
+          messages.push({
+            role: "tool",
+            content: output.slice(0, 6000),
+            tool_call_id: id,
+          } as never);
+        }
+
+        if (turn === 5) {
+          // Out of rounds with the model still calling tools. Say so rather than returning
+          // an empty answer that reads as a refusal.
+          text =
+            "I gathered some information but ran out of steps before finishing. Please narrow the question and I will try again.";
         }
       }
 
@@ -485,21 +538,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
           "nothing was sent or charged. Please try again shortly.";
       }
 
-      // Annotated as ChatMessage[] so the object literals below are
-      // contextually typed and `role` narrows to the union instead of
-      // widening to `string` (TS2322).
+      // Annotated as ChatMessage[] so the object literals are contextually typed and
+      // `role` narrows to the union instead of widening to `string` (TS2322).
       const updatedHistory: ChatMessage[] = [
         ...priorHistory,
-        {
-          role: "user",
-          content: userMessage,
-          timestamp: new Date().toISOString(),
-        },
-        {
-          role: "assistant",
-          content: text,
-          timestamp: new Date().toISOString(),
-        },
+        { role: "user", content: userMessage, timestamp: new Date().toISOString() },
+        { role: "assistant", content: text, timestamp: new Date().toISOString() },
       ];
       this.chatHistoryBySender[senderKey] = updatedHistory.slice(-MAX_CHAT_HISTORY_PER_SENDER);
 

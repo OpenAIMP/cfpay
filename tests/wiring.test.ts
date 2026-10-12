@@ -192,6 +192,53 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("the chat path actually dispatches the capability agents", () => {
+  const agent = readCode("src/agent.ts");
+
+  it("runs a tool loop rather than a single model call", () => {
+    // The agents were wired into getTools() and the tool list while nothing in the chat
+    // path ever called runAgentTool, so they were offered but never used. A single model
+    // call would answer a ledger question from the prompt instead of from the ledger.
+    const start = agent.indexOf("async generateAIResponse(");
+    const end = agent.indexOf("private isEmailCaptureMode(", start);
+    expect(start).toBeGreaterThan(-1);
+    const body = agent.slice(start, end);
+
+    expect(body, "must loop").toMatch(/for \(let turn = 0; turn < \d+; turn\+\+\)/);
+    expect(body, "must dispatch agent tools").toMatch(/await this\.dispatchAgentTool\(/);
+    expect(body, "must normalise tool calls").toContain("normaliseToolCalls");
+    expect(body, "must feed results back").toMatch(/role: "tool"/);
+  });
+
+  it("echoes the model's own tool calls back unchanged", () => {
+    // Re-shaping them is what fails validation with AiError 8007.
+    const start = agent.indexOf("async generateAIResponse(");
+    const body = agent.slice(start, start + 7000);
+    expect(body).toMatch(/tool_calls: toolCalls/);
+  });
+
+  it("does not hand the fallback model the tools", () => {
+    // The fallback is a smaller model. A failed tool round should degrade to plain text,
+    // not to a different set of capabilities the operator did not choose.
+    const start = agent.indexOf("async generateAIResponse(");
+    const body = agent.slice(start, start + 7000);
+    const fallbackAt = body.indexOf("falling back without tools");
+    expect(fallbackAt).toBeGreaterThan(-1);
+    const after = body.slice(fallbackAt, fallbackAt + 400);
+    expect(after, "the fallback call must omit tools").not.toContain("tools: toolSpecs");
+  });
+
+  it("names an unknown tool instead of returning an empty result", () => {
+    const body = agent.slice(agent.indexOf("async generateAIResponse("), agent.indexOf("private isEmailCaptureMode("));
+    expect(body).toContain("No such tool: ");
+  });
+
+  it("bounds the loop and says so rather than returning nothing", () => {
+    const body = agent.slice(agent.indexOf("async generateAIResponse("), agent.indexOf("private isEmailCaptureMode("));
+    expect(body).toMatch(/turn === \d+/);
+    expect(body).toMatch(/ran out of steps/);
+  });
+});
 describe("the tool list and the dispatch registry cannot drift apart", () => {
   const agent = readCode("src/agent.ts");
 
