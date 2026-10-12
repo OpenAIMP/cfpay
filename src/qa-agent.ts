@@ -379,9 +379,9 @@ export class QAAgent extends Think<Env> {
       const cdp = browser;
 
       // Create target and navigate to dashboard
-      const { targetId } = await cdp.send("Target.createTarget", {
+      const { targetId } = (await cdp.send("Target.createTarget", {
         url: "about:blank",
-      });
+      })) as { targetId: string };
       const sessionId = await cdp.attachToTarget(targetId);
 
       // Helper to send CDP commands to the session
@@ -446,10 +446,10 @@ export class QAAgent extends Think<Env> {
       await new Promise((r) => setTimeout(r, 5000));
 
       // Check for success message
-      const result = await send("Runtime.evaluate", {
+      const evalResult = (await send("Runtime.evaluate", {
         expression: `document.getElementById('sendResult').innerText`,
-      });
-      const text = result.result?.value || "";
+      })) as { result?: { value?: string } };
+      const text = evalResult.result?.value || "";
 
       await send("Target.closeTarget", { targetId });
 
