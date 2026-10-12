@@ -12,6 +12,10 @@
 import { callable } from "agents";
 import { emailAgentTool } from "./agent-tools";
 import { Think } from "@cloudflare/think";
+// Static import, deliberately. A dynamic import() cannot be used here:
+// Think's getTools() is synchronous, so there is no await available at the
+// point the tool set is built.
+import { createBrowserTools } from "agents/browser/ai";
 import { defaultModelId } from "./models";
 import type { Env } from "./types";
 
@@ -69,8 +73,35 @@ export class QAAgent extends Think<Env> {
   override getTools() {
     // EmailAgent as a tool: QAAgent can dispatch email sends via the Think framework.
     // This makes the email capability available for LLM-driven dispatch.
+    const env = this.env as Env;
+
+    // Model-driven browser tools, for interactive automation (clicking, form
+    // filling, navigation) that the hand-rolled CDP methods below do not attempt.
+    //
+    // Guarded rather than assumed: creating these needs both the BROWSER and
+    // LOADER bindings, and a getTools() that throws takes down every chat turn on
+    // the agent, including the paths that never touch a browser. Environment
+    // variables are configuration, so an agent must not fail to boot because one
+    // optional binding is absent - it should simply offer fewer tools.
+    let browserTools: Record<string, unknown> = {};
+    if (env.BROWSER && env.LOADER) {
+      try {
+        browserTools = createBrowserTools({
+          browser: env.BROWSER,
+          loader: env.LOADER,
+        }) as Record<string, unknown>;
+      } catch (err) {
+        // Non-fatal by design; the deterministic CDP checks are unaffected.
+        console.warn(
+          "[QAAgent] createBrowserTools unavailable:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
     return {
       email: emailAgentTool,
+      ...browserTools,
     };
   }
   /**
@@ -493,6 +524,390 @@ export class QAAgent extends Think<Env> {
   }
 
 
+
+  /**
+   * RPC: drive the dashboard's Send Email form end to end, with an attachment.
+   *
+   * qaAndEmailReport already proves EmailAgent can send attachments when called
+   * directly. This proves the *user path*: that the form collects a file, that
+   * /api/dashboard/send-email receives it, and that the UI reports success. The
+   * two failure modes are different, which is why both are worth testing.
+   *
+   * Note the deliberate omission: the browser never waits on a fixed timeout for
+   * the send to settle. sendEmail() is async and the assertion polls the result
+   * element in-page until it shows a terminal state, so a slow send is reported
+   * as slow rather than as a failure.
+   */
+  @callable()
+  async testEmailAttachmentUI(
+    apiKey: string,
+    toEmail: string,
+  ): Promise<{ ok: boolean; detail: string; error?: string }> {
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return { ok: false, detail: "Browser binding not configured" };
+    }
+    if (!apiKey) {
+      return { ok: false, detail: "API key required to drive the dashboard" };
+    }
+    if (!toEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail)) {
+      return { ok: false, detail: "A valid recipient address is required" };
+    }
+
+    const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    let browser: any = null;
+
+    try {
+      const { connectBrowser } = await import("agents/browser");
+      browser = await connectBrowser(env.BROWSER);
+      const cdp = browser;
+
+      const { targetId } = (await cdp.send("Target.createTarget", {
+        url: "about:blank",
+      })) as { targetId: string };
+
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+
+        // Seed the key the dashboard reads, then load it.
+        await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `localStorage.setItem(${JSON.stringify(
+              DASHBOARD_API_KEY_STORAGE_KEY,
+            )}, ${JSON.stringify(apiKey)})`,
+          },
+          { sessionId },
+        );
+        await cdp.send("Page.navigate", { url: origin }, { sessionId });
+        await new Promise((r) => setTimeout(r, 4000));
+
+        // Open the Send Email tab and wait for the form to exist, rather than
+        // assuming a fixed delay is enough for the tab switch to take effect.
+        const formReady = (await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `(async () => {
+              const tab = document.querySelector('[data-tab="send"]');
+              if (!tab) return 'tab missing';
+              tab.click();
+              for (let i = 0; i < 40; i++) {
+                if (document.getElementById('sendTo') &&
+                    document.getElementById('sendAttachments') &&
+                    document.getElementById('sendResult')) {
+                  return 'ready';
+                }
+                await new Promise((r) => setTimeout(r, 250));
+              }
+              return 'form missing';
+            })()`,
+            awaitPromise: true,
+            returnByValue: true,
+          },
+          { sessionId },
+        )) as { result?: { value?: string } };
+
+        if (formReady.result?.value !== "ready") {
+          return {
+            ok: false,
+            detail: `Send Email form did not become usable: ${formReady.result?.value}`,
+          };
+        }
+
+        // Fill the form and attach a real file via DataTransfer. The file input
+        // is used rather than setting the field directly, so the page's own
+        // change handling is exercised.
+        const filled = (await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `(() => {
+              try {
+                document.getElementById('sendTo').value = ${JSON.stringify(toEmail)};
+                document.getElementById('sendSubject').value = 'QA attachment test';
+                document.getElementById('sendBody').value =
+                  'Automated QA check of the Send Email form and its attachment handling.';
+
+                const bytes = new TextEncoder().encode(
+                  'qa attachment probe ' + new Date().toISOString(),
+                );
+                const file = new File([bytes], 'qa-probe.txt', { type: 'text/plain' });
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                const input = document.getElementById('sendAttachments');
+                input.files = dt.files;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                return 'filled:' + dt.files.length;
+              } catch (e) {
+                return 'error:' + (e && e.message ? e.message : String(e));
+              }
+            })()`,
+            returnByValue: true,
+          },
+          { sessionId },
+        )) as { result?: { value?: string } };
+
+        const filledValue = filled.result?.value || "";
+        if (!filledValue.startsWith("filled:1")) {
+          return { ok: false, detail: `Could not attach a file to the form (${filledValue})` };
+        }
+
+        // Submit through the page's own handler, so this exercises the real path.
+        await cdp.send(
+          "Runtime.evaluate",
+          { expression: `document.querySelector('button[onclick="sendEmail()"]').click()` },
+          { sessionId },
+        );
+
+        // Poll for a terminal state instead of sleeping a fixed amount.
+        const outcome = (await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `(async () => {
+              const el = document.getElementById('sendResult');
+              for (let i = 0; i < 120; i++) {
+                const text = (el.innerText || '').trim();
+                const lower = text.toLowerCase();
+                if (lower.includes('sent successfully')) return { state: 'sent', text };
+                if (lower.includes('not sent') || lower.includes('error')) {
+                  return { state: 'refused', text };
+                }
+                await new Promise((r) => setTimeout(r, 250));
+              }
+              return { state: 'timeout', text: (el.innerText || '').trim() };
+            })()`,
+            awaitPromise: true,
+            returnByValue: true,
+          },
+          { sessionId },
+        )) as { result?: { value?: { state?: string; text?: string } } };
+
+        const state = outcome.result?.value || {};
+        if (state.state === "sent") {
+          return {
+            ok: true,
+            detail: `Form submitted with 1 attachment; UI confirmed: ${String(state.text).slice(0, 200)}`,
+          };
+        }
+        return {
+          ok: false,
+          detail: `Send did not confirm (${state.state}): ${String(state.text || "").slice(0, 300)}`,
+        };
+      } finally {
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        detail: "Send Email form test failed",
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      if (browser && typeof browser.close === "function") {
+        await browser.close().catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * RPC: verify the payment endpoint's guards, without ever paying.
+   *
+   * Deliberately no signing and no funds. A full payment test needs a funded
+   * key and moves real money, so this covers only the parts that are safe to
+   * assert automatically:
+   *
+   *   1. With no PAYMENT-SIGNATURE, /api/process must answer 402 and advertise a
+   *      well-formed challenge (version, accepts[], and a network/asset/amount
+   *      per entry) - the challenge is what a real client pays against, so a
+   *      malformed one is a genuine outage.
+   *   2. With a syntactically invalid signature, it must still refuse rather
+   *      than accept or 500.
+   *   3. The request must not be processed: no success payload is returned.
+   *
+   * What this does NOT prove: that a valid payment is verified and settled.
+   * That is stated in the result so the suite cannot imply coverage it lacks.
+   */
+  @callable()
+  async qaPaymentFlow(
+    origin?: string,
+  ): Promise<{
+    ok: boolean;
+    detail: string;
+    checks: { name: string; passed: boolean; detail: string }[];
+    unpaidPathVerified: boolean;
+    settlementVerified: boolean;
+    error?: string;
+  }> {
+    const env = this.env as Env;
+    const base = origin || env.SELF_ORIGIN || "https://pay.openaimp.com";
+    const checks: { name: string; passed: boolean; detail: string }[] = [];
+
+    try {
+      // 1. Unauthenticated request must be challenged with 402.
+      const challengeRes = await fetch(`${base}/api/process`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "qa@example.com", request: "qa payment probe" }),
+      });
+      const challengeBody: any = await challengeRes.json().catch(() => null);
+
+      const is402 = challengeRes.status === 402;
+      checks.push({
+        name: "unpaid request is challenged with 402",
+        passed: is402,
+        detail: `status=${challengeRes.status}`,
+      });
+
+      const accepts = challengeBody?.accepts;
+      const wellFormed =
+        Array.isArray(accepts) &&
+        accepts.length > 0 &&
+        accepts.every(
+          (a: any) => a && typeof a.network === "string" && typeof a.amount === "string",
+        );
+      checks.push({
+        name: "challenge advertises at least one payable option",
+        passed: wellFormed,
+        detail: wellFormed
+          ? `${accepts.length} option(s), networks: ${accepts
+              .map((a: any) => a.network)
+              .join(", ")}`
+          : `malformed or absent accepts: ${JSON.stringify(challengeBody).slice(0, 200)}`,
+      });
+
+      // 3. A 402 must not leak a success result.
+      checks.push({
+        name: "unpaid request is not processed",
+        passed: is402 ? challengeBody?.success !== true : true,
+        detail: is402
+          ? `success field: ${JSON.stringify(challengeBody?.success)}`
+          : "skipped: endpoint did not 402",
+      });
+
+      // 2. A malformed signature must be refused, not accepted and not 500.
+      const badRes = await fetch(`${base}/api/process`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "PAYMENT-SIGNATURE": "not-a-valid-signature",
+        },
+        body: JSON.stringify({ email: "qa@example.com", request: "qa payment probe" }),
+      });
+      const refused = badRes.status === 402 || badRes.status === 400;
+      checks.push({
+        name: "malformed payment signature is refused cleanly",
+        passed: refused,
+        detail: `status=${badRes.status} (expected 400/402, not 5xx)`,
+      });
+
+      const ok = checks.every((c) => c.passed);
+      return {
+        ok,
+        detail: ok
+          ? "Payment guards hold: 402 challenge is well-formed and a bad signature is refused."
+          : "One or more payment guards did not hold.",
+        checks,
+        unpaidPathVerified: true,
+        // Stated explicitly so a green run cannot be read as payment coverage.
+        settlementVerified: false,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: "Payment flow check could not run",
+        checks,
+        unpaidPathVerified: false,
+        settlementVerified: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  /**
+   * RPC: negative and edge-case checks against the dashboard API.
+   *
+   * The existing QA methods only assert the happy path, so a regression that
+   * turned a 401 into a 200 would be invisible. These assert that bad input is
+   * refused with the right status AND a structured JSON body rather than an
+   * HTML error page - the dashboard reports an unparseable 500 as a confusing
+   * JSON parse error to the user, which is a past failure mode here.
+   */
+  @callable()
+  async qaEdgeCases(
+    origin?: string,
+  ): Promise<{ ok: boolean; detail: string; checks: { name: string; passed: boolean; detail: string }[] }> {
+    const env = this.env as Env;
+    const base = origin || env.SELF_ORIGIN || "https://pay.openaimp.com";
+    const checks: { name: string; passed: boolean; detail: string }[] = [];
+
+    /** A JSON body, not an HTML error page. */
+    const isJson = async (res: Response) => {
+      const ct = res.headers.get("content-type") || "";
+      return ct.includes("application/json");
+    };
+
+    try {
+      // Unauthenticated dashboard read must be 401.
+      const unauth = await fetch(`${base}/api/dashboard/emails`);
+      checks.push({
+        name: "unauthenticated dashboard read is rejected",
+        passed: unauth.status === 401,
+        detail: `status=${unauth.status}`,
+      });
+
+      // A wrong key must be rejected too, not treated as anonymous.
+      const wrongKey = await fetch(`${base}/api/dashboard/emails`, {
+        headers: { "X-API-Key": "definitely-not-the-key" },
+      });
+      checks.push({
+        name: "a wrong API key is rejected",
+        passed: wrongKey.status === 401,
+        detail: `status=${wrongKey.status}`,
+      });
+
+      // A bogus QA operation must be reported, not treated as a success.
+      const bogusOp = await fetch(`${base}/api/dashboard/qa/nonexistent-operation`, {
+        method: "POST",
+        headers: { "X-API-Key": "definitely-not-the-key" },
+      });
+      checks.push({
+        name: "an unknown QA route does not report success",
+        passed: bogusOp.status >= 400,
+        detail: `status=${bogusOp.status}`,
+      });
+
+      // Errors should be structured JSON. Probe with a bad-but-plausible request.
+      const badBody = await fetch(`${base}/api/dashboard/qa/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": "definitely-not-the-key" },
+        body: JSON.stringify({}),
+      });
+      const badBodyIsJson = await isJson(badBody);
+      checks.push({
+        name: "error responses are JSON, not an HTML error page",
+        passed: badBodyIsJson,
+        detail: `status=${badBody.status} content-type=${
+          badBody.headers.get("content-type") || "none"
+        }`,
+      });
+
+      const ok = checks.every((c) => c.passed);
+      return {
+        ok,
+        detail: ok
+          ? "Edge cases behave: bad auth and bad input are refused with structured errors."
+          : "One or more edge cases did not behave as expected.",
+        checks,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `Edge-case check could not run: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        checks,
+      };
+    }
+  }
 
   /* --------------------------------- A2A ---------------------------------- */
 

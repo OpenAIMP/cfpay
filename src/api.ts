@@ -420,6 +420,23 @@ export function createApp() {
         apiKey: string,
         toEmail: string,
       ): Promise<{ ok: boolean; emailed: boolean; tabs: unknown[]; error?: string }>;
+      testEmailAttachmentUI(
+        apiKey: string,
+        toEmail: string,
+      ): Promise<{ ok: boolean; detail: string; error?: string }>;
+      qaPaymentFlow(origin?: string): Promise<{
+        ok: boolean;
+        detail: string;
+        checks: { name: string; passed: boolean; detail: string }[];
+        unpaidPathVerified: boolean;
+        settlementVerified: boolean;
+        error?: string;
+      }>;
+      qaEdgeCases(origin?: string): Promise<{
+        ok: boolean;
+        detail: string;
+        checks: { name: string; passed: boolean; detail: string }[];
+      }>;
     };
   }
 
@@ -1107,6 +1124,46 @@ export function createApp() {
     return c.json(result);
   });
 
+
+
+  // Drives the dashboard's Send Email form in a real browser, including an
+  // attachment. Authenticated, and the recipient is a REQUIRED caller-supplied
+  // parameter rather than a constant, so this can never mail a hard-coded
+  // address and a caller must state where the test mail goes.
+  app.post("/api/dashboard/qa/test-attachment", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const toEmail = body.toEmail as string;
+    if (!toEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail)) {
+      return c.json({ error: "A valid toEmail is required" }, 400);
+    }
+    const presented = c.req.header("X-API-Key") || "";
+    const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const apiKey = presented || bearer || undefined;
+    if (!apiKey) {
+      return c.json({ error: "API key required" }, 401);
+    }
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.testEmailAttachmentUI(apiKey, toEmail);
+    return c.json(result);
+  });
+
+  // Payment guards only. This route cannot move funds: qaPaymentFlow never signs
+  // a transaction, it checks that an unpaid request is challenged and that a
+  // malformed one is refused.
+  app.post("/api/dashboard/qa/payment-flow", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaPaymentFlow(body.origin as string | undefined);
+    return c.json(result);
+  });
+
+  // Negative and edge-case assertions.
+  app.post("/api/dashboard/qa/edge-cases", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaEdgeCases(body.origin as string | undefined);
+    return c.json(result);
+  });
 
   // TEMPORARY DEBUG: inspect webhook DO state
   app.get("/api/dashboard/debug-webhooks", requireAuth, async (c) => {

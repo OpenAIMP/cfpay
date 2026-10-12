@@ -142,6 +142,47 @@ jobs:
           push_optional OUTBOUND_PAY_TO_WHITELIST "$OUTBOUND_PAY_TO_WHITELIST"
           push_optional OUTBOUND_MAX_AMOUNT_ATOMIC "$OUTBOUND_MAX_AMOUNT_ATOMIC"
 
+  # Runs the QA suite against production after a successful deploy.
+  #
+  # Deliberately unable to break a deploy: it needs the deploy job to have
+  # succeeded, and it skips with a clear message when its secrets are absent, so
+  # merging this changes nothing until the secrets are configured.
+  #
+  # Required repository secrets:
+  #   DASHBOARD_API_KEY  - the Worker's dashboard key, used to authenticate QA
+  #   QA_TEST_EMAIL      - a real inbox to receive the test mail (optional; the
+  #                        attachment check is skipped without it)
+  #
+  # Set repository VARIABLE QA_RUN_ATTACHMENT_CHECK to "true" to also run the
+  # check that sends a real email with an attachment. Off by default because it
+  # sends mail on every deploy.
+  qa-smoke:
+    runs-on: ubuntu-24.04
+    name: Post-deploy QA
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run QA checks against production
+        env:
+          BASE_URL: https://pay.openaimp.com
+          DASHBOARD_API_KEY: ${{ secrets.DASHBOARD_API_KEY }}
+          QA_TEST_EMAIL: ${{ secrets.QA_TEST_EMAIL }}
+          QA_RUN_ATTACHMENT_CHECK: ${{ vars.QA_RUN_ATTACHMENT_CHECK }}
+        run: node scripts/qa-smoke.mjs
+
   deploy-preview:
     runs-on: ubuntu-24.04
     name: Deploy Preview

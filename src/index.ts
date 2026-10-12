@@ -697,3 +697,9 @@ async function handleSlackInstall(request: Request, env: Env): Promise<Response>
     `&redirect_uri=${encodeURIComponent(redirectUri)}`;
   return Response.redirect(authorizeUrl, 302);
 }
+
+// createBrowserTools() spawns its execution sandbox as a facet of this class, and
+// Cloudflare resolves the facet by looking for a class exported from the entry
+// module. Without this export the tools are constructed but the first execution
+// fails at runtime, which no type check can catch.
+export { CodemodeRuntime } from "@cloudflare/codemode";

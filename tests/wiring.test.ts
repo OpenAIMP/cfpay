@@ -926,3 +926,157 @@ describe("the QA agent and the dashboard agree on their contract", () => {
     expect(qa).toContain("Dashboard showed the login page");
   });
 });
+
+describe("the QA surface stays fully wired", () => {
+  // The recurring failure in this area is a declaration that goes missing while
+  // the code around it survives: a method body without its @callable() (which
+  // broke CI outright), a QA method with no route, an agent method behind an
+  // any-typed stub that no type check can relate to its caller. Source
+  // assertions are what catch that.
+  const qa = read("src/qa-agent.ts");
+  const api = read("src/api.ts");
+  const html = read("public/index.html");
+
+  /** Every @callable() must be IMMEDIATELY followed by its method signature. */
+  it("keeps every @callable() attached to a method declaration", () => {
+    const lines = qa.split("\n");
+    const decorators = lines
+      .map((line, i) => ({ line: line.trim(), i }))
+      .filter((e) => e.line === "@callable()");
+    expect(decorators.length).toBeGreaterThan(0);
+
+    for (const { i } of decorators) {
+      // No gap allowed: a blank line here means a body was orphaned, which is
+      // exactly how the class stopped parsing.
+      const next = (lines[i + 1] || "").trim();
+      expect(
+        /^(async|private async|protected async)\s+\w+\s*\(/.test(next),
+        `the @callable() at line ${i + 1} must be directly followed by its method, got: ${next}`,
+      ).toBe(true);
+    }
+  });
+
+  it("exposes the send-email, payment and edge-case checks as RPC methods", () => {
+    for (const method of ["testEmailAttachmentUI", "qaPaymentFlow", "qaEdgeCases"]) {
+      expect(qa, `${method} must exist on QAAgent`).toContain("async " + method + "(");
+    }
+  });
+
+  it("declares those methods on the narrowed stub api.ts actually calls through", () => {
+    // getQAAgent returns an inline object type, NOT the QAAgent class, so a
+    // method missing from that literal cannot be called and the failure is a
+    // runtime RPC error rather than a compile error.
+    for (const method of ["testEmailAttachmentUI", "qaPaymentFlow", "qaEdgeCases"]) {
+      expect(api, `${method} must be declared on the getQAAgent stub type`).toContain(method + "(");
+    }
+  });
+
+  it("routes every new QA method behind requireAuth", () => {
+    const routes: [string, string][] = [
+      ["/api/dashboard/qa/test-attachment", "testEmailAttachmentUI"],
+      ["/api/dashboard/qa/payment-flow", "qaPaymentFlow"],
+      ["/api/dashboard/qa/edge-cases", "qaEdgeCases"],
+    ];
+    for (const [route, method] of routes) {
+      const pattern = new RegExp(
+        'app\\.post\\(\\s*"' + route.replace(/[/-]/g, "\\$&") + '",\\s*requireAuth',
+      );
+      expect(api, `${route} must be a requireAuth POST`).toMatch(pattern);
+      // Each route appears exactly once: a duplicated handler silently shadows.
+      const occurrences = api.split(`"${route}"`).length - 1;
+      expect(occurrences, `${route} must be registered exactly once`).toBe(1);
+      expect(api, `${route} must reach ${method}`).toContain(method + "(");
+    }
+  });
+
+  it("never hard-codes a recipient address for the send-mail check", () => {
+    // The endpoint must take its recipient from the caller, so the repo carries
+    // no real inbox and a deploy cannot mail someone by accident.
+    expect(api).toContain("A valid toEmail is required");
+    const hardCoded = api.match(/toEmail\s*=\s*"[^"]+@[^"]+"/);
+    expect(hardCoded, "no hard-coded recipient may appear").toBeNull();
+    const qaHardCoded = qa.match(/toEmail\s*(?::\s*string\s*)?=\s*"[^"]+@/);
+    expect(qaHardCoded, "qa-agent.ts must not default a recipient").toBeNull();
+  });
+
+  it("refuses to sign or settle anything in the payment check", () => {
+    // qaPaymentFlow is allowed to read a 402 challenge and nothing more. If a
+    // future edit adds signing here it must be a deliberate, reviewed change.
+    const start = qa.indexOf("async qaPaymentFlow(");
+    expect(start).toBeGreaterThan(-1);
+    const end = qa.indexOf("async qaEdgeCases(", start);
+    const body = qa.slice(start, end > -1 ? end : undefined);
+    for (const forbidden of ["sendTransaction", "writeContract", "PAYMENT_PRIVATE_KEY", "signTypedData"]) {
+      expect(body, `qaPaymentFlow must not use ${forbidden}`).not.toContain(forbidden);
+    }
+    // It must still say what it does not prove.
+    expect(body).toContain("settlementVerified: false");
+  });
+
+  it("wires the browser-tools infrastructure the tools depend on", () => {
+    const wrangler = read("wrangler.jsonc");
+    const types = read("src/types.ts");
+    const index = read("src/index.ts");
+
+    // createBrowserTools needs a Worker Loader binding to spawn its sandbox...
+    expect(wrangler, "wrangler.jsonc must declare the LOADER binding").toContain("worker_loaders");
+    expect(wrangler).toContain('"LOADER"');
+    // ...a type for it...
+    expect(types, "Env must type the LOADER binding").toContain("LOADER?: WorkerLoader");
+    // ...and the runtime class exported from the entry module, or the first
+    // execution fails at runtime with nothing to catch it at build time.
+    expect(index, "the entry must export CodemodeRuntime").toContain("CodemodeRuntime");
+  });
+
+  it("degrades without the browser bindings instead of throwing in getTools", () => {
+    // getTools() runs on every chat turn, including turns that never touch a
+    // browser. A throw here takes down the whole agent, so the bindings are
+    // checked before use.
+    const start = qa.indexOf("override getTools()");
+    expect(start).toBeGreaterThan(-1);
+    const body = qa.slice(start, qa.indexOf("private async runBrowserCheck", start));
+    expect(body).toContain("env.BROWSER && env.LOADER");
+    expect(body, "getTools must catch rather than propagate").toContain("catch");
+  });
+
+  it("gives every new QA button a handler that exists", () => {
+    for (const fn of ["runQATabs", "runQAAttachment", "runQAPaymentFlow", "runQAEdgeCases"]) {
+      expect(html, `index.html must define ${fn}`).toContain(`function ${fn}(`);
+      expect(html, `${fn} must be reachable from a button`).toContain(`onclick="${fn}()"`);
+    }
+    // The send-mail button must take a recipient rather than a fixed address.
+    expect(html).toContain("qaRecipient()");
+  });
+});
+
+describe("the post-deploy QA job cannot break a deploy", () => {
+  const workflow = read(".github/workflows/deploy.yml");
+
+  it("runs only after the deploy succeeds", () => {
+    expect(workflow).toContain("qa-smoke:");
+    expect(workflow).toMatch(/qa-smoke:[\s\S]*?needs:\s*deploy/);
+    // Main pushes only: a PR must not run QA against production.
+    expect(workflow).toMatch(
+      /qa-smoke:[\s\S]*?if:\s*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/,
+    );
+  });
+
+  it("reads its credentials from secrets, never from the repo", () => {
+    expect(workflow).toContain("secrets.DASHBOARD_API_KEY");
+    expect(workflow).toContain("secrets.QA_TEST_EMAIL");
+    // No literal key may be committed into the workflow.
+    expect(workflow).not.toMatch(/DASHBOARD_API_KEY:\s*["'][^$]/);
+  });
+
+  it("keeps the mail-sending check opt-in", () => {
+    // It sends real mail on every deploy, so it must be gated by a repository
+    // variable rather than run unconditionally.
+    expect(workflow).toContain("vars.QA_RUN_ATTACHMENT_CHECK");
+    const smoke = read("scripts/qa-smoke.mjs");
+    expect(smoke).toContain("RUN_ATTACHMENT");
+    // And a skip must not be reported as a failure, or an unconfigured repo
+    // would fail every deploy.
+    expect(smoke).toContain("skipped: true");
+    expect(smoke).toContain("process.exit(failed > 0 ? 1 : 0)");
+  });
+});
