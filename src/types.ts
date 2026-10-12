@@ -35,6 +35,9 @@ export interface Env {
   SLACK_CLIENT_ID: string;
   /** Secret for the Slack OAuth install flow (/slack/install code exchange). */
   SLACK_CLIENT_SECRET?: string;
+  // GitHub OAuth for dashboard sign-on (additive; API-key auth untouched)
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
   // Webhook secrets (incoming verification)
   GITHUB_WEBHOOK_SECRET?: string;
   STRIPE_WEBHOOK_SECRET?: string;
