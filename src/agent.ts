@@ -2159,20 +2159,22 @@ Do not claim to have completed a payment unless you have received confirmation.`
         return { ok: false, url, textLength: 0, error: "Browser binding not configured" };
       }
 
-      // Use the raw BROWSER binding Quick Actions (stateless, no agents/browser import needed).
-      const [extractResult, shotResult] = await Promise.all([
-        env.BROWSER.quickAction("extract", { url }),
-        env.BROWSER.quickAction("screenshot", { url }),
-      ]);
-
-      const text = typeof extractResult === "string" ? extractResult : JSON.stringify(extractResult);
+      // Use Puppeteer via the BROWSER binding for full page control.
+      const puppeteer = await import("@cloudflare/puppeteer");
+      const browser = await puppeteer.default.launch(env.BROWSER);
+      let text = "";
       let screenshot: string | undefined;
-      const shotData = (shotResult as any)?.data ?? shotResult;
-      if (shotData) {
-        const bytes = shotData instanceof Uint8Array ? shotData : new Uint8Array(shotData as ArrayBuffer);
+      try {
+        const page = await browser.newPage();
+        await page.goto(url, { waitUntil: "networkidle0", timeout: 30000 });
+        text = await page.evaluate(() => document.body.innerText);
+        const shot = await page.screenshot() as Uint8Array;
         let binary = "";
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        for (let i = 0; i < shot.length; i++) binary += String.fromCharCode(shot[i]);
         screenshot = `data:image/png;base64,${btoa(binary)}`;
+        await page.close();
+      } finally {
+        await browser.close();
       }
 
       // Run assertions.
