@@ -5,6 +5,7 @@ import { renderStripeReturnPage } from "./stripe-return-page";
 import { ZERO_ADDRESS, formatAmount, formatEthAmount, parsePaymentClaim, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from "./agent";
 import { timingSafeStringEqual } from "./mcp-auth";
+import { getOAuthUserFromRequest } from "./auth";
 import {
   PUBLIC_MCP_URL,
   listTools,
@@ -90,13 +91,20 @@ export function createApp() {
     "https://public.com/api/docs/templates/hosted-mcp",
   ].join("\n");
 
-  function requireAuth(c: any, next: any) {
+  async function requireAuth(c: any, next: any) {
+    // Dual auth: existing API-key sign-on OR GitHub OAuth session.
+    // API-key path is unchanged; OAuth is purely additive.
     const presented = c.req.header("X-API-Key") ?? "";
-    // Fail closed: an unset DASHBOARD_API_KEY must never authorize a request.
-    if (!c.env.DASHBOARD_API_KEY || !timingSafeStringEqual(presented, c.env.DASHBOARD_API_KEY)) {
-      return c.json({ error: "Unauthorized" }, 401);
+    if (c.env.DASHBOARD_API_KEY && timingSafeStringEqual(presented, c.env.DASHBOARD_API_KEY)) {
+      return next();
     }
-    return next();
+    // Fall back to OAuth session cookie.
+    const oauthUser = await getOAuthUserFromRequest(c.req.raw);
+    if (oauthUser) {
+      return next();
+    }
+    // Fail closed: neither valid API key nor valid OAuth session.
+    return c.json({ error: "Unauthorized" }, 401);
   }
 
   // ---------------------------------------------------------------------------
