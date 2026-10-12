@@ -176,6 +176,112 @@ export class QAAgent extends Think<Env> {
     return result;
   }
 
+  /**
+   * RPC: click through dashboard tabs and verify each loads data.
+   * Tests: Payments, Emails, Webhooks tabs.
+   */
+  @callable()
+  async qaDashboardTabs(apiKey?: string): Promise<{
+    ok: boolean;
+    tabs: { name: string; passed: boolean; detail: string }[];
+    error?: string;
+  }> {
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return { ok: false, tabs: [], error: "Browser binding not configured" };
+    }
+    if (!apiKey) {
+      return { ok: false, tabs: [], error: "API key required for tab testing" };
+    }
+
+    const origin = (env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const tabsToTest = [
+      { name: "Payments", selector: '[data-tab="payments"]', expectText: ["Payment", "Amount", "Status"] },
+      { name: "Emails", selector: '[data-tab="emails"]', expectText: ["Email", "Subject", "From"] },
+      { name: "Webhooks", selector: '[data-tab="webhooks"]', expectText: ["Webhook", "Event", "URL"] },
+    ];
+
+    let browser: any = null;
+    const results: { name: string; passed: boolean; detail: string }[] = [];
+
+    try {
+      const { connectBrowser } = await import("agents/browser");
+      browser = await connectBrowser(env.BROWSER);
+      const cdp = browser; // connectBrowser returns CdpConnection directly
+
+      const { targetId } = (await cdp.send("Target.createTarget", {
+        url: "about:blank",
+      })) as { targetId: string };
+
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+
+        // Set auth
+        await cdp.send(
+          "Runtime.evaluate",
+          { expression: `localStorage.setItem("cfpay_api_key", ${JSON.stringify(apiKey)})` },
+          { sessionId },
+        );
+        await cdp.send("Page.navigate", { url: origin }, { sessionId });
+        await new Promise((r) => setTimeout(r, 4000));
+
+        for (const tab of tabsToTest) {
+          try {
+            // Click the tab
+            await cdp.send(
+              "Runtime.evaluate",
+              {
+                expression: `document.querySelector('${tab.selector}')?.click()`,
+              },
+              { sessionId },
+            );
+            await new Promise((r) => setTimeout(r, 2000));
+
+            // Get page text after click
+            const { root } = (await cdp.send("DOM.getDocument", {}, { sessionId })) as any;
+            const { outerHTML } = (await cdp.send(
+              "DOM.getOuterHTML",
+              { nodeId: root.nodeId },
+              { sessionId },
+            )) as any;
+            const text = outerHTML.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+
+            const found = tab.expectText.filter((t) => text.includes(t));
+            const passed = found.length > 0;
+            results.push({
+              name: tab.name,
+              passed,
+              detail: passed
+                ? `Found: ${found.join(", ")}`
+                : `Missing expected text. Page had ${text.length} chars.`,
+            });
+          } catch (err) {
+            results.push({
+              name: tab.name,
+              passed: false,
+              detail: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      } finally {
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        tabs: results,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      if (browser && typeof browser.close === "function") {
+        await browser.close().catch(() => {});
+      }
+    }
+
+    const ok = results.every((r) => r.passed);
+    return { ok, tabs: results };
+  }
+
   /* --------------------------------- A2A ---------------------------------- */
 
   /**

@@ -1010,6 +1010,14 @@ export function createApp() {
     return c.json(result);
   });
 
+  app.post("/api/dashboard/qa/tabs", requireAuth, async (c) => {
+    const authHeader = c.req.header("Authorization") || "";
+    const apiKey = authHeader.replace(/^Bearer\s+/i, "") || undefined;
+    const qaAgent = getQAAgent(c);
+    const result = await qaAgent.qaDashboardTabs(apiKey);
+    return c.json(result);
+  });
+
   // TEMPORARY DEBUG: inspect webhook DO state
   app.get("/api/dashboard/debug-webhooks", requireAuth, async (c) => {
     const agent = getAgent(c);
