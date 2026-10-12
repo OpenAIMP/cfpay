@@ -391,6 +391,11 @@ export function createApp() {
     return c.env.CfmailAgent.get(agentId) as any;
   }
 
+  function getQAAgent(c: any) {
+    const agentId = c.env.QA_AGENT.idFromName("qa");
+    return c.env.QA_AGENT.get(agentId) as any;
+  }
+
   // Read-only by default. Their server can place real orders; enabling this is a
   // deliberate opt-in via the Worker secret PUBLIC_ALLOW_TRADING.
   /** Read-only unless PUBLIC_ALLOW_TRADING is explicitly "true" on the Worker. */
@@ -980,15 +985,15 @@ export function createApp() {
     if (!url || !/^https?:\/\//.test(url)) {
       return c.json({ error: "Valid http(s) url required" }, 400);
     }
-    const agent = getAgent(c);
-    const result = await agent.qaCheck(url, body.checks);
+    const qaAgent = getQAAgent(c);
+    const result = await qaAgent.qaCheck(url, body.checks);
     return c.json(result);
   });
 
   // Autonomous QA: check the dashboard itself.
   app.post("/api/dashboard/qa/dashboard", requireAuth, async (c) => {
-    const agent = getAgent(c);
-    const result = await agent.qaDashboard();
+    const qaAgent = getQAAgent(c);
+    const result = await qaAgent.qaDashboard();
     return c.json(result);
   });
 

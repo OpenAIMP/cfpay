@@ -47,6 +47,7 @@ import {
 export { CfmailAgentSQLite, CfmailAgentSQLite as CfmailAgent };
 export { PaymentsAgent } from "./payments-agent";
 export { EmailAgent } from "./email-agent";
+export { QAAgent } from "./qa-agent";
 
 const app = createApp();
 
