@@ -25,6 +25,14 @@ export interface Env {
   QA_AGENT: DurableObjectNamespace;
   /** Owns the webhook event log and the GitHub delivery registry. */
   WEBHOOK_AGENT: DurableObjectNamespace;
+  /**
+   * Whether the chat host may expose the payments agent as a dispatchable tool.
+   *
+   * paymentAgentTool can run payment.process, so putting it in the model's tool list
+   * grants the model the ability to choose to execute a paid request. Fail-closed like
+   * PUBLIC_ALLOW_TRADING: exactly "true" opts in, anything else leaves it out.
+   */
+  AGENT_TOOL_ALLOW_PAYMENTS?: string;
   /** Owns the Slack credential and the Slack message history. */
   SLACK_AGENT: DurableObjectNamespace;
   /**

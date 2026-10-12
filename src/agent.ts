@@ -1,4 +1,13 @@
 import { emailToolDefinition } from "./email-tool";
+import {
+  paymentAgentToolSchema,
+  slackAgentToolSchema,
+  webhookAgentToolSchema,
+} from "./agent-tool-schemas";
+import { EmailAgent } from "./email-agent";
+import { PaymentsAgent } from "./payments-agent";
+import { SlackAgent } from "./slack-agent";
+import { WebhookAgent } from "./webhook-agent";
 import { Agent, callable } from "agents";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime from "postal-mime";
@@ -43,6 +52,42 @@ import {
   type SlackEvent,
 } from "./slack";
 
+/**
+ * Tool name -> child agent class.
+ *
+ * Names carry an `Agent` suffix because the MCP tool namespace already uses the bare
+ * names: `email` is the deterministic capability tool, and `emailAgent` is the
+ * dispatched agent. Keeping them distinct means the model can be offered both and a
+ * reader can tell which is which from the call site.
+ */
+const AGENT_TOOL_DISPATCH = {
+  emailAgent: { cls: EmailAgent, displayName: "Email Agent" },
+  paymentAgent: { cls: PaymentsAgent, displayName: "Payments Agent" },
+  webhookAgent: { cls: WebhookAgent, displayName: "Webhook Agent" },
+  slackAgent: { cls: SlackAgent, displayName: "Slack Agent" },
+} as const;
+
+/**
+ * JSON Schema for each agent tool's arguments, as advertised to the model.
+ *
+ * Derived from the same declarations the agents validate against, so the model's view
+ * and the runtime's view cannot drift apart.
+ */
+const agentToolInputSchema = {
+  email: {
+    type: "object",
+    properties: {
+      request: { type: "string", description: "What to do with the mail resource." },
+      to: { type: "string", description: "Recipient, when sending." },
+      subject: { type: "string", description: "Subject, when sending." },
+      body: { type: "string", description: "Body, when sending." },
+    },
+    required: ["request"],
+  },
+  payments: paymentAgentToolSchema,
+  webhooks: webhookAgentToolSchema,
+  slack: slackAgentToolSchema,
+} as const;
 const DEFAULT_STATE: AgentState = {
   emails: [],
   payments: [],
@@ -1655,9 +1700,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
         }
 
         try {
-          const output = name === "email"
-            ? await this.callEmailTool((args ?? {}) as Record<string, unknown>)
-            : await callTool(token, name, args, session);
+          // AGENT_TOOL_DISPATCH: the capability agents are reached here, through the
+          // framework's own runAgentTool, which gives each child its own chat turn and
+          // an event stream the caller can follow. Names are prefixed to keep them from
+          // colliding with the MCP tool namespace, where "email" already exists as the
+          // deterministic capability tool.
+          const agentToolTarget = AGENT_TOOL_DISPATCH[name as keyof typeof AGENT_TOOL_DISPATCH];
+          const output =
+            name === "email"
+              ? await this.callEmailTool((args ?? {}) as Record<string, unknown>)
+              : agentToolTarget
+                ? await this.dispatchAgentTool(agentToolTarget, args)
+                : await callTool(token, name, args, session);
           const firstLine = output.split("\n").find((l) => l.trim() !== "") || "(empty)";
           trace.push({ name, args, ok: true, result: output, summary: firstLine.slice(0, 200) });
           resultIndexes.push(messages.length);
@@ -1691,6 +1745,42 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * it makes the model report that the provided function definitions do not
    * cover the task, and it then avoids the tools.
    */
+  /**
+   * Run one capability agent as a tool.
+   *
+   * Dispatches the child through the framework's runAgentTool and returns its summary,
+   * so the model sees a normal tool result. The child gets its own chat turn with its own
+   * tools and messages, and the framework owns the run registry and cancellation.
+   *
+   * `input` is the tool's arguments in the shape the child's schema declares. The child's
+   * own operation handling validates them, so a malformed argument fails there with a
+   * readable error rather than being silently coerced here.
+   */
+  private async dispatchAgentTool(
+    target: { cls: any; displayName: string },
+    args: unknown,
+  ): Promise<string> {
+    const run: any = await (this as any).runAgentTool(target.cls, {
+      input: args ?? {},
+      display: { name: target.displayName },
+    });
+
+    if (!run) return target.displayName + " returned nothing.";
+
+    // The framework reports terminal states rather than throwing, so each is surfaced
+    // as text the model can act on instead of a silent empty result.
+    if (run.status === "completed") {
+      return typeof run.summary === "string" && run.summary.length > 0
+        ? run.summary
+        : JSON.stringify(run.output ?? {}, null, 2).slice(0, 4000);
+    }
+    if (run.status === "aborted") return target.displayName + " run was cancelled.";
+    if (run.status === "interrupted") {
+      return target.displayName + " was interrupted before it finished and can be retried.";
+    }
+    return target.displayName + " failed: " + String(run.error ?? "unknown error");
+  }
+
   private toAiToolSpecs(tools: McpTool[]): Array<Record<string, unknown>> {
     const specs = tools.map((t) => ({
       type: "function",
@@ -1713,6 +1803,57 @@ Do not claim to have completed a payment unless you have received confirmation.`
         name: emailToolDefinition.name,
         description: emailToolDefinition.description,
         parameters: emailToolDefinition.parameters,
+      },
+    });
+
+    // The capability agents, as dispatchable tools. Same in-process pattern as email:
+    // the model picks a name, this loop runs the tool, and the child agent's own chat
+    // turn happens inside runAgentTool.
+    //
+    // PAYMENTS IS GATED. paymentAgentTool can run payment.process, which executes a
+    // paid request, so exposing it to the model is a grant of authority rather than a
+    // convenience. It stays out of the tool list unless AGENT_TOOL_ALLOW_PAYMENTS is
+    // set to exactly "true", the same fail-closed shape as PUBLIC_ALLOW_TRADING: not
+    // "not false", but an explicit opt-in.
+    specs.push({
+      type: "function",
+      function: {
+        name: "emailAgent",
+        description:
+          "Dispatch the email agent for a conversational request about the mail resource, or to send a described message.",
+        parameters: agentToolInputSchema.email,
+      },
+    });
+
+    if (this.env.AGENT_TOOL_ALLOW_PAYMENTS === "true") {
+      specs.push({
+        type: "function",
+        function: {
+          name: "paymentAgent",
+          description:
+            "Dispatch the payments agent to report on the ledger or to process an already-verified payment.",
+          parameters: agentToolInputSchema.payments,
+        },
+      });
+    }
+
+    specs.push({
+      type: "function",
+      function: {
+        name: "webhookAgent",
+        description:
+          "Dispatch the webhook agent to report on recorded deliveries. Any event it records is unverified.",
+        parameters: agentToolInputSchema.webhooks,
+      },
+    });
+
+    specs.push({
+      type: "function",
+      function: {
+        name: "slackAgent",
+        description:
+          "Dispatch the Slack agent to report on Slack connectivity and message history. It cannot post.",
+        parameters: agentToolInputSchema.slack,
       },
     });
 

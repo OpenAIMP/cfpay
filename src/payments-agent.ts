@@ -25,6 +25,8 @@
  */
 
 import { Agent, callable } from "agents";
+import { Think } from "@cloudflare/think";
+import { defaultModelId } from "./models";
 import type { Env, PaymentRecord, StripeCheckout, StripeCheckoutStatus } from "./types";
 import { ZERO_ADDRESS, generateId } from "./payments";
 
@@ -72,8 +74,42 @@ function prune(registry: Record<string, string>): Record<string, string> {
   return out;
 }
 
-export class PaymentsAgent extends Agent<Env, PaymentsState> {
+export class PaymentsAgent extends Think<Env, PaymentsState> {
   initialState: PaymentsState = { ...EMPTY };
+
+  /* ---------------------------- Think surface ---------------------------- */
+
+  /**
+   * Used only if this agent runs a chat turn, which happens when a host dispatches it
+   * through agentTool(). The money paths are NOT conversational: payment.process is
+   * reached as an operation call, so a spend is never chosen by a model. Keeping this
+   * the Worker's default model means a dispatch cannot quietly change which model
+   * answers.
+   */
+  override getModel(): string {
+    return defaultModelId();
+  }
+
+  override getSystemPrompt(): string {
+    return [
+      "You are the payments capability agent for this Worker.",
+      "You own the payment ledger, the Stripe checkout state machine, and replay protection for both rails.",
+      "You cannot move funds and you cannot refund. You can report on the ledger and process a request whose payment has already been verified.",
+      "Never claim a payment succeeded unless the ledger says so, and never speculate about an amount.",
+    ].join(" ");
+  }
+
+  /**
+   * No tools of its own.
+   *
+   * This agent is dispatched TO. It exposes capabilities through @callable() methods and
+   * A2A, which does not require an AI SDK tool set. An empty set is deliberate rather
+   * than unfinished, and it is also the safe default: a payments agent that could pick
+   * its own tools could pick one that spends.
+   */
+  override getTools(): Record<string, never> {
+    return {};
+  }
 
   /** Normalise whatever is stored into the current shape. */
   private state_(): PaymentsState {

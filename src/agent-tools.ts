@@ -1,20 +1,47 @@
 /**
- * Framework agent tools.
+ * Framework agent tools, one per capability agent.
  *
- * `agentTool(ChildClass, {...})` is the framework's agents-as-tools primitive: it
- * produces an AI SDK tool whose execution dispatches a retained sub-agent, and the
- * framework owns the run registry, replay and cancellation.
+ * `agentTool(ChildClass, {...})` is the framework's agents-as-tools primitive: it builds
+ * an AI SDK tool whose execution dispatches a retained sub-agent whose own chat turn
+ * runs with its own tools and messages.
  *
- * The child must be chat-capable, which is why EmailAgent is re-based on Think. Think
- * extends Agent, so every @callable() method and the whole A2A surface are inherited
- * unchanged: this adds a dispatch path without moving the deterministic one.
+ * TWO THINGS TO KNOW BEFORE USING ANY OF THESE.
  *
- * Read the note at the bottom about reachability before assuming a chat host uses this.
+ * 1. THE MONEY PATH IS NOT HERE FOR DISPATCH. `paymentAgentTool` includes
+ *    payment.process, so a host that wires it in can choose by itself to run a paid
+ *    request. That is a real grant of authority, not a convenience: the model decides.
+ *    The deterministic path - an operation call over A2A - has no model in it and should
+ *    remain the default for anything a human has not asked for in conversation.
+ *
+ * 2. THE SLACK TOOL CANNOT POST. Its operation list omits every write on purpose, so a
+ *    model cannot reach a post through it even if a caller would allow one. The write
+ *    lives on the RPC surface, reachable only from inside this Worker.
+ *
+ * Every tool below takes an `operation` plus its arguments, mirroring the A2A operation
+ * set, so there is one behaviour and two ways to reach it rather than two behaviours.
  */
 
 import { agentTool } from "agents/agent-tools";
 import { z } from "zod";
 import { EmailAgent } from "./email-agent";
+import { PaymentsAgent } from "./payments-agent";
+import { WebhookAgent } from "./webhook-agent";
+import { SlackAgent } from "./slack-agent";
+import {
+  paymentAgentToolSchema,
+  slackAgentToolSchema,
+  webhookAgentToolSchema,
+} from "./agent-tool-schemas";
+
+/**
+ * Convert a plain JSON Schema into the zod schema agentTool() requires.
+ *
+ * zod 4 has no fromJSONSchema, so this is the shape being asserted rather than derived
+ * field by field. The cast is honest about that: the JSON Schema stays the single
+ * declaration, and this is the bridge. A wrong shape fails at the A2A call, which
+ * validates its arguments itself, not silently.
+ */
+const asZod = <T>(schema: unknown) => schema as unknown as z.ZodType<T>;
 
 const emailInput = z.object({
   request: z
@@ -30,41 +57,83 @@ const emailInput = z.object({
 });
 
 export type EmailAgentToolInput = z.infer<typeof emailInput>;
+export type AgentToolInput = { operation: string; [k: string]: unknown };
+
+const COMMON_NOTE =
+  "For an exact action where you already know every field, the deterministic A2A " +
+  "operation is the better path: it does not add a model call and cannot mis-describe " +
+  "what it did.";
 
 /**
- * Dispatch the email agent to answer a conversational request about the mail resource.
+ * Dispatch the email agent: mail history, send quota, and sending a described message.
  *
- * This is the agent-tool path. The deterministic path - sending an exact message and
- * learning whether it left - stays the capability call on the A2A endpoint and the
- * `email` tool in the Worker's tool list, because that path has no model in it to
- * mis-describe a send.
+ * The one tool here whose action is genuinely conversational, because sending mail is
+ * something a person asks for in words.
  */
 export const emailAgentTool = agentTool<typeof emailInput>(EmailAgent, {
   description: [
     "Dispatch the email agent to inspect or act on the mail resource.",
     "Use it for conversational requests: summarise recent mail, report the send quota,",
     "or send a message described in natural language.",
-    "For an exact send where you already know the recipient, subject and body, the",
-    "`email` tool is the deterministic path and does not add a model call.",
+    COMMON_NOTE,
   ].join(" "),
   displayName: "Email Agent",
   inputSchema: emailInput,
 });
 
-/*
- * Reachability, stated plainly.
+/**
+ * Dispatch the payments agent.
  *
- * This tool is usable by any chat-capable agent in this project. It is not wired into
- * the monolith's own tool loop, and that is deliberate rather than an oversight:
- *
- *   - The monolith is `Agent`, not `Think`, and its chat runs a custom tool loop over
- *     MCP tool definitions plus the `email` capability tool. That loop is what the
- *     dashboard's chat tab speaks, and its protocol is not Think's.
- *   - Adding this tool to that list would mean a second model running inside the email
- *     agent's chat turn before a send, which is the mis-description risk the capability
- *     tool exists to avoid.
- *
- * So the primitive is adopted and available, and the shipped send path does not depend
- * on it. Adopting Think for the monolith would replace the dashboard's chat protocol
- * and is a bigger change than an email extraction.
+ * Includes payment.process, which runs a paid request. A host that wires this in grants
+ * the model the ability to choose that, so it is worth wiring only where a conversation
+ * is expected to result in fulfilment - and never as a way to bypass the x402 check,
+ * which lives in api.ts and is unaffected by this path.
  */
+export const paymentAgentTool = agentTool<AgentToolInput>(PaymentsAgent, {
+  description: [
+    "Dispatch the payments agent to report on the payment ledger, or to process a request",
+    "whose payment has already been verified.",
+    "It cannot move funds or refund. payment.process requires a verified claim or a card",
+    "reference; without one it refuses rather than doing unpaid work.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Payments Agent",
+  inputSchema: asZod<AgentToolInput>(paymentAgentToolSchema),
+});
+
+/**
+ * Dispatch the webhook agent.
+ *
+ * webhook.receive records an event as a2a-sourced and UNVERIFIED. It is listed because it
+ * is a real operation, but a host that wires this in should expect it to be used for
+ * recording, never as a way to assert that a provider delivered something.
+ */
+export const webhookAgentTool = agentTool<AgentToolInput>(WebhookAgent, {
+  description: [
+    "Dispatch the webhook agent to report on recorded webhook deliveries and",
+    "replay-protection state.",
+    "webhook.receive records an externally supplied event as unverified and a2a-sourced:",
+    "it never implies a provider signature was checked.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Webhook Agent",
+  inputSchema: asZod<AgentToolInput>(webhookAgentToolSchema),
+});
+
+/**
+ * Dispatch the Slack agent.
+ *
+ * Reads only. Posting has no operation here, so a model cannot reach a write through
+ * this tool even where a caller would permit one. That absence is the control, and the
+ * RPC surface remains the only way to post.
+ */
+export const slackAgentTool = agentTool<AgentToolInput>(SlackAgent, {
+  description: [
+    "Dispatch the Slack agent to report on Slack connectivity and message history.",
+    "It cannot post: sending to Slack is available only inside this Worker and is not",
+    "offered to a dispatched agent or to an external caller.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Slack Agent",
+  inputSchema: asZod<AgentToolInput>(slackAgentToolSchema),
+});

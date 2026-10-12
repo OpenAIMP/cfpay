@@ -25,6 +25,8 @@
  */
 
 import { Agent, callable } from "agents";
+import { Think } from "@cloudflare/think";
+import { defaultModelId } from "./models";
 import type { Env, WebhookEvent } from "./types";
 import { generateId } from "./payments";
 
@@ -68,8 +70,39 @@ function pruneDeliveries(registry: Record<string, string>): Record<string, strin
   return out;
 }
 
-export class WebhookAgent extends Agent<Env, WebhookState> {
+export class WebhookAgent extends Think<Env, WebhookState> {
   initialState: WebhookState = { ...EMPTY };
+
+  /* ---------------------------- Think surface ---------------------------- */
+
+  /**
+   * Used only when a host dispatches this agent through agentTool(). The channel paths
+   * are not conversational: they are operation calls, so nothing here is chosen by a
+   * model.
+   */
+  override getModel(): string {
+    return defaultModelId();
+  }
+
+  override getSystemPrompt(): string {
+    return [
+      "You are the webhook capability agent for this Worker.",
+            "You own the webhook event log and the GitHub delivery registry that makes redelivery safe.",
+            "You do NOT verify provider signatures: that happens at the Worker edge before you are called, and you must never treat an A2A caller as a verified provider.",
+      "Report only what the resource actually holds, and never claim an action succeeded unless it did.",
+    ].join(" ");
+  }
+
+  /**
+   * No tools of its own.
+   *
+   * This agent is dispatched TO. It exposes capabilities through @callable() methods and
+   * A2A, which does not require an AI SDK tool set. An empty set is deliberate: a
+   * capability agent that could pick its own tools could pick one that acts.
+   */
+  override getTools(): Record<string, never> {
+    return {};
+  }
 
   private state_(): WebhookState {
     const s = (this.state || {}) as Partial<WebhookState>;

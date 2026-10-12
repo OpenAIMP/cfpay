@@ -29,6 +29,8 @@
  */
 
 import { Agent, callable } from "agents";
+import { Think } from "@cloudflare/think";
+import { defaultModelId } from "./models";
 import type { Env, EmailRecord } from "./types";
 import { generateId } from "./payments";
 
@@ -52,8 +54,39 @@ export interface SlackState {
 
 const EMPTY: SlackState = { messages: [], totalReceived: 0 };
 
-export class SlackAgent extends Agent<Env, SlackState> {
+export class SlackAgent extends Think<Env, SlackState> {
   initialState: SlackState = { ...EMPTY };
+
+  /* ---------------------------- Think surface ---------------------------- */
+
+  /**
+   * Used only when a host dispatches this agent through agentTool(). The channel paths
+   * are not conversational: they are operation calls, so nothing here is chosen by a
+   * model.
+   */
+  override getModel(): string {
+    return defaultModelId();
+  }
+
+  override getSystemPrompt(): string {
+    return [
+      "You are the Slack capability agent for this Worker.",
+            "You own the Slack bot token, the Slack message history, and the ability to post.",
+            "You must never disclose the bot token, and you must never post on behalf of an external A2A caller: posting is reachable only from inside this Worker.",
+      "Report only what the resource actually holds, and never claim an action succeeded unless it did.",
+    ].join(" ");
+  }
+
+  /**
+   * No tools of its own.
+   *
+   * This agent is dispatched TO. It exposes capabilities through @callable() methods and
+   * A2A, which does not require an AI SDK tool set. An empty set is deliberate: a
+   * capability agent that could pick its own tools could pick one that acts.
+   */
+  override getTools(): Record<string, never> {
+    return {};
+  }
 
   private state_(): SlackState {
     const s = (this.state || {}) as Partial<SlackState>;

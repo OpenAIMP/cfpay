@@ -192,6 +192,79 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("every capability agent is a tool, and the model cannot spend by default", () => {
+  const tools = readCode("src/agent-tools.ts");
+  const host = readCode("src/agent.ts");
+  const schemas = readCode("src/agent-tool-schemas.ts");
+
+  it("declares a tool for all four capability agents", () => {
+    for (const t of ["emailAgentTool", "paymentAgentTool", "webhookAgentTool", "slackAgentTool"]) {
+      expect(tools, t + " must exist").toContain("export const " + t);
+    }
+    // Each must target the real class, not a lookalike.
+    for (const cls of ["EmailAgent", "PaymentsAgent", "WebhookAgent", "SlackAgent"]) {
+      // A regex rather than string surgery, which is how the first version broke.
+      expect(tools, "must dispatch " + cls).toMatch(
+        new RegExp("agentTool<[^>]*>\\(\\s*" + cls + "\\s*,"),
+      );
+    }
+  });
+
+  it("gates the payments tool behind an explicit opt-in", () => {
+    // paymentAgentTool can run payment.process. Putting it in the tool list without a
+    // gate would let the model choose to execute a paid request, which is authority
+    // rather than convenience.
+    expect(host).toContain("AGENT_TOOL_ALLOW_PAYMENTS");
+    expect(host).toMatch(/AGENT_TOOL_ALLOW_PAYMENTS\s*===\s*"true"/);
+    // Fail-closed: the payments spec must be inside the gate, not before it.
+    const gateAt = host.indexOf('AGENT_TOOL_ALLOW_PAYMENTS === "true"');
+    const paySpecAt = host.indexOf('name: "paymentAgent"');
+    const emailSpecAt = host.indexOf('name: "emailAgent"');
+    expect(gateAt, "the gate must exist").toBeGreaterThan(-1);
+    expect(paySpecAt, "the payments spec must exist").toBeGreaterThan(-1);
+    expect(gateAt, "the payments tool must be INSIDE the gate").toBeLessThan(paySpecAt);
+    expect(emailSpecAt, "the ungated tools come first").toBeLessThan(gateAt);
+  });
+
+  it("keeps the Slack tool read-only", () => {
+    // A model must not be able to reach a Slack post through a dispatched tool. The
+    // control is the absent operation, not a check inside the child.
+    const start = schemas.indexOf("slackAgentToolSchema");
+    const block = schemas.slice(start, start + 700);
+    for (const write of ["post", "send", "notify"]) {
+      expect(block, "slack schema must not offer " + write).not.toMatch(
+        new RegExp('"' + write + '\\.'),
+      );
+    }
+  });
+
+  it("dispatches through the framework primitive, not a bespoke call", () => {
+    // runAgentTool is the framework's own dispatch: it owns the run registry, the child
+    // chat turn and cancellation. A hand-rolled RPC call here would lose all three.
+    expect(host).toContain("runAgentTool(target.cls");
+    expect(host).toContain("AGENT_TOOL_DISPATCH");
+    for (const name of ["emailAgent", "paymentAgent", "webhookAgent", "slackAgent"]) {
+      expect(host, name + " must be routable").toContain(name + ":");
+    }
+  });
+
+  it("reports every terminal status rather than an empty result", () => {
+    // runAgentTool reports terminal states instead of throwing, so a silent empty
+    // return would look to the model like success with no output.
+    for (const status of ['"completed"', '"aborted"', '"interrupted"']) {
+      expect(host).toContain("run.status === " + status);
+    }
+  });
+
+  it("keeps every capability agent chat-capable", () => {
+    // agentTool requires a chat-capable child, which is what Think supplies. All four
+    // capability agents must be re-based or the tool cannot dispatch them.
+    for (const f of ["src/payments-agent.ts", "src/webhook-agent.ts", "src/slack-agent.ts", "src/email-agent.ts"]) {
+      expect(readCode(f), f + " must extend Think").toContain("extends Think<");
+      expect(readCode(f), f + " needs the Think surface").toContain("override getModel()");
+    }
+  });
+});
 describe("chat is an operation, not a resource-less agent", () => {
   const agent = readCode("src/agent.ts");
 
