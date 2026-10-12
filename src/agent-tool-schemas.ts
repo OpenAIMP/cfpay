@@ -77,3 +77,20 @@ export const qaAgentToolSchema = {
   },
   required: ["operation"],
 } as const;
+
+/** Chat capability operations. chat.transcript returns conversation contents. */
+export const chatAgentToolSchema = {
+  type: "object",
+  properties: {
+    operation: {
+      type: "string",
+      enum: ["chat.summary", "chat.totals", "chat.transcript", "chat.clear"],
+      description: "Which chat operation to perform.",
+    },
+    senderId: {
+      type: "string",
+      description: "Who the conversation belongs to. Required for chat.transcript and chat.clear.",
+    },
+  },
+  required: ["operation"],
+} as const;

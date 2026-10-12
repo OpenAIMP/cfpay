@@ -192,6 +192,78 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("ChatAgent owns the conversation resource", () => {
+  const chat = readCode("src/chat-agent.ts");
+  const agent = readCode("src/agent.ts");
+  const tools = readCode("src/agent-tools.ts");
+  const a2a = readCode("src/a2a.ts");
+  const index = readCode("src/index.ts");
+
+  it("is a full peer: Think, tool, A2A", () => {
+    expect(chat, "must be a Think child").toContain("extends Think<");
+    expect(chat).toContain("override getModel()");
+    expect(chat).toContain("override getSystemPrompt()");
+    expect(chat).toContain("override getTools()");
+    expect(tools).toMatch(/agentTool<[^>]*>\(\s*ChatAgent\s*,/);
+    expect(chat).toContain("async handleA2A(");
+    expect(a2a).toContain("export function chatCard(");
+    expect(index).toContain("A2A_CHAT_RPC_PATH");
+    expect(index).toContain("A2A_CHAT_CARD_PATH");
+  });
+
+  it("does not call a model in its own reply path", () => {
+    // The host owns model policy and the tool loop. A reply assembled here would have to
+    // dispatch sibling agents from a sub-agent, which is a graph nobody can reason about.
+    expect(chat, "must not run inference").not.toMatch(/AI\.run\(/);
+  });
+
+  it("does not call back into the monolith", () => {
+    // cfmail's sendOutboundEmail reaches EmailAgent, so a callback while cfmail awaited an
+    // A2A call here would deadlock the pair.
+    expect(chat).not.toMatch(/CfmailAgent\b\s*\./);
+    expect(chat).not.toMatch(/\bsendOutboundEmail\s*\(/);
+  });
+
+  it("keeps transcripts behind an explicit sender", () => {
+    // A summary cannot leak a conversation by accident; a transcript has to be asked for.
+    const start = chat.indexOf('case "chat.transcript"');
+    const block = chat.slice(start, start + 700);
+    expect(block).toContain("missing_sender");
+    expect(block).toMatch(/if \(!senderId\)/);
+  });
+
+  it("does not put message bodies in the A2A summary", () => {
+    // The summary may COUNT histories; it must not return their contents. Banned are
+    // the array itself and the per-message fields, not the word - which appears
+    // legitimately as `Object.keys(s.histories).length`. Testing for the word rather
+    // than the property failed this guard on correct code.
+    const start = chat.indexOf("async a2aSnapshot(");
+    const end = chat.indexOf("async handleA2A(", start);
+    const snap = chat.slice(start, end);
+    expect(snap).toContain("senders");
+    expect(snap, "must not return the history array").not.toMatch(/return[\s\S]*?histories\s*[,}]/);
+    for (const field of ["content", "role", "timestamp"]) {
+      expect(snap, "summary must not carry " + field).not.toMatch(
+        new RegExp("\\b" + field + "\\b"),
+      );
+    }
+  });
+
+  it("is reached by dispatch, not by a bespoke hop", () => {
+    // Chat is registered like every other capability agent, so the host reaches it the
+    // same way. A separate RPC path would be the inconsistency this agent removes.
+    expect(agent, "must be in the dispatch registry").toMatch(/chatAgent: \{ cls: ChatAgent/);
+    expect(agent, "must be advertised").toContain('name: "chatAgent"');
+    expect(agent, "must leave the model's tool set unpolluted").toContain("chatAgent: chatAgentTool");
+  });
+
+  it("delegates history reads and writes to the owner", () => {
+    expect(agent, "must read history from the chat agent").toContain("await chatStub.getHistory(");
+    expect(agent, "must write the turn there").toContain("await chatStub.recordTurn(");
+    expect(agent).toContain("private chatAgent()");
+    expect(agent).toContain("migrateLegacyChatHistory");
+  });
+});
 describe("the chat path actually dispatches the capability agents", () => {
   const agent = readCode("src/agent.ts");
 

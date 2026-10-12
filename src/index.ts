@@ -24,6 +24,8 @@ import {
   A2A_SLACK_RPC_PATH,
   A2A_QA_CARD_PATH,
   A2A_QA_RPC_PATH,
+  A2A_CHAT_CARD_PATH,
+  A2A_CHAT_RPC_PATH,
   A2A_RPC_PATH,
   a2aAuthorised,
   cfmailCard,
@@ -56,6 +58,7 @@ export { EmailAgent } from "./email-agent";
 export { WebhookAgent } from "./webhook-agent";
 export { SlackAgent } from "./slack-agent";
 export { QAAgent } from "./qa-agent";
+export { ChatAgent } from "./chat-agent";
 
 const app = createApp();
 
@@ -311,6 +314,46 @@ export default {
       const qStub = env.QA_AGENT.get(env.QA_AGENT.idFromName("qa")) as any;
       try {
         const outcome = await qStub.handleA2A(qbody, url.origin);
+        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (outcome.streamed) {
+          const events = Array.isArray(outcome.events) ? outcome.events : [];
+          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+        }
+        return new Response(JSON.stringify(outcome.result), {
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+      }
+    }
+    // Chat channel: its own card and its own /a2a endpoint.
+    //
+    // Most operations are counts; chat.transcript returns one sender's conversation
+    // and is a disclosure, so it requires naming the sender rather than defaulting.
+    if (url.pathname === A2A_CHAT_CARD_PATH) {
+      const { chatCard } = await import("./a2a");
+      return new Response(JSON.stringify(chatCard(url.origin)), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" },
+      });
+    }
+
+    if (url.pathname === A2A_CHAT_RPC_PATH) {
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key" },
+        });
+      }
+      if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      if (!a2aAuthorised(request, env)) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+      }
+      let cbody: unknown;
+      try { cbody = await request.json(); } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+      }
+      const cStub = env.CHAT_AGENT.get(env.CHAT_AGENT.idFromName("chat")) as any;
+      try {
+        const outcome = await cStub.handleA2A(cbody, url.origin);
         if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];

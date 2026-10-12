@@ -32,6 +32,10 @@
       {
         "name": "QA_AGENT",
         "class_name": "QAAgent"
+      },
+      {
+        "name": "CHAT_AGENT",
+        "class_name": "ChatAgent"
       }
     ]
   },
@@ -42,7 +46,8 @@
 { "tag": "v4", "new_sqlite_classes": ["EmailAgent"] },
     { "tag": "v5", "new_sqlite_classes": ["WebhookAgent"] },
     { "tag": "v6", "new_sqlite_classes": ["SlackAgent"] },
-  { "tag": "v7", "new_sqlite_classes": ["QAAgent"] }
+  { "tag": "v7", "new_sqlite_classes": ["QAAgent"] },
+    { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] }
   ],
   "send_email": [
     {

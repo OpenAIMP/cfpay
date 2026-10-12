@@ -35,6 +35,8 @@ export interface Env {
   AGENT_TOOL_ALLOW_PAYMENTS?: string;
   /** Owns the Slack credential and the Slack message history. */
   SLACK_AGENT: DurableObjectNamespace;
+  /** Owns per-sender chat conversation history. */
+  CHAT_AGENT: DurableObjectNamespace;
   /**
    * This Worker's own origin, used when one agent calls another over A2A.
    *

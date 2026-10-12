@@ -1,6 +1,7 @@
 import { emailToolDefinition } from "./email-tool";
 import {
   paymentAgentToolSchema,
+  chatAgentToolSchema,
   qaAgentToolSchema,
   slackAgentToolSchema,
   webhookAgentToolSchema,
@@ -9,6 +10,7 @@ import { EmailAgent } from "./email-agent";
 import { PaymentsAgent } from "./payments-agent";
 import { SlackAgent } from "./slack-agent";
 import { QAAgent } from "./qa-agent";
+import { ChatAgent } from "./chat-agent";
 import { WebhookAgent } from "./webhook-agent";
 import { Agent, callable } from "agents";
 import { Think } from "@cloudflare/think";
@@ -31,6 +33,7 @@ import type { UsageCost } from "./models";
 import type { ToolSet } from "ai";
 import {
   emailAgentTool,
+  chatAgentTool,
   qaAgentTool,
   slackAgentTool,
   webhookAgentTool,
@@ -76,6 +79,7 @@ const AGENT_TOOL_DISPATCH = {
   webhookAgent: { cls: WebhookAgent, displayName: "Webhook Agent" },
   slackAgent: { cls: SlackAgent, displayName: "Slack Agent" },
   qaAgent: { cls: QAAgent, displayName: "QA Agent" },
+  chatAgent: { cls: ChatAgent, displayName: "Chat Agent" },
 } as const;
 
 /**
@@ -99,6 +103,7 @@ const agentToolInputSchema = {
   webhooks: webhookAgentToolSchema,
   slack: slackAgentToolSchema,
   qa: qaAgentToolSchema,
+  chat: chatAgentToolSchema,
 } as const;
 const DEFAULT_STATE: AgentState = {
   emails: [],
@@ -202,6 +207,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
       webhookAgent: webhookAgentTool,
       slackAgent: slackAgentTool,
       qaAgent: qaAgentTool,
+      chatAgent: chatAgentTool,
     };
   }
 
@@ -216,6 +222,8 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
    * into another user's prompt. In-memory only (not persisted in DO state).
    */
   private chatHistoryBySender: Record<string, ChatMessage[]> = {};
+  /** Set once the pre-split histories have been adopted by the chat agent. */
+  private chatHistoryBackfilled = false;
   private slackSocket: WebSocket | null = null;
 
   async onStart(): Promise<void> {
@@ -436,7 +444,22 @@ Do not claim to have completed a payment unless you have received confirmation.`
     // Only the current sender's history is included, so one user's messages
     // can neither leak to nor steer another user's replies.
     const senderKey = senderId ?? "unknown";
-    const priorHistory = this.chatHistoryBySender[senderKey] ?? [];
+    // History is the chat agent's resource. Read it there, adopting anything this
+    // instance still holds from before the split. A failure here degrades to no history
+    // rather than failing the turn: an answer without context is worse than one with it,
+    // but far better than no answer at all.
+    let priorHistory: ChatMessage[] = [];
+    const chatStub = this.chatAgent();
+    if (chatStub) {
+      try {
+        await this.migrateLegacyChatHistory(chatStub);
+        priorHistory = await chatStub.getHistory(senderKey);
+      } catch (error) {
+        console.error("Chat history read failed; continuing without it:", error);
+      }
+    } else {
+      console.warn("CHAT_AGENT is unbound; this turn runs without conversation history.");
+    }
     for (const message of priorHistory.slice(-MAX_CHAT_HISTORY_PER_SENDER)) {
       messages.push({
         role: message.role as "user" | "assistant",
@@ -545,6 +568,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
         { role: "user", content: userMessage, timestamp: new Date().toISOString() },
         { role: "assistant", content: text, timestamp: new Date().toISOString() },
       ];
+      // Recorded in the chat agent, which owns it. This instance keeps no copy: two
+      // writers is how a conversation ends up half-remembered.
+      if (chatStub) {
+        try {
+          await chatStub.recordTurn(senderKey, userMessage, text);
+        } catch (error) {
+          // The reply still goes out. Losing the record is worse than losing nothing, but
+          // it is not worth failing a turn the user has already been answered on.
+          console.error("Chat history write failed:", error);
+        }
+      }
+      // kept only so the local field is not silently stale during the migration window
       this.chatHistoryBySender[senderKey] = updatedHistory.slice(-MAX_CHAT_HISTORY_PER_SENDER);
 
       return text;
@@ -1330,6 +1365,49 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
+  /**
+   * The chat agent stub, or null when the binding is absent.
+   *
+   * Conversation history lives there now. This instance keeps no copy: a history with two
+   * writers is how a conversation ends up half-remembered, which is what the split removes.
+   */
+  private chatAgent(): any | null {
+    const ns = (this.env as any).CHAT_AGENT;
+    if (!ns) return null;
+    try {
+      return ns.get(ns.idFromName("chat"));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Adopt this instance's pre-split chat histories into the chat agent, once.
+   *
+   * The local map is a plain field rather than persisted state, so it only exists on a
+   * warm instance - which is precisely why the history belongs in an agent that can
+   * store it. Adopting what is here is best-effort and idempotent; a cold instance simply
+   * has nothing to adopt.
+   */
+  private async migrateLegacyChatHistory(stub: any): Promise<void> {
+    if (this.chatHistoryBackfilled) return;
+    const legacy = this.chatHistoryBySender;
+    const senders = Object.keys(legacy ?? {});
+    try {
+      if (senders.length > 0) {
+        const outcome = await stub.backfillHistories(legacy);
+        console.log(
+          "Chat backfill: " + outcome.sendersAdopted + " sender(s), " + outcome.messagesAdopted + " message(s)",
+        );
+      }
+      this.chatHistoryBackfilled = true;
+    } catch (error) {
+      // Leave the flag unset so the next turn retries. A retry is cheap; a forgotten
+      // conversation is not.
+      console.error("Chat history backfill failed; will retry:", error);
+    }
+  }
+
   private paymentsAgent(): any | null {
     const ns = (this.env as any).PAYMENTS_AGENT;
     if (!ns) return null;
@@ -2032,6 +2110,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
       },
     });
 
+    specs.push({
+      type: "function",
+      function: {
+        name: "chatAgent",
+        description:
+          "Dispatch the chat agent to report on conversation history, or to read one sender's transcript. A transcript is a disclosure and needs an explicit senderId.",
+        parameters: agentToolInputSchema.chat,
+      },
+    });
+
     return specs;
   }
 
@@ -2102,9 +2190,20 @@ Do not claim to have completed a payment unless you have received confirmation.`
     message: string,
   ): Promise<{ response: string; history: ChatMessage[] }> {
     const response = await this.generateAIResponse(message, undefined, "dashboard");
+    // History from the chat agent, which owns it. generateAIResponse has just recorded
+    // this turn there, so the reply and the transcript come from one source.
+    let history: ChatMessage[] = [];
+    const stub = this.chatAgent();
+    if (stub) {
+      try {
+        history = await stub.getHistory("dashboard");
+      } catch (error) {
+        console.error("Chat history read failed for the dashboard:", error);
+      }
+    }
     return {
       response,
-      history: this.chatHistoryBySender["dashboard"] ?? [],
+      history,
     };
   }
 

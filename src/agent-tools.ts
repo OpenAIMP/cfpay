@@ -28,9 +28,11 @@ import { PaymentsAgent } from "./payments-agent";
 import { WebhookAgent } from "./webhook-agent";
 import { SlackAgent } from "./slack-agent";
 import { QAAgent } from "./qa-agent";
+import { ChatAgent } from "./chat-agent";
 import {
   paymentAgentToolSchema,
   slackAgentToolSchema,
+  chatAgentToolSchema,
   qaAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -156,4 +158,22 @@ export const qaAgentTool = agentTool<AgentToolInput>(QAAgent, {
   ].join(" "),
   displayName: "QA Agent",
   inputSchema: asZod<AgentToolInput>(qaAgentToolSchema),
+});
+
+/**
+ * Dispatch the chat agent, which owns conversation history.
+ *
+ * chat.transcript returns the contents of a private exchange, so it requires naming the
+ * sender. A summary cannot leak one by accident; a transcript has to be asked for.
+ */
+export const chatAgentTool = agentTool<AgentToolInput>(ChatAgent, {
+  description: [
+    "Dispatch the chat agent to report on conversation history, or to read one sender's",
+    "transcript.",
+    "chat.transcript returns private conversation contents and needs an explicit senderId.",
+    "Use chat.summary for counts, which discloses nothing.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Chat Agent",
+  inputSchema: asZod<AgentToolInput>(chatAgentToolSchema),
 });

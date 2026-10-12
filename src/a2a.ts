@@ -67,6 +67,9 @@ export const A2A_SLACK_CARD_PATH = "/a2a/slack/agent-card.json";
 export const A2A_QA_RPC_PATH = "/a2a/qa";
 export const A2A_QA_CARD_PATH = "/a2a/qa/agent-card.json";
 
+export const A2A_CHAT_RPC_PATH = "/a2a/chat";
+export const A2A_CHAT_CARD_PATH = "/a2a/chat/agent-card.json";
+
 /** True when the presented credential authorises a /a2a call. */
 export function a2aAuthorised(request: Request, env: Env): boolean {
   const expected = (env.DASHBOARD_API_KEY ?? "").trim();
@@ -488,6 +491,41 @@ export function qaCard(origin: string): AgentCard {
         examples: [
           "Check that https://example.com loads and contains Welcome.",
           "Does the dashboard still render?",
+        ],
+      },
+    ],
+  };
+}
+/**
+ * Card for the chat channel.
+ *
+ * States the disclosure plainly. Most operations here are counts and sender names,
+ * but chat.transcript returns the contents of a private exchange. A caller reading
+ * this card should know that a transcript is a disclosure and not a summary.
+ */
+export function chatCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Chat Agent",
+    description:
+      "Owns per-sender conversation history for the chat channel. Reports counts and sender names freely; chat.transcript returns one named sender's conversation, which is a disclosure of private exchange contents.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_CHAT_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "chat-channel",
+        name: "Chat channel",
+        description:
+          "Report on conversation history, return one sender's transcript, or clear it. The transcript is a disclosure: it returns message contents, and it requires naming the sender rather than defaulting. All operations require a bearer credential.",
+        tags: ["chat", "history", "disclosure-on-request"],
+        examples: [
+          "How many conversations are recorded?",
+          "Show me the transcript for dashboard.",
         ],
       },
     ],
