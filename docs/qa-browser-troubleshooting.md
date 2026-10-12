@@ -1,94 +1,22 @@
-# QAAgent Browser Troubleshooting
+# QAAgent — Capabilities, Limitations & Platform Guide
 
-## Browser Rendering limits (Workers Free plan)
+## What QAAgent is
 
-QAAgent drives headless Chromium through Cloudflare's Browser Rendering binding.
-On the Free plan the limits are tight — this is the #1 cause of QA failures in production.
+QAAgent is the autonomous QA agent for the cfpay dashboard (`pay.openaimp.com`). It drives headless Chromium through Cloudflare's Browser Rendering binding to verify the dashboard works. It extends Think (making it chat-capable and composable via `agentTool()`), but its QA checks are deterministic scripts — not model-driven.
 
-| Limit | Free plan value |
-|---|---|
-| Concurrent browsers per account | **3** |
-| New browser instances | 1 every 20 seconds |
-| Browser hours | 10 minutes per day |
-| Per-browser timeout | 60 seconds |
+## Capabilities
 
-Source: [Browser Rendering limits](https://developers.cloudflare.com/browser-rendering/limits/)
+Seven `@callable()` methods, all behind `requireAuth`, exposed as `POST /api/dashboard/qa/*` and as dashboard buttons:
 
-## Symptom: "Browser Rendering binding did not return a WebSocket"
-
-This error means the account's concurrent browser slots are exhausted — **not** that the binding is misconfigured. The `browser` binding (`BROWSER`) is declared in `wrangler.jsonc` and works; the failure occurs when `connectBrowser` (or `puppeteer.launch(env.BROWSER)`) is called while all 3 slots are occupied by sessions from previous runs that have not yet expired.
-
-**Remedy:** wait 3–5 minutes for leaked sessions to expire, then retry the QA run **once**. Do not run multiple QA checks in quick succession — each consumes slots.
-
-## Symptom: HTTP 500 from `/api/dashboard/qa/email-report`
-
-### Diagnosis (2026-10-12)
-
-Worker logs showed the fetch handler returning 500 after ~10.6s wall time (5ms CPU), while the QAAgent Durable Object completed `qaAndEmailReport` with `outcome: "ok"` after ~10.8s. The fetch handler errored **before** the DO finished, and the minified stack trace pointed at the RPC `await` line:
-
-```js
-const result = await qaAgent.qaAndEmailReport(apiKey, toEmail);
-```
-
-This rules out JSON serialization of the result (`c.json(result)` cannot throw before the result exists). The failure is at the **RPC layer**, one of:
-
-1. **Session exhaustion propagating through RPC** — the "did not return a WebSocket" error thrown inside the DO surfaces at the `await` in the fetch handler.
-2. **Structured-clone failure on the RPC return value** — per the [RPC docs](https://developers.cloudflare.com/workers/runtime-apis/rpc/), return values use Structured Clone. If the DO returns an object containing non-cloneable data (live browser/tab objects, WebSocket references), the method body completes (`outcome: "ok"`) but the transport fails, surfacing at the `await`.
-
-### Why `qaAndEmailReport` is especially vulnerable
-
-It opens **two** browser sessions in one invocation:
-
-1. `qaDashboardTabs(apiKey)` — one browser for tab checks
-2. `qaDashboard(apiKey)` — a second browser for the dashboard screenshot
-
-On a 3-slot Free plan, two slots consumed by a single report plus any lingering session from a prior run exhausts the account. The fix is to reuse a single browser session for both steps (open issue — see PR #67 discussion).
-
-### Debug harness
-
-To distinguish RPC-layer failure from serialization failure, wrap both in separate try/catches in the `/api/dashboard/qa/email-report` route:
-
-```ts
-let result;
-try {
-  result = await qaAgent.qaAndEmailReport(apiKey, toEmail);
-} catch (rpcErr: any) {
-  console.error("RPC threw:", rpcErr?.name, rpcErr?.message);
-  console.error("RPC cause:", rpcErr?.cause);
-  return c.json({ error: "RPC call failed", message: rpcErr?.message }, 500);
-}
-try {
-  return c.json(result);
-} catch (jsonErr: any) {
-  console.error("c.json threw:", jsonErr?.message);
-  return c.json({ error: "Serialization failed", detail: jsonErr?.message }, 500);
-}
-```
-
-- First catch fires → RPC layer (session exhaustion or structured-clone on return).
-- Second catch fires → result contains non-JSON-serializable data.
-
-## Operational rules
-
-1. **One QA run at a time.** Never run "Check This Dashboard" and "Email QA Report" back-to-back; each consumes browser slots.
-2. **Wait between runs.** Allow 3–5 minutes for sessions to expire after a failure before retrying.
-3. **Watch the daily budget.** 10 browser-minutes/day on Free — heavy QA testing can exhaust it.
-4. **Keep browser work in the DO, not the handler.** All `connectBrowser` calls already live in QAAgent methods; do not add browser code to API routes.
-5. **Close what you open.** Every `connectBrowser` must have a matching `Target.closeTarget` + `browser.close()` in a `finally` block. Verify this on every new QA method.
-
-## QAAgent capabilities (as of 2026-10-12)
-
-Seven `@callable()` QA methods, all behind `requireAuth`, exposed as `POST /api/dashboard/qa/*`:
-
-| Endpoint | Method | What it proves |
-|---|---|---|
-| `/qa/check` | `qaCheck(url, checks)` | Browser-check any URL with text assertions |
-| `/qa/dashboard` | `qaDashboard(apiKey)` | Dashboard loads, key elements present, screenshot captured |
-| `/qa/tabs` | `qaDashboardTabs(apiKey)` | Tab click-through with data verification (see below) |
-| `/qa/email-report` | `qaAndEmailReport(apiKey, toEmail)` | Tab checks + dashboard screenshot, emailed as PNG attachment |
-| `/qa/test-attachment` | `testEmailAttachmentUI(apiKey, toEmail)` | End-to-end Send Email form: fill fields, attach file via `DataTransfer`, submit via real button, verify success |
-| `/qa/payment-flow` | `qaPaymentFlow(apiKey)` | Payment request flow |
-| `/qa/edge-cases` | `qaEdgeCases(apiKey)` | Edge-case / negative-path checks |
+| Button | Endpoint | Method | What it proves |
+|---|---|---|---|
+| Run QA Check | `/qa/check` | `qaCheck(url, checks)` | Browser-check any URL with text assertions |
+| Check This Dashboard | `/qa/dashboard` | `qaDashboard(apiKey)` | Dashboard loads, key elements present, screenshot captured |
+| Verify Tab Data | `/qa/tabs` | `qaDashboardTabs(apiKey)` | Tab click-through with data verification (see below) |
+| Test Attachment via UI | `/qa/test-attachment` | `testEmailAttachmentUI(apiKey, toEmail)` | End-to-end Send Email form: fill fields, attach file via `DataTransfer`, submit via real button, verify success. Sends a **real email** with attachment. |
+| Check Payment Guards | `/qa/payment-flow` | `qaPaymentFlow(apiKey)` | Payment *gate* holds: 402 challenge is well-formed, malformed signatures refused. **No money moves** — no crypto, no card. |
+| Check Edge Cases | `/qa/edge-cases` | `qaEdgeCases(apiKey)` | Unauthenticated reads rejected, wrong API key rejected, unknown routes don't report success, errors are JSON not HTML |
+| Email QA Report | `/qa/email-report` | `qaAndEmailReport(apiKey, toEmail)` | Runs tab checks + dashboard screenshot on one shared browser session, emails the report with PNG attached. Sends a **real email**. |
 
 ### Tab coverage
 
@@ -115,3 +43,119 @@ const tabs = [
 ```
 
 Each entry maps a tab button ID → the data container it populates → the expected empty-state text. The `emptyText` lets the check distinguish "loaded but empty" from "failed to load". Adding a new tab requires a code change to this array — the assertions are tab-specific and can't be inferred generically.
+
+### Screenshots
+
+`qaAndEmailReport` attaches **one** screenshot: the dashboard homepage (`qa-dashboard-YYYY-MM-DD.png`), captured on the same shared browser session as the tab checks. The tab checks verify data but capture no per-tab screenshots. (Open issue: capture per-tab screenshots after each click lands.)
+
+## Limitations
+
+### Deterministic, not LLM-driven
+
+QAAgent extends Think but `getTools()` returns `{}`. The model has no tools, makes no decisions, and drives nothing. All QA methods are `@callable()` RPC endpoints triggered by dashboard buttons — not by prompts. You cannot chat with QAAgent and ask it to "check the dashboard"; there is no prompt-driven path.
+
+This is arguably correct for regression testing: deterministic scripts give you the same assertions every time. An LLM deciding what to click introduces non-determinism where you need it least. The missing piece is **orchestration and interpretation** — the model deciding which checks to run, analyzing failures, and explaining results — not replacing the deterministic checks themselves.
+
+### No webhook ingestion test
+
+`qaDashboardTabs` verifies the Webhooks *tab* loads data, but nothing sends a synthetic webhook to verify the ingestion pipeline end-to-end.
+
+### No real payment testing
+
+`qaPaymentFlow` tests that the payment gate rejects bad requests. It does not submit a real crypto or card payment. Testing real payment processing requires explicit authorization (no spend is currently authorized).
+
+### Single screenshot per report
+
+Only the dashboard homepage is screenshotted. Tab-level visual evidence is not captured.
+
+## Platform constraints
+
+### Browser Rendering limits (Workers Free plan)
+
+| Limit | Free plan | Paid plan |
+|---|---|---|
+| Concurrent browsers per account | **3** | Higher |
+| New browser instances | 1 every 20 seconds | Higher |
+| Browser hours | 10 minutes per day | Higher |
+| Per-browser timeout | 60 seconds | Higher |
+| `worker_loaders` (Dynamic Workers) | **Not available** | Available |
+
+Source: [Browser Rendering limits](https://developers.cloudflare.com/browser-rendering/limits/)
+
+### "Browser Rendering binding did not return a WebSocket"
+
+This error means the account's concurrent browser slots are exhausted — **not** that the binding is misconfigured. The `browser` binding (`BROWSER`) is declared in `wrangler.jsonc` and works. The failure occurs when `connectBrowser` is called while all 3 Free-plan slots are occupied by sessions from previous runs that have not yet expired.
+
+`qaAndEmailReport` previously opened **two** browser sessions per invocation (one for tabs, one for screenshot). This has been fixed to use a single shared session, but rapid successive test runs can still exhaust the 3-slot limit.
+
+**Remedy:** wait 3–5 minutes for sessions to expire, then retry **once**. Do not run multiple QA checks back-to-back.
+
+### `worker_loaders` requires a paid plan (critical)
+
+The model-driven browser-tools infrastructure (`LOADER` binding via `worker_loaders`, plus `CodemodeRuntime` export) **cannot deploy on the Free plan**. Any deploy with `worker_loaders` fails at the Cloudflare API with:
+
+> In order to use Dynamic Workers, you must switch to a paid plan [code: 10195]
+
+This broke all production deploys on 2026-10-12 (15:22–15:34 UTC) and was reverted. Consequence: `createBrowserTools()` / `browser_execute` (Cloudflare's recommended model-driven browser pattern) is **not available** on this account. All browser automation must use the hand-rolled CDP `connectBrowser` pattern.
+
+## What should be enabled (by plan)
+
+### Free plan (current) — deterministic CDP
+
+What works now and should stay:
+- Hand-rolled CDP via `connectBrowser` with `cdp.send(method, params, { sessionId })`
+- `BROWSER` binding in `wrangler.jsonc` (already present)
+- Single shared browser session per QA invocation (already implemented in `qaAndEmailReport`)
+- `finally`-block cleanup (`Target.closeTarget` + `browser.close()`) on every QA method
+
+What to add (no plan upgrade needed):
+- Expose QA methods via `getTools()` so the Think model can **orchestrate** them (decide which checks to run, interpret results) — the checks stay deterministic, the model handles composition and explanation
+- Per-tab screenshots in the email report (open issue)
+- Webhook ingestion test (synthetic webhook → verify it appears)
+- Auto-QA on deploy (workflow change via GitHub UI — the integration can't touch `.github/workflows/*`)
+
+### Paid plan — model-driven browser tools
+
+If the account upgrades, these become available:
+- `worker_loaders` binding named `LOADER` in `wrangler.jsonc`
+- `export { CodemodeRuntime } from "agents/browser"` in `src/index.ts`
+- `createBrowserTools()` in `getTools()` via dynamic `import("agents/browser/ai")` (not a static import — breaks Workers ESM)
+- Model-driven browser automation: the LLM decides what to click, fill, and verify, using `browser_execute`
+
+Note: even on a paid plan, keep the deterministic `@callable()` checks for regression. Use model-driven tools for exploratory testing and failure analysis, not as a replacement for assertions.
+
+## Operational rules
+
+1. **One QA run at a time.** Never run "Check This Dashboard" and "Email QA Report" back-to-back; each consumes browser slots.
+2. **Wait between runs.** Allow 3–5 minutes for sessions to expire after a failure before retrying.
+3. **Watch the daily budget.** 10 browser-minutes/day on Free — heavy QA testing can exhaust it.
+4. **Keep browser work in the DO, not the handler.** All `connectBrowser` calls live in QAAgent methods; do not add browser code to API routes.
+5. **Close what you open.** Every `connectBrowser` must have a matching `Target.closeTarget` + `browser.close()` in a `finally` block. Verify this on every new QA method.
+6. **Typecheck before pushing.** `npx tsc --noEmit` must pass. The 2026-10-12 `qa-agent.ts` corruption (PR #65) was caused by string-inserting a method mid-signature — never use string manipulation to add methods; write whole files or use proper edits.
+7. **The GitHub UI is the source of truth for CI status.** API-based CI readings proved unreliable on 2026-10-12; verify in the Actions tab.
+
+## Diagnosing the `/api/dashboard/qa/email-report` 500 (2026-10-12)
+
+Worker logs showed the fetch handler returning 500 after ~10.6s wall (5ms CPU) while the QAAgent DO completed `qaAndEmailReport` with `outcome: "ok"` after ~10.8s. The fetch handler errored **before** the DO finished, with the stack trace pointing at the RPC `await` line — ruling out `c.json(result)` serialization (which can't throw before the result exists).
+
+Candidate causes:
+1. **Session exhaustion propagating through RPC** — the "did not return a WebSocket" error thrown inside the DO surfaces at the `await` in the fetch handler.
+2. **Structured-clone failure on the RPC return value** — per the [RPC docs](https://developers.cloudflare.com/workers/runtime-apis/rpc/), return values use Structured Clone. If the DO returns non-cloneable data, the method completes but the transport fails. (Later ruled out: `tests/qa-payloads.test.ts` verifies all return shapes clone cleanly.)
+
+Debug harness (isolates RPC vs serialization):
+
+```ts
+let result;
+try {
+  result = await qaAgent.qaAndEmailReport(apiKey, toEmail);
+} catch (rpcErr: any) {
+  console.error("RPC threw:", rpcErr?.name, rpcErr?.message);
+  return c.json({ error: "RPC call failed", message: rpcErr?.message }, 500);
+}
+try {
+  return c.json(result);
+} catch (jsonErr: any) {
+  console.error("c.json threw:", jsonErr?.message);
+  return c.json({ error: "Serialization failed", detail: jsonErr?.message }, 500);
+}
+```
