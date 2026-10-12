@@ -4,6 +4,7 @@ import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
 import { ZERO_ADDRESS, formatAmount, formatEthAmount, parsePaymentClaim, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from "./agent";
+import { getAgentByName } from "agents";
 import { timingSafeStringEqual } from "./mcp-auth";
 import { getOAuthUserFromRequest } from "./auth";
 import {
@@ -392,8 +393,7 @@ export function createApp() {
   }
 
   function getQAAgent(c: any) {
-    const agentId = c.env.QA_AGENT.idFromName("qa");
-    return c.env.QA_AGENT.get(agentId) as any;
+    return getAgentByName(c.env.QA_AGENT, "qa") as any;
   }
 
   // Read-only by default. Their server can place real orders; enabling this is a
