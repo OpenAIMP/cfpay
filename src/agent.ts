@@ -626,7 +626,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
       if (stub) {
         try {
-          const result = await stub.sendEmail({ to, subject, body });
+          const result = await stub.sendThroughAgent({ to, subject, body });
           if (result && typeof result.ok === "boolean") {
             sentOk = result.ok;
             sendError = result.error;
@@ -1552,7 +1552,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
             });
           }
           case "email.send": {
-            const result = await stub.sendEmail({
+            const result = await stub.sendThroughAgent({
               to: String(args.to || ""),
               subject: String(args.subject || ""),
               body: String(args.body || ""),

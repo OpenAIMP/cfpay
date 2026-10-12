@@ -524,7 +524,7 @@ export class PaymentsAgent extends Agent<Env, PaymentsState> {
     const stub = emailAgentStub(this.env as any);
     if (stub) {
       try {
-        const result = await stub.sendEmail(args);
+        const result = await stub.sendThroughAgent(args);
         if (result && typeof result.ok === "boolean") {
           return result;
         }

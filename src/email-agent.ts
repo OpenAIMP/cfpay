@@ -122,7 +122,7 @@ export class EmailAgent extends Agent<Env, EmailState> {
    * failed". Those mean different things to an agent deciding whether to retry.
    */
   @callable()
-  async sendEmail(input: {
+  async sendThroughAgent(input: {
     to: string;
     subject: string;
     body: string;
@@ -293,7 +293,7 @@ export class EmailAgent extends Agent<Env, EmailState> {
 
       // ---- write ----
       case "email.send": {
-        const result = await this.sendEmail({
+        const result = await this.sendThroughAgent({
           to: String(args.to || ""),
           subject: String(args.subject || ""),
           body: String(args.body || ""),
