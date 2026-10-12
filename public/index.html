@@ -240,23 +240,6 @@
             </details>
           </div>
         </div>
-      <div id="qa" class="panel">
-        <div class="card">
-          <h3 style="font-size:1.1rem;margin-bottom:0.5rem;">Autonomous QA</h3>
-          <p style="color:var(--muted);font-size:0.85rem;margin-bottom:1rem;">Run browser-based checks against any URL. Uses Cloudflare Browser tools.</p>
-          <div class="form-group">
-            <input type="text" id="qaUrl" placeholder="https://pay.openaimp.com" style="width:100%;" />
-          </div>
-          <div class="form-group">
-            <input type="text" id="qaChecks" placeholder='Text to find (comma-separated), e.g. PaymentAgent, Dashboard' style="width:100%;" />
-          </div>
-          <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
-            <button class="btn" onclick="runQACheck()">Run QA Check</button>
-            <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
-          </div>
-          <div id="qaResult"></div>
-        </div>
-      </div>
 
         <div class="card" id="publicConnectedBox" style="display:none;">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
@@ -322,6 +305,23 @@
           <div class="form-group"><label>Message</label><textarea id="slackMessage" placeholder="Message to send to Slack..."></textarea></div>
           <button class="btn" onclick="sendSlack()">Send to Slack</button>
           <div id="slackResult" style="margin-top:1rem;"></div>
+        </div>
+      </div>
+      <div id="qa" class="panel">
+        <div class="card">
+          <h3 style="font-size:1.1rem;margin-bottom:0.5rem;">Autonomous QA</h3>
+          <p style="color:var(--muted);font-size:0.85rem;margin-bottom:1rem;">Run browser-based checks against any URL. Uses Cloudflare Browser tools.</p>
+          <div class="form-group">
+            <input type="text" id="qaUrl" placeholder="https://pay.openaimp.com" style="width:100%;" />
+          </div>
+          <div class="form-group">
+            <input type="text" id="qaChecks" placeholder='Text to find (comma-separated), e.g. PaymentAgent, Dashboard' style="width:100%;" />
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
+            <button class="btn" onclick="runQACheck()">Run QA Check</button>
+            <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
+          </div>
+          <div id="qaResult"></div>
         </div>
       </div>
     </div>
