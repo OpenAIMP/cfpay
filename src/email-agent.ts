@@ -15,8 +15,8 @@
  * business, and keeping it out means this agent can be tested without Workers AI.
  */
 
-import { Agent, callable } from "agents";
-
+import { callable } from "agents";
+import { Think } from "@cloudflare/think";
 import type { Env, EmailRecord } from "./types";
 import { generateId } from "./payments";
 import { defaultModelId } from "./models";
@@ -48,7 +48,7 @@ const EMPTY: EmailState = {
   sendLog: [],
 };
 
-export class EmailAgent extends Agent<Env> {
+export class EmailAgent extends Think<Env, EmailState> {
   initialState: EmailState = { ...EMPTY };
 
   /* ---------------------------- Think surface ---------------------------- */
@@ -62,11 +62,11 @@ export class EmailAgent extends Agent<Env> {
    * default the rest of the Worker uses means a dispatch cannot quietly change
    * which model answers.
    */
-  getModel(): string {
+  override getModel(): string {
     return defaultModelId();
   }
 
-  getSystemPrompt(): string {
+  override getSystemPrompt(): string {
     return [
       "You are the email capability agent for this Worker.",
       "You own the mail resource: the message history, outbound sends, and the inbound record path.",
@@ -83,7 +83,7 @@ export class EmailAgent extends Agent<Env> {
    * @callable() methods and A2A, which does not require an AI SDK tool set. An empty
    * set is deliberate rather than unfinished.
    */
-  getTools(): Record<string, never> {
+  override getTools(): Record<string, never> {
     return {};
   }
 
