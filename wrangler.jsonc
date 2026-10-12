@@ -22,12 +22,16 @@
         "class_name": "EmailAgent"
       },
       {
-        "name": "QA_AGENT",
-        "class_name": "QAAgent"
-      },
-      {
         "name": "WEBHOOK_AGENT",
         "class_name": "WebhookAgent"
+      },
+      {
+        "name": "SLACK_AGENT",
+        "class_name": "SlackAgent"
+      },
+      {
+        "name": "QA_AGENT",
+        "class_name": "QAAgent"
       }
     ]
   },
@@ -36,7 +40,9 @@
     { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] },
     { "tag": "v3", "new_sqlite_classes": ["PaymentsAgent"] },
 { "tag": "v4", "new_sqlite_classes": ["EmailAgent"] },
-    { "tag": "v5", "new_sqlite_classes": ["WebhookAgent"] }
+    { "tag": "v5", "new_sqlite_classes": ["WebhookAgent"] },
+    { "tag": "v6", "new_sqlite_classes": ["SlackAgent"] },
+  { "tag": "v7", "new_sqlite_classes": ["QAAgent"] }
   ],
   "send_email": [
     {
