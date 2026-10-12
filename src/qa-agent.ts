@@ -10,7 +10,7 @@
  * at /a2a/qa, and a dispatch from a host agent's tool list.
  */
 import { callable } from "agents";
-import { emailAgentTool } from "./agent-tools";
+
 import { Think } from "@cloudflare/think";
 import { defaultModelId } from "./models";
 import type { Env } from "./types";
@@ -54,12 +54,8 @@ export class QAAgent extends Think<Env> {
    * @callable() methods and A2A, which does not require an AI SDK tool set.
    * (Browser CDP is used directly in runBrowserCheckCDP below for deterministic checks.)
    */
-  override getTools() {
-    // EmailAgent as a tool: QAAgent can dispatch email sends via the Think framework.
-    // This makes the email capability available for LLM-driven dispatch.
-    return {
-      email: emailAgentTool,
-    };
+  override getTools(): Record<string, never> {
+    return {};
   }
   /**
    * Shared browser-check logic.
