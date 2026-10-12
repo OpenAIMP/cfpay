@@ -384,9 +384,9 @@ export class QAAgent extends Think<Env> {
       })) as { targetId: string };
       const sessionId = await cdp.attachToTarget(targetId);
 
-      // Helper to send CDP commands to the session
+      // Helper to send CDP commands to the session (sessionId is 3rd arg per CdpConnection API)
       const send = (method: string, params: any = {}) =>
-        cdp.send(method, { sessionId, ...params });
+        cdp.send(method, params, { sessionId });
 
       // Navigate to dashboard
       await send("Page.navigate", { url: "https://pay.openaimp.com" });
