@@ -1,3 +1,5 @@
+import type { Env } from "./types";
+
 /**
  * GitHub OAuth sign-on for the dashboard.
  *
