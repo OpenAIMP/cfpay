@@ -39,7 +39,21 @@ import { defaultModelId } from "./models";
 export const A2A_CARD_PATHS = ["/.well-known/agent-card.json", "/.well-known/agent.json"];
 
 /** Path that serves the JSON-RPC endpoint. */
+/** JSON-RPC endpoint for the cfmail capability. */
 export const A2A_RPC_PATH = "/a2a";
+
+/**
+ * JSON-RPC endpoint for the payments capability.
+ *
+ * Separate from A2A_RPC_PATH because the cards must advertise the path that
+ * actually routes to them: both previously used A2A_RPC_PATH, so a client that
+ * fetched the payments card and POSTed where it was told would have reached the
+ * monolith and the wrong capability.
+ */
+export const A2A_PAYMENTS_RPC_PATH = "/a2a/payments";
+
+/** Discovery path for the payments capability card. */
+export const A2A_PAYMENTS_CARD_PATH = "/a2a/payments/agent-card.json";
 
 /** True when the presented credential authorises a /a2a call. */
 export function a2aAuthorised(request: Request, env: Env): boolean {
@@ -219,7 +233,7 @@ export function paymentsCard(origin: string): AgentCard {
       "Owns the CFmail payment ledger: payments received and sent, Stripe card checkouts, and replay protection for both rails. Read-only over A2A.",
     version: "0.1.0",
     protocolVersion: "0.3.0",
-    url: origin + A2A_RPC_PATH,
+    url: origin + A2A_PAYMENTS_RPC_PATH,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain"],

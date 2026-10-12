@@ -8,6 +8,8 @@ import { CfmailAgentSQLite } from "./agent";
 import { verifyAndParseWebhook } from "./webhooks";
 import {
   A2A_CARD_PATHS,
+  A2A_PAYMENTS_CARD_PATH,
+  A2A_PAYMENTS_RPC_PATH,
   A2A_RPC_PATH,
   a2aAuthorised,
   cfmailCard,
@@ -91,14 +93,14 @@ export default {
     // Separate paths from the monolith so an A2A client can discover the
     // payments agent specifically rather than getting one card that speaks for
     // everything. The gate is the same credential.
-    if (url.pathname === "/a2a/payments/agent-card.json") {
+    if (url.pathname === A2A_PAYMENTS_CARD_PATH) {
       const { paymentsCard } = await import("./a2a");
       return new Response(JSON.stringify(paymentsCard(url.origin)), {
         headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" },
       });
     }
 
-    if (url.pathname === "/a2a/payments") {
+    if (url.pathname === A2A_PAYMENTS_RPC_PATH) {
       if (request.method === "OPTIONS") {
         return new Response(null, {
           headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key" },
