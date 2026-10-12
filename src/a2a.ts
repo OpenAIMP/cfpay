@@ -61,6 +61,9 @@ export const A2A_EMAIL_CARD_PATH = "/a2a/email/agent-card.json";
 export const A2A_WEBHOOK_RPC_PATH = "/a2a/webhooks";
 export const A2A_WEBHOOK_CARD_PATH = "/a2a/webhooks/agent-card.json";
 
+export const A2A_SLACK_RPC_PATH = "/a2a/slack";
+export const A2A_SLACK_CARD_PATH = "/a2a/slack/agent-card.json";
+
 /** True when the presented credential authorises a /a2a call. */
 export function a2aAuthorised(request: Request, env: Env): boolean {
   const expected = (env.DASHBOARD_API_KEY ?? "").trim();
@@ -418,6 +421,42 @@ export function webhookCard(origin: string): AgentCard {
           "How many webhook events have been recorded?",
           "Which providers have delivered recently?",
           "Has this GitHub delivery id already been seen?",
+        ],
+      },
+    ],
+  };
+}
+/**
+ * Card for the Slack channel.
+ *
+ * The card is a contract, so it states the absence as plainly as the capability:
+ * reads are available and posting is not. A card that omitted that would leave a
+ * caller to discover the refusal by trying, which is a worse way to learn it.
+ */
+export function slackCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Slack Agent",
+    description:
+      "Owns the Slack bot token, the Slack message history, and the ability to post. Reads are available over A2A; posting is not, because a shared bearer credential must not be enough to speak in this workspace. The bot token is never returned by any operation.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_SLACK_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "slack-channel",
+        name: "Slack channel",
+        description:
+          "Report on Slack connectivity and message history. Posting is deliberately not offered: slack.post, slack.notify and slack.send are refused by name. The credential is never disclosed, only whether one is configured and where it came from.",
+        tags: ["slack", "read-only", "no-credential-disclosure"],
+        examples: [
+          "Is Slack connected?",
+          "How many Slack messages have been recorded?",
+          "What were the last few message subjects?",
         ],
       },
     ],

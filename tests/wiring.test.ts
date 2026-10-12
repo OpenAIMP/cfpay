@@ -192,6 +192,48 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("the Slack boundary is enforced by absence, not by a check", () => {
+  const sagent = readCode("src/slack-agent.ts");
+
+  it("exposes no A2A path to posting", () => {
+    // The control is the missing switch case. A guard that a check exists would be
+    // weaker: a check can be removed or bypassed, an absent operation cannot be.
+    expect(sagent).toContain('case "slack.list"');
+    for (const forbidden of ["slack.post", "slack.notify", "slack.send"]) {
+      const postCase = new RegExp(
+        'case "' + forbidden + '":[\\s\\S]{0,200}?await this\\.(postMessage|notifyViaWebhook)',
+      );
+      expect(sagent, forbidden + " must not map to a write").not.toMatch(postCase);
+    }
+  });
+
+  it("never returns the bot token from an operation", () => {
+    // Scoped to handleA2AMessage, which is the boundary. A file-wide regex is wrong
+    // here: the token MUST be readable inside the agent to call Slack at all, so
+    // matching any `return ... botToken` flags the private accessor and the status
+    // method's field name rather than a disclosure - which is exactly what the first
+    // version of this guard did.
+    const start = sagent.indexOf("async handleA2AMessage(");
+    const end = sagent.indexOf("\n  }\n", sagent.indexOf("default:", start));
+    expect(start, "handleA2AMessage must exist").toBeGreaterThan(-1);
+    const boundary = sagent.slice(start, end > start ? end : undefined);
+    expect(boundary.length).toBeGreaterThan(0);
+
+    // No reference to the credential, or to the accessor that yields it, anywhere on
+    // the A2A path. botTokenStatus is fine: it answers whether one exists, not what.
+    expect(boundary).not.toMatch(/\.botToken\b/);
+    expect(boundary).not.toMatch(/\bbotTokenForUse\b/);
+    expect(boundary).toContain("botTokenStatus");
+
+    // The accessor is private, so the only way to use the token is to ask it to post.
+    expect(sagent).toContain("private botTokenForUse()");
+  });
+
+  it("does not call back into the monolith", () => {
+    expect(sagent).not.toMatch(/CfmailAgent\b\s*\./);
+    expect(sagent).not.toMatch(/\bsendOutboundEmail\s*\(/);
+  });
+});
 describe("the webhook boundary is enforced in code, not assumed", () => {
   const wagent = readCode("src/webhook-agent.ts");
   const whelpers = read("src/webhooks.ts");

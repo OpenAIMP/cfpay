@@ -23,6 +23,8 @@ export interface Env {
   EMAIL_AGENT: DurableObjectNamespace;
   /** Owns the webhook event log and the GitHub delivery registry. */
   WEBHOOK_AGENT: DurableObjectNamespace;
+  /** Owns the Slack credential and the Slack message history. */
+  SLACK_AGENT: DurableObjectNamespace;
   /**
    * This Worker's own origin, used when one agent calls another over A2A.
    *
