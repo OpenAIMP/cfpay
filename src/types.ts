@@ -53,6 +53,14 @@ export interface Env {
   SLACK_CLIENT_SECRET?: string;
   // Cloudflare Browser binding for autonomous QA (issue #32)
   BROWSER?: any;
+  /**
+   * Worker Loader binding, required by createBrowserTools(). The codemode
+   * runtime that backs the model-driven browser tools executes snippets in a
+   * sandbox spawned from this binding, so the tools cannot be built without it.
+   * Optional: older deployments without the binding degrade to the CDP checks
+   * rather than failing to boot.
+   */
+  LOADER?: WorkerLoader;
   // GitHub OAuth for dashboard sign-on (additive; API-key auth untouched)
   GH_CLIENT_ID?: string;
   GH_CLIENT_SECRET?: string;

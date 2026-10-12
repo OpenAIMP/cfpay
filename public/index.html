@@ -318,9 +318,13 @@
           <div class="form-group">
             <input type="text" id="qaChecks" placeholder='Text to find (comma-separated), e.g. PaymentAgent, Dashboard' style="width:100%;" />
           </div>
-          <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
+          <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
             <button class="btn" onclick="runQACheck()">Run QA Check</button>
             <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
+            <button class="btn" onclick="runQATabs()" style="background:var(--muted);">Verify Tab Data</button>
+            <button class="btn" onclick="runQAAttachment()">Test Attachment via UI</button>
+            <button class="btn" onclick="runQAPaymentFlow()" style="background:var(--muted);">Check Payment Guards</button>
+            <button class="btn" onclick="runQAEdgeCases()" style="background:var(--muted);">Check Edge Cases</button>
             <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);">
               <h4 style="margin-bottom:0.5rem;font-size:0.9rem;">Email QA Report</h4>
               <div class="form-group"><label>Send report to</label><input type="email" id="qaEmailTo" placeholder="you@example.com" /></div>
@@ -466,6 +470,81 @@
         if (res.emailed) { result.innerHTML = '<div class="status-msg success">QA report emailed with dashboard screenshot!</div>'; }
         else { result.innerHTML = '<div class="status-msg error">Failed: ' + (res.error || 'Unknown error') + '</div>'; }
       } catch (e) { result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; }
+    }
+    // Renders the checks[] shape the newer QA methods return, and the tabs[]
+    // shape qaDashboardTabs returns.
+    function renderQAChecks(res, el) {
+      if (!res) { el.innerHTML = '<p style="color:red;">No result returned.</p>'; return; }
+      let html = '<div style="margin-top:1rem;">';
+      html += '<p><strong>Result:</strong> <span style="color:' + (res.ok ? 'green' : 'red') + ';">' + (res.ok ? 'PASS' : 'FAIL') + '</span></p>';
+      if (res.detail) html += '<p>' + escapeHtml(res.detail) + '</p>';
+      if (res.error) html += '<p style="color:red;">' + escapeHtml(res.error) + '</p>';
+      const rows = res.checks || res.tabs;
+      if (rows && rows.length) {
+        html += '<ul style="margin:0.5rem 0;">';
+        for (const c of rows) {
+          html += '<li style="color:' + (c.passed ? 'green' : 'red') + ';">'
+            + (c.passed ? 'PASS' : 'FAIL') + ' ' + escapeHtml(c.name)
+            + (c.detail ? ' - ' + escapeHtml(c.detail) : '')
+            + '</li>';
+        }
+        html += '</ul>';
+      }
+      html += '</div>';
+      el.innerHTML = html;
+    }
+    // Reuses the recipient field the Email QA Report button already uses, so
+    // there is one place to type a test address.
+    function qaRecipient() {
+      const el = document.getElementById('qaEmailTo');
+      const value = el ? el.value.trim() : '';
+      if (!value) { alert('Enter a test recipient address first.'); return null; }
+      return value;
+    }
+    async function runQATabs() {
+      const resultEl = document.getElementById('qaResult');
+      resultEl.innerHTML = '<p style="color:var(--muted);">Verifying tab data...</p>';
+      try {
+        const res = await fetch('/api/dashboard/qa/tabs', {
+          method: 'POST',
+          headers: { 'X-API-Key': localStorage.getItem('cfmail_api_key') || '' },
+        });
+        renderQAChecks(await res.json(), resultEl);
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">Tab check failed: ' + escapeHtml(e.message || e) + '</p>';
+      }
+    }
+    async function runQAAttachment() {
+      const toEmail = qaRecipient();
+      if (!toEmail) return;
+      const resultEl = document.getElementById('qaResult');
+      resultEl.innerHTML = '<p style="color:var(--muted);">Driving the Send Email form...</p>';
+      try {
+        const res = await api('/api/dashboard/qa/test-attachment', 'POST', { toEmail });
+        renderQAChecks({ ok: res.ok, detail: res.detail, error: res.error }, resultEl);
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">Attachment test failed: ' + escapeHtml(e.message || e) + '</p>';
+      }
+    }
+    async function runQAPaymentFlow() {
+      const resultEl = document.getElementById('qaResult');
+      resultEl.innerHTML = '<p style="color:var(--muted);">Checking payment guards...</p>';
+      try {
+        const res = await api('/api/dashboard/qa/payment-flow', 'POST', {});
+        renderQAChecks(res, resultEl);
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">Payment check failed: ' + escapeHtml(e.message || e) + '</p>';
+      }
+    }
+    async function runQAEdgeCases() {
+      const resultEl = document.getElementById('qaResult');
+      resultEl.innerHTML = '<p style="color:var(--muted);">Checking edge cases...</p>';
+      try {
+        const res = await api('/api/dashboard/qa/edge-cases', 'POST', {});
+        renderQAChecks(res, resultEl);
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">Edge-case check failed: ' + escapeHtml(e.message || e) + '</p>';
+      }
     }
     function renderQAResult(res, el) {
       if (res.error) { el.innerHTML = '<p style="color:red;">Error: ' + res.error + '</p>'; return; }

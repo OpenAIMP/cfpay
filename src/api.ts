@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { safeStringify } from "./browser-lifecycle";
 import Stripe from "stripe";
 import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
@@ -400,6 +401,37 @@ export function createApp() {
    * properties of a Promise without the compiler objecting, so every QA route threw a
    * TypeError and returned a plain-text 500 the dashboard could not parse.
    */
+  /**
+   * Serialize a QA result, turning a serialization failure into a named 500.
+   *
+   * c.json() serializes inside Hono, AFTER the handler returns, so a plain
+   * try/catch around it would not catch a failure - the response would still be
+   * an opaque 500 with no explanation, which is the situation this replaces.
+   * Serializing here keeps the failure inside the try.
+   *
+   * The stringify is a CHECK, not a transformation: the original value is
+   * still what gets sent, so this cannot alter the payload (a JSON round-trip
+   * would silently drop undefined fields, which is why it is not used).
+   *
+   * The log line matters as much as the response: without the culprit and a
+   * bounded preview, the only evidence is "500" and the cause has to be
+   * guessed. safeStringify is used because stringifying the value that just
+   * failed to serialize would throw again and destroy the diagnostic.
+   */
+  function jsonOr500(c: any, result: unknown, label: string) {
+    try {
+      JSON.stringify(result);
+      return c.json(result as any);
+    } catch (e) {
+      console.error(
+        `Failed to serialize QA result (${label}):`,
+        e instanceof Error ? e.message : e,
+        safeStringify(result),
+      );
+      return c.json({ error: "Failed to serialize result", route: label }, 500);
+    }
+  }
+
   async function getQAAgent(c: any) {
     // Awaiting is the fix: getAgentByName resolves to Promise<DurableObjectStub<T>>, and
     // the previous version returned that Promise while callers used it as a stub. Every QA
@@ -420,6 +452,23 @@ export function createApp() {
         apiKey: string,
         toEmail: string,
       ): Promise<{ ok: boolean; emailed: boolean; tabs: unknown[]; error?: string }>;
+      testEmailAttachmentUI(
+        apiKey: string,
+        toEmail: string,
+      ): Promise<{ ok: boolean; detail: string; error?: string }>;
+      qaPaymentFlow(origin?: string): Promise<{
+        ok: boolean;
+        detail: string;
+        checks: { name: string; passed: boolean; detail: string }[];
+        unpaidPathVerified: boolean;
+        settlementVerified: boolean;
+        error?: string;
+      }>;
+      qaEdgeCases(origin?: string): Promise<{
+        ok: boolean;
+        detail: string;
+        checks: { name: string; passed: boolean; detail: string }[];
+      }>;
     };
   }
 
@@ -1104,9 +1153,49 @@ export function createApp() {
     }
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaAndEmailReport(apiKey, toEmail);
+    return jsonOr500(c, result, "qa/email-report");
+  });
+
+
+
+  // Drives the dashboard's Send Email form in a real browser, including an
+  // attachment. Authenticated, and the recipient is a REQUIRED caller-supplied
+  // parameter rather than a constant, so this can never mail a hard-coded
+  // address and a caller must state where the test mail goes.
+  app.post("/api/dashboard/qa/test-attachment", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const toEmail = body.toEmail as string;
+    if (!toEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail)) {
+      return c.json({ error: "A valid toEmail is required" }, 400);
+    }
+    const presented = c.req.header("X-API-Key") || "";
+    const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const apiKey = presented || bearer || undefined;
+    if (!apiKey) {
+      return c.json({ error: "API key required" }, 401);
+    }
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.testEmailAttachmentUI(apiKey, toEmail);
     return c.json(result);
   });
 
+  // Payment guards only. This route cannot move funds: qaPaymentFlow never signs
+  // a transaction, it checks that an unpaid request is challenged and that a
+  // malformed one is refused.
+  app.post("/api/dashboard/qa/payment-flow", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaPaymentFlow(body.origin as string | undefined);
+    return c.json(result);
+  });
+
+  // Negative and edge-case assertions.
+  app.post("/api/dashboard/qa/edge-cases", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaEdgeCases(body.origin as string | undefined);
+    return c.json(result);
+  });
 
   // TEMPORARY DEBUG: inspect webhook DO state
   app.get("/api/dashboard/debug-webhooks", requireAuth, async (c) => {
