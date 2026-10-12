@@ -447,7 +447,7 @@ change in the same commit.
 | Package | Version | Why |
 |---|---|---|
 | `agents` | `0.28.0` | Durable Object agents, routing, A2A and MCP entry points |
-| `@cloudflare/think` | `0.20.2` | Chat-capable agent base, and the `agentTool()` dispatch target |
+| `@cloudflare/think` | `0.20.2` | Chat-capable base for `EmailAgent`, which makes it a valid `agentTool()` child |
 | `ai` | `^7.0.0` | Peer of `agents@0.28` |
 | `@modelcontextprotocol/client` | `2.0.0` | Required peer — `agents/mcp/client` imports it directly |
 | `@modelcontextprotocol/server` | `2.0.0` | Required peer — `agents/mcp/server` imports it directly |
@@ -495,20 +495,44 @@ for explicit fan-out. What was measured here, rather than assumed:
   model turn with its own tools and messages. That is a different mechanism from a
   capability call, and it is why it is not used for email here.
 
-### Why email is a shared tool and not an `agentTool()`
+### Email: two paths, and which to use
 
-Email is exposed as one definition in `src/email-tool.ts`, reachable three ways:
-direct Durable Object RPC, A2A at `/a2a/email`, and the model's tool list. The
-operation is dispatched by the owning agent, and the facts come back as data.
+Both exist on purpose, and they are not redundant.
 
-An `agentTool()` would make the email agent answer a **chat turn** of its own, which
-means a second model in the path of every send — a second place for a send to be
-mis-described, and a `Think` conversation the caller cannot see. For a capability
-whose whole job is "send this exact message and tell me whether it left", an operation
-call is the honest shape. The framework primitive remains available and the tool
-definition is deliberately shaped so it can be handed to `agentTool` as its input
-schema if a chat-driven email agent is ever wanted.
+**The capability call** is `email` on the A2A endpoint `/a2a/email`, and the `email`
+tool in the Worker's tool list. There is **no model in the path**: it sends an exact
+message and reports whether it left, including when the rate limit refused it. This is
+what the payments agent and the dashboard use.
 
+**The agent tool** is `emailAgentTool` in `src/agent-tools.ts`, built with the
+framework's `agentTool(EmailAgent, {...})`. It is for a *conversational* request —
+"summarise recent mail" — where the email agent runs a chat turn of its own.
+
+`EmailAgent` is re-based on `Think` to make that possible, because `agentTool` requires
+a chat-capable child. `Think<Env, State, Props> extends Agent<Env, State, Props>`, so
+every `@callable()` method, the A2A surface and the send quota are inherited unchanged:
+the re-base adds a dispatch path without moving the deterministic one. The tests assert
+that all six capability methods survive, because `agentTool` dispatches the *same* agent
+and a lost method would break direct callers silently.
+
+Choose by whether you know the message:
+
+| If you... | Use | Why |
+|---|---|---|
+| know the recipient, subject and body | `email` capability call | deterministic; no model can mis-describe the send |
+| want a conversational answer about mail | `emailAgentTool` | the agent reasons over the resource |
+
+**`emailAgentTool` is not wired into the monolith's tool loop**, deliberately. The
+monolith is `Agent`, not `Think`, and its chat runs a custom loop over MCP tool
+definitions plus the `email` capability tool — that loop is what the dashboard's chat
+tab speaks, and its protocol is not Think's. Adding the agent tool there would put a
+second model inside the email agent's turn before a send, which is the mis-description
+risk the capability tool exists to avoid. Adopting `Think` for the monolith would
+replace the dashboard's chat protocol and is a larger change than an email extraction.
+
+**Cost, measured.** Adopting `Think` for the email agent grows the Worker bundle from
+**5.83 MiB to 11.61 MiB**, because `Think` is now genuinely pulled in rather than being
+an unused declaration. Worth knowing before adopting it for the monolith as well.
 ### Rollback
 
 The state before this migration is tagged:
