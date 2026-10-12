@@ -239,21 +239,31 @@ export function createCfmailMcpHandler(env: Env) {
           type: typeof browser,
         };
 
-        // Now the decisive test: ask for a session exactly as connectBrowser does, and
-        // report the status and whether a WebSocket came back. This distinguishes
-        // "not provisioned" from "provisioned but refused".
+        // The decisive test: run connectBrowser itself, which is what the QA agent calls,
+        // and drive one real CDP command through it. A session opened here is closed and
+        // the target removed, so the probe leaves nothing behind - an unclosed session
+        // exhausts the concurrency limit and causes the failure this is meant to find.
         try {
-          const res = await browser.fetch("https://localhost/v1/devtools/browser", {
-            headers: { Upgrade: "websocket" },
-          });
-          probe.sessionRequest = {
-            status: res.status,
-            ok: res.ok,
-            returnedWebSocket: Boolean(res.webSocket),
-            sessionHeader: res.headers?.get?.("cf-browser-session-id") ?? null,
-          };
+          const { connectBrowser } = await import("agents/browser");
+          const conn = await connectBrowser(browser);
+          try {
+            const created = (await conn.send("Target.createTarget", {
+              url: "about:blank",
+            })) as { targetId: string };
+            const sessionId = await conn.attachToTarget(created.targetId);
+            const doc = (await conn.send("DOM.getDocument", {}, { sessionId })) as any;
+            await conn.send("Target.closeTarget", { targetId: created.targetId }).catch(() => {});
+            probe.connectBrowser = {
+              ok: true,
+              targetId: created.targetId,
+              domRootPresent: Boolean(doc?.root),
+            };
+          } finally {
+            // Closes the session, which also deletes it via the connection's onClose.
+            conn.close();
+          }
         } catch (error) {
-          probe.sessionRequest = { error: String(error) };
+          probe.connectBrowser = { ok: false, error: String(error) };
         }
       }
 
