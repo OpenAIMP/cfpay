@@ -20,6 +20,10 @@
       {
         "name": "EMAIL_AGENT",
         "class_name": "EmailAgent"
+      },
+      {
+        "name": "QA_AGENT",
+        "class_name": "QAAgent"
       }
     ]
   },
@@ -27,7 +31,8 @@
     { "tag": "v1", "new_classes": ["CfmailAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] },
     { "tag": "v3", "new_sqlite_classes": ["PaymentsAgent"] },
-{ "tag": "v4", "new_sqlite_classes": ["EmailAgent"] }
+{ "tag": "v4", "new_sqlite_classes": ["EmailAgent"] },
+  { "tag": "v5", "new_sqlite_classes": ["QAAgent"] }
   ],
   "send_email": [
     {

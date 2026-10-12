@@ -21,6 +21,8 @@ export interface Env {
   PAYMENTS_AGENT: DurableObjectNamespace;
   /** Owns the mail resource; other agents send through it. */
   EMAIL_AGENT: DurableObjectNamespace;
+  /** Autonomous QA agent (Think-based). */
+  QA_AGENT: DurableObjectNamespace;
   /**
    * This Worker's own origin, used when one agent calls another over A2A.
    *
