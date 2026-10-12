@@ -8,11 +8,9 @@ import { CfmailAgentSQLite } from "./agent";
 import { verifyAndParseWebhook } from "./webhooks";
 import {
   A2A_CARD_PATHS,
-  A2A_PAYMENTS_CARD_PATH,
-  A2A_PAYMENTS_RPC_PATH,
   A2A_RPC_PATH,
   a2aAuthorised,
-  cfmailCard,
+  agentCard,
   streamFromAsyncIterable,
 } from "./a2a";
 import { createCfmailMcpHandler } from "./mcp";
@@ -37,7 +35,6 @@ import {
 } from "./slack";
 
 export { CfmailAgentSQLite, CfmailAgentSQLite as CfmailAgent };
-export { PaymentsAgent } from "./payments-agent";
 
 const app = createApp();
 
@@ -79,55 +76,13 @@ export default {
     // call spends Workers AI tokens and this is a live payment system, so it is
     // gated the same way /mcp is.
     if (A2A_CARD_PATHS.includes(url.pathname)) {
-      return new Response(JSON.stringify(cfmailCard(url.origin)), {
+      return new Response(JSON.stringify(agentCard(url.origin)), {
         headers: {
           "Content-Type": "application/json",
           "Cache-Control": "public, max-age=300",
           "Access-Control-Allow-Origin": "*",
         },
       });
-    }
-
-    // Payments capability: its own agent card and its own /a2a endpoint.
-    //
-    // Separate paths from the monolith so an A2A client can discover the
-    // payments agent specifically rather than getting one card that speaks for
-    // everything. The gate is the same credential.
-    if (url.pathname === A2A_PAYMENTS_CARD_PATH) {
-      const { paymentsCard } = await import("./a2a");
-      return new Response(JSON.stringify(paymentsCard(url.origin)), {
-        headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" },
-      });
-    }
-
-    if (url.pathname === A2A_PAYMENTS_RPC_PATH) {
-      if (request.method === "OPTIONS") {
-        return new Response(null, {
-          headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key" },
-        });
-      }
-      if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
-      }
-      let pbody: unknown;
-      try { pbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
-      }
-      const pStub = env.PAYMENTS_AGENT.get(env.PAYMENTS_AGENT.idFromName("payments")) as any;
-      try {
-        const outcome = await pStub.handleA2A(pbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
-        }
-        return new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
-      }
     }
 
     if (url.pathname === A2A_RPC_PATH) {
@@ -201,10 +156,8 @@ export default {
       // team/channel), but the dashboard, REST API and MCP server all read the
       // "agent" instance — so routing by that derived name recorded verified
       // events into a Durable Object nothing ever displayed.
-      // Use idFromName directly: getAgentByName resolves to a different
-      // instance than the dashboard reads. No RPC needed here (dedupe is inside the DO).
-      const agentId = env.CfmailAgent.idFromName("agent");
-      const agent = env.CfmailAgent.get(agentId);
+      // getAgentByName provides the RPC-capable stub needed for handleWebhookRpc.
+      const agent = await getAgentByName(env.CfmailAgent as any, "agent");
 
       // Slack message events also become a conversation in the Slack tab:
       // handleSlackEvent records them on this same central instance (which the
