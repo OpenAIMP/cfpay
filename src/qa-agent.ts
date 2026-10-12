@@ -1,16 +1,17 @@
 /**
- * QAAgent — autonomous QA agent.
+ * QAAgent — autonomous QA agent using Cloudflare Browser Tools (CDP).
  *
- * Part of issue #42 (Think migration). This agent uses browser tools
- * (Puppeteer via the BROWSER binding) to load pages, extract text,
- * take screenshots, and report pass/fail.
+ * Uses `createBrowserTools` from `agents/browser/ai` for CDP-based browser
+ * automation instead of raw Puppeteer. This gives the agent access to
+ * `browser_execute`, `browser_markdown`, `browser_extract`, etc.
  *
- * Extends Think, which is what makes it chat-capable and therefore a valid child for
- * agentTool(). It is reachable three ways: a direct @callable() RPC, an A2A operation
- * at /a2a/qa, and a dispatch from a host agent's tool list.
+ * Extends Think, which makes it chat-capable and a valid child for agentTool().
+ * Reachable three ways: direct @callable() RPC, A2A operation at /a2a/qa,
+ * and dispatch from a host agent's tool list.
  */
 import { callable } from "agents";
 import { Think } from "@cloudflare/think";
+import { createBrowserTools } from "agents/browser/ai";
 import { defaultModelId } from "./models";
 import type { Env } from "./types";
 
@@ -30,12 +31,6 @@ export class QAAgent extends Think<Env> {
 
   /* ---------------------------- Think surface ---------------------------- */
 
-  /**
-   * Used only when a host dispatches this agent through agentTool(). A QA check is a
-   * deterministic browser run, not a conversation, so this model is never in the
-   * pass/fail path - it exists because Think requires it and because a dispatched run
-   * may need to phrase a finding.
-   */
   override getModel(): string {
     return defaultModelId();
   }
@@ -45,20 +40,38 @@ export class QAAgent extends Think<Env> {
       "You are the QA capability agent for this Worker.",
       "You load a page and report what it actually did: whether it loaded, how much text it produced, and whether each expected string was present.",
       "Never report a pass you did not observe. A page that failed to load is a failure, not an absence of evidence.",
+      "You have browser tools (browser_execute, browser_markdown, browser_extract) that let you drive a real Chrome browser via CDP.",
     ].join(" ");
   }
 
   /**
-   * No tools of its own: this agent IS the tool. It exposes capabilities through
-   * @callable() methods and A2A, which does not require an AI SDK tool set.
+   * Browser tools via CDP. These let the model (or programmatic callers)
+   * drive a real browser: navigate, extract content, screenshot, interact.
    */
-  override getTools(): Record<string, never> {
-    return {};
+  override getTools() {
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return {};
+    }
+    try {
+      return createBrowserTools({
+        ctx: this.ctx,
+        browser: env.BROWSER,
+        // LOADER is optional; without it, sessions are one-shot
+        loader: (env as any).LOADER,
+      }) as Record<string, never>;
+    } catch {
+      // If browser tools can't initialize (e.g. missing LOADER), fall back to empty.
+      // The @callable() methods below use direct CDP as a fallback.
+      return {};
+    }
   }
+
   /**
-   * Shared browser-check logic.
+   * Run a browser QA check using CDP directly.
+   * This is the deterministic path used by @callable() methods.
    */
-  private async runBrowserCheck(
+  private async runBrowserCheckCDP(
     url: string,
     textContains?: string[],
   ): Promise<QACheckResult> {
@@ -66,27 +79,63 @@ export class QAAgent extends Think<Env> {
     if (!env.BROWSER) {
       return { ok: false, url, textLength: 0, error: "Browser binding not configured" };
     }
-    const puppeteer = await import("@cloudflare/puppeteer");
-    const browser = await puppeteer.default.launch(env.BROWSER);
-    try {
-      const page = await browser.newPage();
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const text = (await page.evaluate(`document.body.innerText`)) as string;
-      const shot = (await page.screenshot()) as Uint8Array;
-      let binary = "";
-      for (let i = 0; i < shot.length; i++) binary += String.fromCharCode(shot[i]);
-      // btoa is available in Workers runtime
-      const screenshot = `data:image/png;base64,${btoa(binary)}`;
-      await page.close();
 
-      const checks =
-        textContains?.map((needle) => ({
-          name: `text contains "${needle}"`,
-          passed: text.includes(needle),
-        })) ?? [];
-      const ok = checks.every((c) => c.passed);
-      return { ok, url, textLength: text.length, screenshot, checks };
+    try {
+      // Use the browser tools' underlying CDP session for a one-shot check.
+      // We use browser_execute-style CDP commands directly for determinism.
+      const { connectBrowser, CdpSession } = await import("agents/browser");
+      const browser = await connectBrowser(env.BROWSER);
+      const cdp = new CdpSession(browser);
+
+      // Create a target (tab) with the URL
+      const { targetId } = (await cdp.send("Target.createTarget", {
+        url,
+      })) as { targetId: string };
+
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+
+        // Wait for page load
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+
+        // Get document and extract text
+        const { root } = (await cdp.send("DOM.getDocument", {}, { sessionId })) as {
+          root: { nodeId: number };
+        };
+        const { outerHTML } = (await cdp.send(
+          "DOM.getOuterHTML",
+          { nodeId: root.nodeId },
+          { sessionId },
+        )) as { outerHTML: string };
+
+        // Extract text content (strip tags)
+        const text = outerHTML
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        // Take screenshot
+        const { data: screenshotData } = (await cdp.send(
+          "Page.captureScreenshot",
+          { format: "png" },
+          { sessionId },
+        )) as { data: string };
+        const screenshot = `data:image/png;base64,${screenshotData}`;
+
+        const checks =
+          textContains?.map((needle) => ({
+            name: `text contains "${needle}"`,
+            passed: text.includes(needle),
+          })) ?? [];
+        const ok = checks.every((c) => c.passed);
+
+        return { ok, url, textLength: text.length, screenshot, checks };
+      } finally {
+        // Clean up the target
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
     } catch (err) {
       return {
         ok: false,
@@ -94,8 +143,6 @@ export class QAAgent extends Think<Env> {
         textLength: 0,
         error: err instanceof Error ? err.message : String(err),
       };
-    } finally {
-      await browser.close();
     }
   }
 
@@ -107,7 +154,7 @@ export class QAAgent extends Think<Env> {
     url: string,
     checks?: { textContains?: string[] },
   ): Promise<QACheckResult> {
-    const result = await this.runBrowserCheck(url, checks?.textContains);
+    const result = await this.runBrowserCheckCDP(url, checks?.textContains);
     this.lastRun = result;
     this.lastRunAt = new Date().toISOString();
     return result;
@@ -117,7 +164,7 @@ export class QAAgent extends Think<Env> {
   @callable()
   async qaDashboard(): Promise<QACheckResult> {
     const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
-    const result = await this.runBrowserCheck(origin, ["PaymentAgent"]);
+    const result = await this.runBrowserCheckCDP(origin, ["PaymentAgent"]);
     this.lastRun = result;
     this.lastRunAt = new Date().toISOString();
     return result;
@@ -125,14 +172,6 @@ export class QAAgent extends Think<Env> {
 
   /* --------------------------------- A2A ---------------------------------- */
 
-  /**
-   * Aggregate view for the A2A executor.
-   *
-   * Deliberately thin: a QA run produces a screenshot, and a screenshot is megabytes of
-   * base64. Returning one from a status call would be a payload nobody asked for, so this
-   * reports only whether the last check passed and when. A caller that wants the image
-   * calls qa.check and gets it in the data artifact.
-   */
   @callable()
   async a2aSnapshot(): Promise<{ lastOk: boolean | null; lastUrl: string; lastRunAt: string }> {
     const last = this.lastRun;
@@ -154,19 +193,8 @@ export class QAAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-  /**
-   * Route one A2A message.
-   *
-   * `qa.check` makes the Worker fetch a URL and run a real browser against it, which is
-   * the same capability shape as an SSRF: a caller chooses the destination and this
-   * Worker goes there. It is behind the bearer credential like every other A2A call, and
-   * it is bounded to http(s) - but a caller holding the credential can make the Worker
-   * browse to an internal name. That is a real exposure of extraction, not a theoretical
-   * one, and it is stated on the card rather than left for a reader to infer.
-   */
   async handleA2AMessage(
     message: any,
-    // Unused: each call is self-contained. Kept to satisfy the interface.
     context: { taskId: string; contextId: string },
   ): Promise<{ text: string; data?: unknown }> {
     const parts: any[] = Array.isArray(message?.parts) ? message.parts : [];
@@ -200,9 +228,6 @@ export class QAAgent extends Think<Env> {
       case "qa.check": {
         const url = String(args.url || "").trim();
         if (!/^https?:\/\//.test(url)) {
-          // http(s) only: a bare host or any other scheme is refused rather than
-          // guessed at, so a caller cannot reach file: or a protocol the browser
-          // might resolve differently than intended.
           return { text: "qa.check needs an http(s) url.", data: { ok: false, error: "bad_url" } };
         }
         const result = await this.qaCheck(url, args.checks);
@@ -215,8 +240,6 @@ export class QAAgent extends Think<Env> {
       }
 
       case "qa.dashboard": {
-        // Checks this Worker's own dashboard, which is the deployed page a user sees -
-        // worth being able to assert remotely rather than only from a browser.
         const result = await this.qaDashboard();
         return {
           text: result.ok ? "Dashboard check passed." : "Dashboard check failed: " + (result.error || "check strings absent"),
