@@ -395,55 +395,6 @@ export function createApp() {
   function getQAAgent(c: any) {
     return getAgentByName(c.env.QA_AGENT, "qa") as any;
   }
-  /**
-   * Run a browser QA check directly (stateless, no DO needed).
-   * Uses Puppeteer via the BROWSER binding.
-   */
-  async function runBrowserQACheck(
-    env: Env,
-    url: string,
-    textContains?: string[],
-  ): Promise<{
-    ok: boolean;
-    url: string;
-    textLength: number;
-    screenshot?: string;
-    checks?: { name: string; passed: boolean }[];
-    error?: string;
-  }> {
-    if (!env.BROWSER) {
-      return { ok: false, url, textLength: 0, error: "Browser binding not configured" };
-    }
-    const puppeteer = await import("@cloudflare/puppeteer");
-    const browser = await puppeteer.default.launch(env.BROWSER);
-    try {
-      const page = await browser.newPage();
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      const text = (await page.evaluate(`document.body.innerText`)) as string;
-      const shot = (await page.screenshot()) as Uint8Array;
-      let binary = "";
-      for (let i = 0; i < shot.length; i++) binary += String.fromCharCode(shot[i]);
-      const screenshot = `data:image/png;base64,${btoa(binary)}`;
-      await page.close();
-
-      const checks =
-        textContains?.map((needle) => ({
-          name: `text contains "${needle}"`,
-          passed: text.includes(needle),
-        })) ?? [];
-      const ok = checks.every((c) => c.passed);
-      return { ok, url, textLength: text.length, screenshot, checks };
-    } catch (err) {
-      return {
-        ok: false,
-        url,
-        textLength: 0,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    } finally {
-      await browser.close();
-    }
-  }
 
 
   // Read-only by default. Their server can place real orders; enabling this is a
@@ -1043,15 +994,19 @@ export function createApp() {
     if (!url || !/^https?:\/\//.test(url)) {
       return c.json({ error: "Valid http(s) url required" }, 400);
     }
-    const result = await runBrowserQACheck(c.env as Env, url, body.checks?.textContains);
+    const authHeader = c.req.header("Authorization") || "";
+    const apiKey = authHeader.replace(/^Bearer\s+/i, "") || undefined;
+    const qaAgent = getQAAgent(c);
+    const result = await qaAgent.qaCheck(url, { ...body.checks, apiKey });
     return c.json(result);
   });
 
   // Autonomous QA: check the dashboard itself.
   app.post("/api/dashboard/qa/dashboard", requireAuth, async (c) => {
-    const env = c.env as Env;
-    const origin = (env as any).SELF_ORIGIN ?? "https://pay.openaimp.com";
-    const result = await runBrowserQACheck(env, origin, ["PaymentAgent"]);
+    const authHeader = c.req.header("Authorization") || "";
+    const apiKey = authHeader.replace(/^Bearer\s+/i, "") || undefined;
+    const qaAgent = getQAAgent(c);
+    const result = await qaAgent.qaDashboard(apiKey);
     return c.json(result);
   });
 

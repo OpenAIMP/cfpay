@@ -62,6 +62,7 @@ export class QAAgent extends Think<Env> {
   private async runBrowserCheck(
     url: string,
     textContains?: string[],
+    apiKey?: string,
   ): Promise<QACheckResult> {
     const env = this.env as Env;
     if (!env.BROWSER) {
@@ -80,13 +81,27 @@ export class QAAgent extends Think<Env> {
       const cdp = await connectBrowser(env.BROWSER);
 
       const { targetId } = (await cdp.send("Target.createTarget", {
-        url,
+        url: "about:blank",
       })) as { targetId: string };
 
       try {
         const sessionId = await cdp.attachToTarget(targetId);
+
+        // Set API key in localStorage before navigating (dashboard reads it from there)
+        if (apiKey) {
+          await cdp.send(
+            "Runtime.evaluate",
+            {
+              expression: `localStorage.setItem("cfpay_api_key", ${JSON.stringify(apiKey)})`,
+            },
+            { sessionId },
+          );
+        }
+
+        // Navigate to the URL
+        await cdp.send("Page.navigate", { url }, { sessionId });
         // Wait for page load
-        await new Promise((resolve) => setTimeout(resolve, 3000));
+        await new Promise((resolve) => setTimeout(resolve, 4000));
 
         const { root } = (await cdp.send("DOM.getDocument", {}, { sessionId })) as {
           root: { nodeId: number };
@@ -138,9 +153,9 @@ export class QAAgent extends Think<Env> {
   @callable()
   async qaCheck(
     url: string,
-    checks?: { textContains?: string[] },
+    checks?: { textContains?: string[]; apiKey?: string },
   ): Promise<QACheckResult> {
-    const result = await this.runBrowserCheck(url, checks?.textContains);
+    const result = await this.runBrowserCheck(url, checks?.textContains, checks?.apiKey);
     this.lastRun = result;
     this.lastRunAt = new Date().toISOString();
     return result;
@@ -148,9 +163,14 @@ export class QAAgent extends Think<Env> {
 
   /** RPC: check the dashboard itself. */
   @callable()
-  async qaDashboard(): Promise<QACheckResult> {
+  async qaDashboard(apiKey?: string): Promise<QACheckResult> {
     const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
-    const result = await this.runBrowserCheck(origin, ["PaymentAgent"]);
+    // Check for authenticated dashboard content (not just login page)
+    const result = await this.runBrowserCheck(
+      origin,
+      ["PaymentAgent", "Dashboard", "Payments", "Emails"],
+      apiKey,
+    );
     this.lastRun = result;
     this.lastRunAt = new Date().toISOString();
     return result;
