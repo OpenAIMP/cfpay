@@ -81,9 +81,25 @@
   "browser": {
     "binding": "BROWSER"
   },
-  // Required by createBrowserTools(): it runs model-authored browser code in a
-  // sandboxed Worker, and the sandbox is created through this binding.
-  "worker_loaders": [
-    { "binding": "LOADER" }
-  ]
+  // NO worker_loaders binding, deliberately.
+  //
+  // It looked like the right thing to add: createBrowserTools() spawns its
+  // sandbox through this binding, so the model-driven browser tools need it.
+  // But Dynamic Workers require a PAID plan - "In order to use Dynamic Workers,
+  // you must switch to a paid plan at ... [code: 10195]" - and this account is
+  // on the Free plan, so declaring it made every production deploy fail at the
+  // Cloudflare API.
+  //
+  // `wrangler deploy --dry-run` does NOT catch this: it validates the build and
+  // the binding's shape, not the account's entitlement to use it. The failure
+  // only appears at the real API call.
+  //
+  // Nothing is lost for now. QAAgent.getTools() guards on `env.BROWSER &&
+  // env.LOADER` and skips the browser tools when the binding is absent, so the
+  // deterministic CDP checks - which are what the QA suite actually relies on -
+  // are unaffected. Add this binding back if and when the account moves to a
+  // paid plan.
+  "browser": {
+    "binding": "BROWSER"
+  }
 }
