@@ -1018,9 +1018,19 @@ describe("the QA surface stays fully wired", () => {
     const types = read("src/types.ts");
     const index = read("src/index.ts");
 
-    // createBrowserTools needs a Worker Loader binding to spawn its sandbox...
-    expect(wrangler, "wrangler.jsonc must declare the LOADER binding").toContain("worker_loaders");
-    expect(wrangler).toContain('"LOADER"');
+    // The LOADER binding must NOT be declared on a Free-plan account: Dynamic
+    // Workers require a paid plan, and declaring it made every production deploy
+    // fail at the Cloudflare API with code 10195. `wrangler deploy --dry-run`
+    // does not catch that, because it checks the binding's shape rather than the
+    // account's entitlement. This asserts the reasoning still holds; if the
+    // account moves to a paid plan, invert this deliberately.
+    expect(
+      wrangler,
+      "worker_loaders must stay out of wrangler.jsonc while on the Free plan",
+    ).not.toContain('"worker_loaders"');
+    // The comment recording WHY must survive, so the next person does not
+    // innocently re-add the binding and break the deploy again.
+    expect(wrangler).toContain("Dynamic Workers require a PAID plan");
     // ...a type for it...
     expect(types, "Env must type the LOADER binding").toContain("LOADER?: WorkerLoader");
     // ...and the runtime class exported from the entry module, or the first
