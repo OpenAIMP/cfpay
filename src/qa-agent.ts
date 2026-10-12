@@ -24,6 +24,18 @@ export interface QACheckResult {
   error?: string;
 }
 
+/**
+ * The localStorage key the dashboard reads its API key from.
+ *
+ * This must match `public/index.html`, which reads `cfmail_api_key` in five
+ * places. QAAgent previously seeded `cfpay_api_key` here - a key the dashboard
+ * never reads - so every "authenticated" QA check silently rendered the login
+ * page and then asserted against that login page's text. The tab check could
+ * therefore never fail for the reason it existed, and could pass for no reason
+ * at all. tests/wiring.test.ts now guards the two sites against drifting.
+ */
+export const DASHBOARD_API_KEY_STORAGE_KEY = "cfmail_api_key";
+
 export class QAAgent extends Think<Env> {
   /** Last run, for the A2A summary. Not persisted: it is a convenience, not a record. */
   private lastRun: QACheckResult | null = null;
@@ -97,7 +109,9 @@ export class QAAgent extends Think<Env> {
           await cdp.send(
             "Runtime.evaluate",
             {
-              expression: `localStorage.setItem("cfpay_api_key", ${JSON.stringify(apiKey)})`,
+              expression: `localStorage.setItem(${JSON.stringify(
+                DASHBOARD_API_KEY_STORAGE_KEY,
+              )}, ${JSON.stringify(apiKey)})`,
             },
             { sessionId },
           );
@@ -182,8 +196,22 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
-   * RPC: click through dashboard tabs and verify each loads data.
-   * Tests: Payments, Emails, Webhooks tabs.
+   * RPC: click through the dashboard tabs and verify each renders real data.
+   *
+   * Each tab is checked against the container the dashboard fills for it
+   * (`emailList`, `paymentList`, `webhookList`), not against the page's overall
+   * text. The distinction is the whole point of the check: "Payments" is a tab
+   * label that exists on every page, so searching page text for it reports
+   * success even when the tab is empty, unauthenticated, or broken.
+   *
+   * The dashboard's own empty states ("No emails yet" and friends) are treated
+   * as failures. A tab with no rows is a real result and has to be reported,
+   * not passed over - otherwise the check is green precisely when it has
+   * verified nothing.
+   *
+   * Rows are counted from rendered markup rather than from the API, so this
+   * measures what a user would actually see: auth, fetch, render and empty-state
+   * handling all have to work for a tab to pass.
    */
   @callable()
   async qaDashboardTabs(
@@ -197,11 +225,14 @@ export class QAAgent extends Think<Env> {
       return { ok: false, tabs: [], error: "API key required for tab testing" };
     }
 
-    const origin = (env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+
+    // `containerId` is the element the dashboard writes rows into; `emptyText`
+    // is that tab's empty state. Both come from public/index.html.
     const tabsToTest = [
-      { name: "Payments", selector: '[data-tab="payments"]', expectText: ["Payment", "Amount", "Status"] },
-      { name: "Emails", selector: '[data-tab="emails"]', expectText: ["Email", "Subject", "From"] },
-      { name: "Webhooks", selector: '[data-tab="webhooks"]', expectText: ["Webhook", "Event", "URL"] },
+      { name: "Emails", tab: "emails", containerId: "emailList", emptyText: "No emails yet" },
+      { name: "Payments", tab: "payments", containerId: "paymentList", emptyText: "No payments yet" },
+      { name: "Webhooks", tab: "webhooks", containerId: "webhookList", emptyText: "No webhook events yet" },
     ];
 
     let browser: any = null;
@@ -219,45 +250,149 @@ export class QAAgent extends Think<Env> {
       try {
         const sessionId = await cdp.attachToTarget(targetId);
 
-        // Set auth
+        // Seed the key the dashboard actually reads, then navigate. Order
+        // matters: the dashboard reads it during init on load.
         await cdp.send(
           "Runtime.evaluate",
-          { expression: `localStorage.setItem("cfpay_api_key", ${JSON.stringify(apiKey)})` },
+          {
+            expression: `localStorage.setItem(${JSON.stringify(
+              DASHBOARD_API_KEY_STORAGE_KEY,
+            )}, ${JSON.stringify(apiKey)})`,
+          },
           { sessionId },
         );
         await cdp.send("Page.navigate", { url: origin }, { sessionId });
         await new Promise((r) => setTimeout(r, 4000));
 
+        // Fail loudly if we are looking at the login page. Without this the
+        // per-tab checks below would report "container missing", which is true
+        // but buries the actual cause.
+        const authState = (await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `JSON.stringify({
+              loginShown: !!document.getElementById('login') &&
+                getComputedStyle(document.getElementById('login')).display !== 'none',
+              appShown: !!document.getElementById('app') &&
+                getComputedStyle(document.getElementById('app')).display !== 'none'
+            })`,
+            returnByValue: true,
+          },
+          { sessionId },
+        )) as { result?: { value?: string } };
+
+        let loginShown = false;
+        try {
+          const parsed = JSON.parse(authState.result?.value || "{}") as { loginShown?: boolean };
+          loginShown = parsed.loginShown === true;
+        } catch {
+          // Unparseable probe: fall through and let the per-tab checks report.
+        }
+
+        if (loginShown) {
+          const detail =
+            "Dashboard showed the login page, so no tab could be verified. " +
+            "The API key was not accepted (check DASHBOARD_API_KEY).";
+          for (const tab of tabsToTest) {
+            results.push({ name: tab.name, passed: false, detail });
+          }
+          return { ok: false, tabs: results, error: detail };
+        }
+
         for (const tab of tabsToTest) {
           try {
-            // Click the tab
-            await cdp.send(
+            // Click the tab. Assert the click landed: a renamed or removed tab
+            // must not be reported as a data failure.
+            const clicked = (await cdp.send(
               "Runtime.evaluate",
               {
-                expression: `document.querySelector('${tab.selector}')?.click()`,
+                expression: `(() => {
+                  const el = document.querySelector('[data-tab=${JSON.stringify(tab.tab)}]');
+                  if (!el) return false;
+                  el.click();
+                  return el.classList.contains('active');
+                })()`,
+                returnByValue: true,
               },
               { sessionId },
-            );
-            await new Promise((r) => setTimeout(r, 2000));
+            )) as { result?: { value?: boolean } };
 
-            // Get page text after click
-            const { root } = (await cdp.send("DOM.getDocument", {}, { sessionId })) as any;
-            const { outerHTML } = (await cdp.send(
-              "DOM.getOuterHTML",
-              { nodeId: root.nodeId },
+            if (clicked.result?.value !== true) {
+              results.push({
+                name: tab.name,
+                passed: false,
+                detail: `Tab '[data-tab="${tab.tab}"]' is missing or did not become active.`,
+              });
+              continue;
+            }
+
+            // In-page wait for the tab's loader to settle, rather than a fixed
+            // sleep: loadEmails/loadPayments/loadWebhooks are async, and a fixed
+            // wait either flakes or wastes time.
+            const probe = (await cdp.send(
+              "Runtime.evaluate",
+              {
+                expression: `(async () => {
+                  const id = ${JSON.stringify(tab.containerId)};
+                  const emptyText = ${JSON.stringify(tab.emptyText)};
+                  const read = () => {
+                    const el = document.getElementById(id);
+                    if (!el) return { found: false };
+                    const text = (el.innerText || '').trim();
+                    return {
+                      found: true,
+                      rows: el.querySelectorAll('.card, .item').length,
+                      text,
+                      isEmpty: text.includes(emptyText),
+                      stillLoading: !!el.querySelector('.loading'),
+                    };
+                  };
+                  for (let i = 0; i < 40; i++) {
+                    const s = read();
+                    if (!s.found) return s;
+                    if (s.rows > 0) return s;
+                    if (s.isEmpty) return s;
+                    await new Promise((r) => setTimeout(r, 250));
+                  }
+                  return read();
+                })()`,
+                awaitPromise: true,
+                returnByValue: true,
+              },
               { sessionId },
-            )) as any;
-            const text = outerHTML.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+            )) as { result?: { value?: any } };
 
-            const found = tab.expectText.filter((t) => text.includes(t));
-            const passed = found.length > 0;
-            results.push({
-              name: tab.name,
-              passed,
-              detail: passed
-                ? `Found: ${found.join(", ")}`
-                : `Missing expected text. Page had ${text.length} chars.`,
-            });
+            const state = probe.result?.value as
+              | { found?: boolean; rows?: number; isEmpty?: boolean; stillLoading?: boolean; text?: string }
+              | undefined;
+
+            if (!state || state.found !== true) {
+              results.push({
+                name: tab.name,
+                passed: false,
+                detail: `Container '#${tab.containerId}' was not in the DOM.`,
+              });
+            } else if (state.isEmpty) {
+              results.push({
+                name: tab.name,
+                passed: false,
+                detail: `Rendered its empty state ("${tab.emptyText}"); no data to verify.`,
+              });
+            } else if ((state.rows ?? 0) === 0) {
+              results.push({
+                name: tab.name,
+                passed: false,
+                detail: state.stillLoading
+                  ? `Still loading after 10s; container '#${tab.containerId}' stayed empty.`
+                  : `Container '#${tab.containerId}' rendered no rows.`,
+              });
+            } else {
+              results.push({
+                name: tab.name,
+                passed: true,
+                detail: `Rendered ${state.rows} row(s) from '#${tab.containerId}'.`,
+              });
+            }
           } catch (err) {
             results.push({
               name: tab.name,
@@ -281,7 +416,7 @@ export class QAAgent extends Think<Env> {
       }
     }
 
-    const ok = results.every((r) => r.passed);
+    const ok = results.length > 0 && results.every((r) => r.passed);
     return { ok, tabs: results };
   }
 
