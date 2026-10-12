@@ -328,10 +328,23 @@ export class QAAgent extends Think<Env> {
           error: "The email agent is unavailable, so the report was not sent.",
         };
       }
+      // Capture dashboard screenshot for attachment
+      const dashResult = await this.qaDashboard(apiKey);
+      const attachments: { filename: string; type: string; content: string }[] = [];
+      if (dashResult.screenshot) {
+        // screenshot is data:image/png;base64,... — strip prefix for attachment
+        const base64 = dashResult.screenshot.split(',')[1] || dashResult.screenshot;
+        attachments.push({
+          filename: `qa-dashboard-${new Date().toISOString().slice(0, 10)}.png`,
+          type: 'image/png',
+          content: base64,
+        });
+      }
       await emailAgent.sendThroughAgent({
         to: toEmail,
         subject: `QA Report: Dashboard ${tabResult.ok ? "PASS" : "FAIL"} - ${new Date().toISOString().slice(0, 10)}`,
         body,
+        attachments: attachments.length > 0 ? attachments : undefined,
       });
       return { ok: tabResult.ok, emailed: true, tabs: tabResult.tabs };
     } catch (err) {
@@ -341,6 +354,120 @@ export class QAAgent extends Think<Env> {
         tabs: tabResult.tabs,
         error: err instanceof Error ? err.message : String(err),
       };
+    }
+  }
+
+  /**
+   * RPC: Test email attachments via the dashboard UI.
+   * Uses CDP to fill the Send Email form, attach a test file, submit, and verify.
+   * This is a true end-to-end UI test of the attachment flow.
+   */
+  @callable()
+  async testEmailAttachmentUI(
+    apiKey: string,
+    toEmail: string,
+  ): Promise<{ ok: boolean; detail: string; error?: string }> {
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return { ok: false, detail: "Browser binding not configured" };
+    }
+
+    let browser: any = null;
+    try {
+      const { connectBrowser } = await import("agents/browser");
+      browser = await connectBrowser(env.BROWSER);
+      const cdp = browser;
+
+      // Create target and navigate to dashboard
+      const { targetId } = await cdp.send("Target.createTarget", {
+        url: "about:blank",
+      });
+      const sessionId = await cdp.attachToTarget(targetId);
+
+      // Helper to send CDP commands to the session
+      const send = (method: string, params: any = {}) =>
+        cdp.send(method, { sessionId, ...params });
+
+      // Navigate to dashboard
+      await send("Page.navigate", { url: "https://pay.openaimp.com" });
+      await new Promise((r) => setTimeout(r, 3000));
+
+      // Set API key in localStorage and reload
+      await send("Runtime.evaluate", {
+        expression: `localStorage.setItem('cfpay_api_key', '${apiKey}')`,
+      });
+      await send("Page.navigate", { url: "https://pay.openaimp.com" });
+      await new Promise((r) => setTimeout(r, 3000));
+
+      // Click the Send Email tab (find by text or data attribute)
+      await send("Runtime.evaluate", {
+        expression: `
+          (() => {
+            const tabs = document.querySelectorAll('[data-tab], .tab, button');
+            for (const tab of tabs) {
+              if (tab.textContent.toLowerCase().includes('send')) {
+                tab.click();
+                return true;
+              }
+            }
+            return false;
+          })()
+        `,
+      });
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Fill the form and create a test attachment via DataTransfer
+      const testContent = btoa("QA test attachment - " + new Date().toISOString());
+      await send("Runtime.evaluate", {
+        expression: `
+          (() => {
+            document.getElementById('sendTo').value = '${toEmail}';
+            document.getElementById('sendSubject').value = 'QA Attachment Test';
+            document.getElementById('sendBody').value = 'Testing email attachments via QAAgent UI automation.';
+            // Create a test file
+            const content = atob('${testContent}');
+            const blob = new Blob([content], { type: 'text/plain' });
+            const file = new File([blob], 'qa-test.txt', { type: 'text/plain' });
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            document.getElementById('sendAttachments').files = dt.files;
+            // Trigger change event
+            document.getElementById('sendAttachments').dispatchEvent(new Event('change'));
+            return true;
+          })()
+        `,
+      });
+      await new Promise((r) => setTimeout(r, 500));
+
+      // Click send
+      await send("Runtime.evaluate", {
+        expression: `document.querySelector('button[onclick="sendEmail()"]').click()`,
+      });
+      await new Promise((r) => setTimeout(r, 5000));
+
+      // Check for success message
+      const result = await send("Runtime.evaluate", {
+        expression: `document.getElementById('sendResult').innerText`,
+      });
+      const text = result.result?.value || "";
+
+      await send("Target.closeTarget", { targetId });
+
+      if (text.toLowerCase().includes("success")) {
+        return { ok: true, detail: "Email with attachment sent via UI. " + text };
+      } else {
+        return { ok: false, detail: "UI did not show success. Result: " + text };
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        detail: "UI test failed",
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      if (browser) {
+        try { await browser.close(); } catch {}
+      }
     }
   }
 

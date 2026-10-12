@@ -1107,6 +1107,22 @@ export function createApp() {
     return c.json(result);
   });
 
+  app.post("/api/dashboard/qa/test-attachment", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const toEmail = body.toEmail as string;
+    if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
+      return c.json({ error: "Valid toEmail required" }, 400);
+    }
+    const authHeader = c.req.header("Authorization") || "";
+    const apiKey = authHeader.replace(/^Bearer\s+/i, "") || undefined;
+    if (!apiKey) {
+      return c.json({ error: "API key required" }, 401);
+    }
+    const qaAgent = getQAAgent(c);
+    const result = await qaAgent.testEmailAttachmentUI(apiKey, toEmail);
+    return c.json(result);
+  });
+
   // TEMPORARY DEBUG: inspect webhook DO state
   app.get("/api/dashboard/debug-webhooks", requireAuth, async (c) => {
     const agent = getAgent(c);
