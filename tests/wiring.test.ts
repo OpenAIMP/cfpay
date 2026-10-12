@@ -926,3 +926,291 @@ describe("the QA agent and the dashboard agree on their contract", () => {
     expect(qa).toContain("Dashboard showed the login page");
   });
 });
+
+describe("the QA surface stays fully wired", () => {
+  // The recurring failure in this area is a declaration that goes missing while
+  // the code around it survives: a method body without its @callable() (which
+  // broke CI outright), a QA method with no route, an agent method behind an
+  // any-typed stub that no type check can relate to its caller. Source
+  // assertions are what catch that.
+  const qa = read("src/qa-agent.ts");
+  const api = read("src/api.ts");
+  const html = read("public/index.html");
+
+  /** Every @callable() must be IMMEDIATELY followed by its method signature. */
+  it("keeps every @callable() attached to a method declaration", () => {
+    const lines = qa.split("\n");
+    const decorators = lines
+      .map((line, i) => ({ line: line.trim(), i }))
+      .filter((e) => e.line === "@callable()");
+    expect(decorators.length).toBeGreaterThan(0);
+
+    for (const { i } of decorators) {
+      // No gap allowed: a blank line here means a body was orphaned, which is
+      // exactly how the class stopped parsing.
+      const next = (lines[i + 1] || "").trim();
+      expect(
+        /^(async|private async|protected async)\s+\w+\s*\(/.test(next),
+        `the @callable() at line ${i + 1} must be directly followed by its method, got: ${next}`,
+      ).toBe(true);
+    }
+  });
+
+  it("exposes the send-email, payment and edge-case checks as RPC methods", () => {
+    for (const method of ["testEmailAttachmentUI", "qaPaymentFlow", "qaEdgeCases"]) {
+      expect(qa, `${method} must exist on QAAgent`).toContain("async " + method + "(");
+    }
+  });
+
+  it("declares those methods on the narrowed stub api.ts actually calls through", () => {
+    // getQAAgent returns an inline object type, NOT the QAAgent class, so a
+    // method missing from that literal cannot be called and the failure is a
+    // runtime RPC error rather than a compile error.
+    for (const method of ["testEmailAttachmentUI", "qaPaymentFlow", "qaEdgeCases"]) {
+      expect(api, `${method} must be declared on the getQAAgent stub type`).toContain(method + "(");
+    }
+  });
+
+  it("routes every new QA method behind requireAuth", () => {
+    const routes: [string, string][] = [
+      ["/api/dashboard/qa/test-attachment", "testEmailAttachmentUI"],
+      ["/api/dashboard/qa/payment-flow", "qaPaymentFlow"],
+      ["/api/dashboard/qa/edge-cases", "qaEdgeCases"],
+    ];
+    for (const [route, method] of routes) {
+      const pattern = new RegExp(
+        'app\\.post\\(\\s*"' + route.replace(/[/-]/g, "\\$&") + '",\\s*requireAuth',
+      );
+      expect(api, `${route} must be a requireAuth POST`).toMatch(pattern);
+      // Each route appears exactly once: a duplicated handler silently shadows.
+      const occurrences = api.split(`"${route}"`).length - 1;
+      expect(occurrences, `${route} must be registered exactly once`).toBe(1);
+      expect(api, `${route} must reach ${method}`).toContain(method + "(");
+    }
+  });
+
+  it("never hard-codes a recipient address for the send-mail check", () => {
+    // The endpoint must take its recipient from the caller, so the repo carries
+    // no real inbox and a deploy cannot mail someone by accident.
+    expect(api).toContain("A valid toEmail is required");
+    const hardCoded = api.match(/toEmail\s*=\s*"[^"]+@[^"]+"/);
+    expect(hardCoded, "no hard-coded recipient may appear").toBeNull();
+    const qaHardCoded = qa.match(/toEmail\s*(?::\s*string\s*)?=\s*"[^"]+@/);
+    expect(qaHardCoded, "qa-agent.ts must not default a recipient").toBeNull();
+  });
+
+  it("refuses to sign or settle anything in the payment check", () => {
+    // qaPaymentFlow is allowed to read a 402 challenge and nothing more. If a
+    // future edit adds signing here it must be a deliberate, reviewed change.
+    const start = qa.indexOf("async qaPaymentFlow(");
+    expect(start).toBeGreaterThan(-1);
+    const end = qa.indexOf("async qaEdgeCases(", start);
+    const body = qa.slice(start, end > -1 ? end : undefined);
+    for (const forbidden of ["sendTransaction", "writeContract", "PAYMENT_PRIVATE_KEY", "signTypedData"]) {
+      expect(body, `qaPaymentFlow must not use ${forbidden}`).not.toContain(forbidden);
+    }
+    // It must still say what it does not prove.
+    expect(body).toContain("settlementVerified: false");
+  });
+
+  it("wires the browser-tools infrastructure the tools depend on", () => {
+    const wrangler = read("wrangler.jsonc");
+    const types = read("src/types.ts");
+    const index = read("src/index.ts");
+
+    // createBrowserTools needs a Worker Loader binding to spawn its sandbox...
+    expect(wrangler, "wrangler.jsonc must declare the LOADER binding").toContain("worker_loaders");
+    expect(wrangler).toContain('"LOADER"');
+    // ...a type for it...
+    expect(types, "Env must type the LOADER binding").toContain("LOADER?: WorkerLoader");
+    // ...and the runtime class exported from the entry module, or the first
+    // execution fails at runtime with nothing to catch it at build time.
+    expect(index, "the entry must export CodemodeRuntime").toContain("CodemodeRuntime");
+  });
+
+  it("degrades without the browser bindings instead of throwing in getTools", () => {
+    // getTools() runs on every chat turn, including turns that never touch a
+    // browser. A throw here takes down the whole agent, so the bindings are
+    // checked before use.
+    const start = qa.indexOf("override getTools()");
+    expect(start).toBeGreaterThan(-1);
+    const body = qa.slice(start, qa.indexOf("private async runBrowserCheck", start));
+    expect(body).toContain("env.BROWSER && env.LOADER");
+    expect(body, "getTools must catch rather than propagate").toContain("catch");
+  });
+
+  it("gives every new QA button a handler that exists", () => {
+    for (const fn of ["runQATabs", "runQAAttachment", "runQAPaymentFlow", "runQAEdgeCases"]) {
+      expect(html, `index.html must define ${fn}`).toContain(`function ${fn}(`);
+      expect(html, `${fn} must be reachable from a button`).toContain(`onclick="${fn}()"`);
+    }
+    // The send-mail button must take a recipient rather than a fixed address.
+    expect(html).toContain("qaRecipient()");
+  });
+});
+
+describe("the post-deploy QA job cannot break a deploy", () => {
+  const workflow = read(".github/workflows/deploy.yml");
+
+  it("runs only after the deploy succeeds", () => {
+    expect(workflow).toContain("qa-smoke:");
+    expect(workflow).toMatch(/qa-smoke:[\s\S]*?needs:\s*deploy/);
+    // Main pushes only: a PR must not run QA against production.
+    expect(workflow).toMatch(
+      /qa-smoke:[\s\S]*?if:\s*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/,
+    );
+  });
+
+  it("reads its credentials from secrets, never from the repo", () => {
+    expect(workflow).toContain("secrets.DASHBOARD_API_KEY");
+    expect(workflow).toContain("secrets.QA_TEST_EMAIL");
+    // No literal key may be committed into the workflow.
+    expect(workflow).not.toMatch(/DASHBOARD_API_KEY:\s*["'][^$]/);
+  });
+
+  it("keeps the mail-sending check opt-in", () => {
+    // It sends real mail on every deploy, so it must be gated by a repository
+    // variable rather than run unconditionally.
+    expect(workflow).toContain("vars.QA_RUN_ATTACHMENT_CHECK");
+    const smoke = read("scripts/qa-smoke.mjs");
+    expect(smoke).toContain("RUN_ATTACHMENT");
+    // And a skip must not be reported as a failure, or an unconfigured repo
+    // would fail every deploy.
+    expect(smoke).toContain("skipped: true");
+    expect(smoke).toContain("process.exit(failed > 0 ? 1 : 0)");
+  });
+});
+
+describe("browser teardown cannot fail a QA run", () => {
+  // The outage this covers: `await browser.close().catch(...)` where close() is
+  // declared `close(): void`. The throw happened in a `finally`, so it replaced
+  // a completed QA run's result with an opaque 500 on the route.
+  const qa = read("src/qa-agent.ts");
+
+  it("does not call .catch() on a void close()", () => {
+    // The precise anti-pattern. Matches the code form, not the doc comments that
+    // explain why it is banned.
+    const code = qa
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(
+      /\.close\(\)\s*\.catch/.test(code),
+      "a raw .close().catch() returns: close() is void, so .catch throws",
+    ).toBe(false);
+  });
+
+  it("routes browser teardown through the tested helper", () => {
+    expect(qa).toContain("closeConnectionQuietly");
+    // Every browser teardown goes through the helper. Counted exactly, so both a
+    // new raw close() and a removed release are caught.
+    const uses = qa.split("closeConnectionQuietly(").length - 1;
+    expect(uses, "every browser teardown must use the helper").toBe(4);
+  });
+
+  it("keeps the report's tab call inside a guard", () => {
+    // It sat outside the try, so any rejection from qaDashboardTabs bypassed the
+    // method's own error handling and reached the route as a 500. The guard now
+    // also translates a browser refusal into an actionable message.
+    const start = qa.indexOf("async qaAndEmailReport(");
+    const body = qa.slice(start, qa.indexOf("async testEmailAttachmentUI(", start));
+    expect(body).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined)");
+    // The catch immediately after the tab call must translate the failure.
+    const catchAt = body.indexOf("} catch (err) {");
+    expect(catchAt).toBeGreaterThan(-1);
+    expect(body.slice(catchAt, catchAt + 400)).toContain("describeBrowserFailure(err)");
+  });
+
+  it("reports a refused send instead of claiming success", () => {
+    // sendThroughAgent returns { ok:false } rather than throwing, so ignoring
+    // the result reported emailed:true for a report that never left.
+    expect(qa).toContain("sendResult?.ok");
+    expect(qa).toContain("The email agent refused the send.");
+  });
+});
+
+describe("the QA route names a serialization failure", () => {
+  const api = read("src/api.ts");
+
+  it("checks serializability inside the handler", () => {
+    // c.json() serializes inside Hono AFTER the handler returns, so a try/catch
+    // around it would catch nothing and the response would stay an opaque 500.
+    expect(api).toContain("function jsonOr500(");
+    expect(api).toContain('jsonOr500(c, result, "qa/email-report")');
+  });
+
+  it("cannot throw while reporting the failure", () => {
+    // Stringifying the value that just failed to serialize would throw again.
+    expect(api).toContain("safeStringify");
+    expect(api).toContain("Failed to serialize QA result");
+  });
+});
+
+describe("a QA report uses one browser session, not two", () => {
+  // Each connectBrowser call consumes a Browser Rendering session against a
+  // finite account limit. qaAndEmailReport used to open two - one for the tab
+  // check, one for the screenshot - and the refusal surfaced as
+  // "did not return a WebSocket", which points at wrangler.jsonc and sends you
+  // to the wrong file. Sessions are now opened in exactly one place.
+  const qa = read("src/qa-agent.ts");
+
+  it("opens browser sessions through a single helper", () => {
+    // Exactly one: inside openBrowserSession. Every other call site goes through
+    // it, which is what makes the session count auditable.
+    const direct = qa.split("await connectBrowser(").length - 1;
+    expect(direct, "every browser session must go through openBrowserSession").toBe(1);
+    expect(qa).toContain("private async openBrowserSession(");
+  });
+
+  it("hands the report's session to both checks instead of opening its own", () => {
+    // The two calls that used to each open a session must now receive one.
+    expect(qa).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined)");
+    expect(qa).toMatch(
+      /runBrowserCheck\(\s*env\.SELF_ORIGIN[\s\S]{0,200}?connection \?\? undefined,?\s*\)/,
+    );
+  });
+
+  it("closes only what it opened, so a shared session survives", () => {
+    // runBrowserCheck and qaDashboardTabs must respect ownership, or the second
+    // check would run against a closed connection.
+    expect(qa).toContain("const ownsConnection = !sharedConnection");
+    const guards = qa.split("if (ownsConnection)").length - 1;
+    expect(guards, "both shared-session methods must guard their close").toBe(2);
+  });
+
+  it("releases the report's session on every exit path", () => {
+    // A leak here reintroduces the exhaustion being fixed, so the release must
+    // exist in the finally AND before the early return in the catch.
+    const start = qa.indexOf("async qaAndEmailReport(");
+    const body = qa.slice(start, qa.indexOf("async testEmailAttachmentUI(", start));
+    const releases = body.split("closeConnectionQuietly(connection)").length - 1;
+    expect(releases, "both the early return and the finally must release").toBe(2);
+    expect(body).toContain("} finally {");
+  });
+
+  it("explains a session-limit refusal instead of blaming the binding", () => {
+    // The raw message names wrangler.jsonc; the account being out of sessions is
+    // the usual cause. The translation must say so.
+    expect(qa).toContain("describeBrowserFailure");
+    // The message must point away from wrangler.jsonc without asserting a cause
+    // that was never confirmed.
+    expect(qa).toContain("treat this as a transient capacity refusal");
+    expect(qa).toContain("rather");
+    expect(qa).toContain("missing binding");
+    // And it must be idempotent, so it cannot double-wrap into
+    // "Browser check failed: Could not open a browser session: ...".
+    expect(qa).toContain("message.startsWith(\"Could not open a browser session\")");
+  });
+
+  it("does not leak a session from the report's early-return path", () => {
+    // The specific mistake made while writing this: the catch that handles a
+    // failed tab check returned without closing the connection it had opened.
+    const mStart = qa.indexOf("async qaAndEmailReport(");
+    const mEnd = qa.indexOf("async testEmailAttachmentUI(", mStart);
+    const report = qa.slice(mStart, mEnd);
+    const tabCatchAt = report.indexOf("} catch (err) {");
+    const tabCatch = report.slice(tabCatchAt, tabCatchAt + 400);
+    expect(tabCatch, "the tab-check catch must release the session").toContain(
+      "closeConnectionQuietly(connection)",
+    );
+  });
+});

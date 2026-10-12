@@ -80,5 +80,10 @@
 ,
   "browser": {
     "binding": "BROWSER"
-  }
+  },
+  // Required by createBrowserTools(): it runs model-authored browser code in a
+  // sandboxed Worker, and the sandbox is created through this binding.
+  "worker_loaders": [
+    { "binding": "LOADER" }
+  ]
 }
