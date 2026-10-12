@@ -530,11 +530,66 @@ can connect with just the URL.
 | `cfmail_recent_emails` | Recent emails with their AI summary |
 | `cfmail_recent_payments` | Recent x402 payments |
 | `cfmail_recent_webhooks` | Recent webhook events with AI analysis |
+| `cfmail_ledger_diagnostics` | Hop-by-hop health of the ledger and both sub-agents, with real error text instead of a zero |
 
 Capabilities that move money or send mail are deliberately **not** exposed, because
 this endpoint has no authentication yet: `payExternalEndpoint`, `processPaidRequest`,
 `sendOutboundEmail` and `sendWebhook`. Add authentication before widening the tool set.
 
+### Testing the agents as independent participants
+
+Each agent is reachable on its own, which is the point of splitting them: a failure
+can be attributed to one hop instead of to "the system".
+
+**Discover them.** Cards are public; fetch one to see what an agent claims it can do.
+
+```bash
+curl -s https://pay.openaimp.com/.well-known/agent-card.json
+curl -s https://pay.openaimp.com/a2a/payments/agent-card.json
+curl -s https://pay.openaimp.com/a2a/email/agent-card.json
+```
+
+**Confirm they are gated.** All three must return 401 without a credential.
+
+```bash
+for p in /a2a /a2a/payments /a2a/email; do
+  printf "%s -> " "$p"
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST "https://pay.openaimp.com$p" \
+    -H 'Content-Type: application/json' -d '{}'
+done
+```
+
+**Call one.** A text part answers a question; a data part with an `operation` performs
+one. `DASHBOARD_API_KEY` is the bearer credential.
+
+```bash
+curl -s -X POST https://pay.openaimp.com/a2a/email \
+  -H "Authorization: Bearer $DASHBOARD_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":
+       {"kind":"message","messageId":"m1","role":"user","parts":[
+       {"kind":"data","data":{"operation":"email.quota"}}]}}}'
+```
+
+**Or skip the network.** The agents are Durable Objects, so inside the Worker a
+direct RPC call reaches the same method, which is what the diagnostics tool does to
+attribute a failure to a hop. That is also why a missing method fails at runtime
+rather than at build time: the stub is `any`-typed, so the compiler cannot check it.
+
+`cfmail_ledger_diagnostics` is the fastest end-to-end check of this wiring. It probes
+four hops separately and returns the real error text rather than a zero:
+
+```bash
+curl -s -X POST https://pay.openaimp.com/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":
+       {"name":"cfmail_ledger_diagnostics","arguments":{}}}'
+```
+
+A healthy response has no `error` key on any hop. If one hop reports an error and the
+next does not, the failure is in the hop, not in the ledger.
 ### Card payments
 
 Alongside x402, users can pay by card. `POST /api/stripe/checkout` creates a
