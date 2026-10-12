@@ -926,7 +926,6 @@ export function createApp() {
       attachments?: { filename: string; type: string; content: string }[];
     }>();
     // Use EmailAgent (via DO RPC) which supports attachments
-    const { getAgentByName } = await import("agents");
     const emailAgent = getAgentByName(c.env.EMAIL_AGENT, "email") as any;
     const result = await emailAgent.sendThroughAgent({
       to: body.to,
