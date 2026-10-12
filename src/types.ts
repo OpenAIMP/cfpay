@@ -19,6 +19,8 @@ export interface Env {
    * registries for both payment rails.
    */
   PAYMENTS_AGENT: DurableObjectNamespace;
+  /** Owns the mail resource; other agents send through it. */
+  EMAIL_AGENT: DurableObjectNamespace;
   /**
    * This Worker's own origin, used when one agent calls another over A2A.
    *
@@ -179,6 +181,12 @@ export interface AgentState {
   totalEmailsSent: number;
   totalPaymentsReceived: number;
   totalPaymentsSent: number;
+  /**
+   * Set once this instance's pre-split payment entries have been adopted by the
+   * payments agent. Absent means the migration still has to run, so a failed
+   * attempt retries on the next read rather than being silently forgotten.
+   */
+  paymentsBackfilledAt?: string;
   webhookEvents?: WebhookEvent[];
   totalWebhooksReceived?: number;
   /** Card checkouts awaiting or after fulfilment, keyed by requestId. */

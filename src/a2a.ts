@@ -55,6 +55,9 @@ export const A2A_PAYMENTS_RPC_PATH = "/a2a/payments";
 /** Discovery path for the payments capability card. */
 export const A2A_PAYMENTS_CARD_PATH = "/a2a/payments/agent-card.json";
 
+export const A2A_EMAIL_RPC_PATH = "/a2a/email";
+export const A2A_EMAIL_CARD_PATH = "/a2a/email/agent-card.json";
+
 /** True when the presented credential authorises a /a2a call. */
 export function a2aAuthorised(request: Request, env: Env): boolean {
   const expected = (env.DASHBOARD_API_KEY ?? "").trim();
@@ -342,6 +345,43 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
  * would make the card disagree with the endpoint a client called, and the SDK
  * would reject it. Hence a handler per request rather than one per instance.
  */
+/**
+ * Card for the email capability.
+ *
+ * Declares write capability, because it has one: any caller holding the bearer
+ * credential may send. A card that understates what an agent will do is as
+ * misleading as one that overstates it, so send is listed explicitly along with
+ * the rate limit that bounds it.
+ */
+export function emailCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Email Agent",
+    description:
+      "Owns the CFmail mail resource: message history, outbound sends, and the inbound record path. Other agents send through this. Reads and writes over A2A; sends are rate limited.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_EMAIL_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "email",
+        name: "Email",
+        description:
+          "Report on message history and send mail. Write operations are email.send; all operations require a bearer credential. Sends are capped per hour for the agent instance.",
+        tags: ["email", "send", "history", "write"],
+        examples: [
+          "How many emails has this agent handled?",
+          "What were the last few subjects?",
+          "Send a message to ops@example.com with this body.",
+        ],
+      },
+    ],
+  };
+}
 export function createA2ATransport(
   sql: SqlStorage,
   origin: string,

@@ -1,3 +1,4 @@
+import { emailToolDefinition } from "./email-tool";
 import { Agent, callable } from "agents";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime from "postal-mime";
@@ -520,6 +521,19 @@ Do not claim to have completed a payment unless you have received confirmation.`
       `State after inbound: ${stateAfterInbound.emails.length} emails, ${stateAfterInbound.totalEmailsReceived} received`,
     );
 
+    // Mirror the message into the email agent, which owns the mail resource. This
+    // instance keeps its own copy because the dashboard reads it, and the mirror is
+    // best-effort: a failure to record must not drop an inbound message that has
+    // already been accepted. The two stores hold one copy each, so nothing is
+    // double counted.
+    try {
+      const { emailAgentStub } = await import("./email-tool");
+      const emailStub = emailAgentStub(this.env as any);
+      if (emailStub) await emailStub.recordInbound(emailRecord);
+    } catch (error) {
+      console.error("Email agent could not record the inbound message:", error);
+    }
+
     // Send auto-reply (requires Workers Paid plan for Email Sending)
     try {
       if (this.isEmailCaptureMode()) {
@@ -601,14 +615,47 @@ Do not claim to have completed a payment unless you have received confirmation.`
         return { success: true, emailId };
       }
 
-      await this.env.EMAIL.send({
-        to,
-        from: `agent@${this.env.EMAIL_DOMAIN}`,
-        replyTo: `agent@${this.env.EMAIL_DOMAIN}`,
-        subject,
-        text: body,
-      });
+      // Send through the shared email tool, so this path obeys the same rate limit
+      // and the same guard against mailing ourselves as every other caller. Falls
+      // back to the binding only when no email agent answered at all - never to
+      // override a refusal, which would make the limit decorative.
+      const { emailAgentStub } = await import("./email-tool");
+      const stub = emailAgentStub(this.env as any);
+      let sentOk = true;
+      let sendError: string | undefined;
 
+      if (stub) {
+        try {
+          const result = await stub.sendEmail({ to, subject, body });
+          if (result && typeof result.ok === "boolean") {
+            sentOk = result.ok;
+            sendError = result.error;
+          }
+        } catch (error) {
+          console.error("Email tool RPC failed; sending directly:", error);
+        }
+      }
+
+      if (stub && !sentOk && sendError) {
+        // The tool refused (a rate limit, or our own address). Surface that rather
+        // than sending anyway.
+        console.error("Email tool refused the send:", sendError);
+        return { success: false, emailId };
+      }
+
+      if (!stub) {
+        await this.env.EMAIL.send({
+          to,
+          from: `agent@${this.env.EMAIL_DOMAIN}`,
+          replyTo: `agent@${this.env.EMAIL_DOMAIN}`,
+          subject,
+          text: body,
+        });
+      }
+
+      // This instance keeps its own copy too: the dashboard reads it, and a rolling
+      // deploy must not show a gap where the new ledger has the message and the old
+      // reader does not.
       this.setState({
         ...state,
         emails: [...state.emails, record].slice(-MAX_STORED_EMAILS),
@@ -1075,138 +1122,71 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * is true.
    */
   /**
-   * Answer a question about emails, payments and webhooks from the aggregate
-   * snapshot. Facts are computed here and the model only phrases them, so it
-   * cannot invent a figure it was not given. Read-only.
+   * Read the payment ledger.
+   *
+   * The payments agent is the ledger, exclusively. This instance holds no payments
+   * of its own any more: it forwards, and it backfills once so entries written
+   * before the split are adopted rather than orphaned.
+   *
+   * The backfill is guarded by a stored marker rather than by re-running on each
+   * read. It is idempotent either way, but a read should not be doing migration
+   * work on every call.
    */
-  async answerAboutState(question: string): Promise<string> {
-    const snap = await this.a2aSnapshot();
-    const facts = [
-      "Emails handled: " + snap.emails,
-      "Payments on the ledger: " + snap.payments,
-      "Webhook events received: " + snap.webhooks,
-      "Webhook providers: " + (Object.entries(snap.webhookProviders).map(function (e) { return e[0] + " (" + e[1] + ")"; }).join(", ") || "none"),
-      "Recent payment descriptions: " + (snap.recentPaymentDescriptions.join("; ") || "none"),
-      "Recent webhook types: " + (snap.recentWebhookTypes.join("; ") || "none"),
-    ].join("\n");
-    try {
-      const response: any = await this.env.AI.run(
-        "@cf/openai/gpt-oss-120b" as never,
-        {
-          messages: [
-            {
-              role: "system",
-              content: [
-                "You answer questions about a mail and payment agent, using only the facts given.",
-                "You cannot act: do not offer to send email, move funds or change anything.",
-                "If the facts do not contain the answer, say so rather than guessing. Be brief.",
-              ].join("\n"),
-            },
-            { role: "user", content: "Facts:\n" + facts + "\n\nQuestion: " + question },
-          ],
-          max_tokens: 400,
-        } as never,
-      );
-      const text = String(response?.response ?? "").trim();
-      if (text) return text;
-      if (Array.isArray(response?.choices) && response.choices.length) {
-        const alt = String(response.choices[0]?.message?.content ?? "").trim();
-        if (alt) return alt;
-      }
-    } catch {
-      // Fall through to the raw facts rather than returning nothing.
-    }
-    return facts;
-  }  @callable()
-  async handleA2A(body: unknown, origin: string): Promise<unknown> {
-    const { createA2ATransport, handleCollecting, cfmailCard } = await import("./a2a");
-    const a2a = createA2ATransport(
-      this.ctx.storage.sql,
-      origin,
-      cfmailCard(origin),
-      {
-        card: cfmailCard,
-        // The monolith's A2A surface stays read-only: it reports on emails,
-        // payments and webhooks. Writes belong to the agent that owns the resource.
-        handle: async (message: any) => {
-          const parts: any[] = Array.isArray(message?.parts) ? message.parts : [];
-          const question =
-            parts
-              .filter((x) => x && x.kind === "text" && typeof x.text === "string")
-              .map((x) => x.text as string)
-              .join("\n")
-              .trim() || "Summarise the current state.";
-          return { text: await this.answerAboutState(question) };
-        },
-      },
-    );
-    // Collected, not streamed: an async iterable cannot cross the RPC boundary.
-    return await handleCollecting(a2a.transport, body);
-  }
-
-  @callable()
-  async a2aSnapshot(): Promise<{
-    emails: number;
-    payments: number;
-    webhooks: number;
-    webhookProviders: Record<string, number>;
-    recentPaymentDescriptions: string[];
-    recentWebhookTypes: string[];
-  }> {
-    const state = this.ensureState();
-    const webhookProviders: Record<string, number> = {};
-    for (const e of state.webhookEvents || []) {
-      const provider = e.provider || 'unknown';
-      webhookProviders[provider] = (webhookProviders[provider] || 0) + 1;
-    }
-    return {
-      emails: state.emails.length,
-      payments: state.payments.length,
-      webhooks: (state.webhookEvents || []).length,
-      webhookProviders,
-      recentPaymentDescriptions: state.payments
-        .slice(-5)
-        .map((p) => p.direction + ' ' + p.amount + ' ' + p.currency + ' (' + p.status + ')'),
-      recentWebhookTypes: (state.webhookEvents || []).slice(-5).map((e) => e.provider + '/' + e.eventType),
-    };
-  }
-
-  @callable()
   async getPayments(
     direction: string | null,
     limit: number,
   ): Promise<PaymentRecord[]> {
-    const local = this.ensureState().payments;
-
-    // Read BOTH ledgers. Payments recorded by the payments agent are authoritative,
-    // but this instance still holds entries written before the split and any written
-    // while the binding was unreachable. Consulting only the local list meant a card
-    // payment settled by the agent appeared in the webhook feed and nowhere else -
-    // the Stripe tab reported a payment the Payments tab could not see.
     const pa = this.paymentsAgent();
-    if (pa) {
-      try {
-        const remote: PaymentRecord[] = await pa.listPayments(direction, limit * 2);
-        const byId = new Map<string, PaymentRecord>();
-        for (const payment of [...local, ...remote]) {
-          // The remote copy wins on a collision: it is the authoritative ledger.
-          if (payment && payment.id) byId.set(payment.id, payment);
-        }
-        const merged = [...byId.values()].filter(
-          (payment) => !direction || payment.direction === direction,
-        );
-        merged.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-        return merged.slice(-limit).reverse();
-      } catch (error) {
-        console.error("Payments agent read failed; falling back to local state:", error);
-      }
+    if (!pa) {
+      // Fail loudly rather than quietly answering from a stale copy. A wrong answer
+      // about money is worse than an error.
+      throw new Error("The payments agent is unavailable, so the ledger cannot be read.");
     }
 
-    const filtered = direction
-      ? local.filter((payment) => payment.direction === direction)
-      : local;
+    await this.migrateLegacyPayments(pa);
+    return await pa.listPayments(direction, limit);
+  }
 
-    return filtered.slice(-limit).reverse();
+  /**
+   * Adopt this instance's pre-split payment entries into the ledger, once.
+   *
+   * The local copies are deliberately left in place rather than cleared: they are
+   * the only record if the adoption turns out to be wrong, and clearing them would
+   * be the irreversible half of a migration that may need to be reversed.
+   */
+  private async migrateLegacyPayments(pa: any): Promise<void> {
+    const state = this.ensureState();
+    if (state.paymentsBackfilledAt) return;
+    const legacy = Array.isArray(state.payments) ? state.payments : [];
+
+    try {
+      if (legacy.length > 0) {
+        const outcome = await pa.backfillPayments(legacy);
+        console.log(
+          "Payments backfill: adopted " + outcome.adopted + ", skipped " + outcome.skipped,
+        );
+      }
+      this.setState({ ...this.ensureState(), paymentsBackfilledAt: new Date().toISOString() });
+    } catch (error) {
+      // Leave the marker unset so the next read retries. Not marking it done is the
+      // safe failure: a retry is cheap, a lost payment is not.
+      console.error("Payments backfill failed; will retry on the next read:", error);
+    }
+  }
+
+  /**
+   * Ledger totals, from the ledger.
+   *
+   * The stats endpoint used to read this instance's own counters, which stopped
+   * moving once the payments agent began recording. Counting the real ledger is the
+   * only way the dashboard total can be right.
+   */
+  @callable()
+  async getPaymentTotals(): Promise<{ received: number; sent: number; stored: number }> {
+    const pa = this.paymentsAgent();
+    if (!pa) return { received: 0, sent: 0, stored: 0 };
+    await this.migrateLegacyPayments(pa);
+    return await pa.paymentTotals();
   }
 
   @callable()
@@ -1474,7 +1454,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
         }
 
         try {
-          const output = await callTool(token, name, args, session);
+          const output = name === "email"
+            ? await this.callEmailTool((args ?? {}) as Record<string, unknown>)
+            : await callTool(token, name, args, session);
           const firstLine = output.split("\n").find((l) => l.trim() !== "") || "(empty)";
           trace.push({ name, args, ok: true, result: output, summary: firstLine.slice(0, 200) });
           resultIndexes.push(messages.length);
@@ -1509,7 +1491,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * cover the task, and it then avoids the tools.
    */
   private toAiToolSpecs(tools: McpTool[]): Array<Record<string, unknown>> {
-    return tools.map((t) => ({
+    const specs = tools.map((t) => ({
       type: "function",
       function: {
         name: t.name,
@@ -1520,6 +1502,74 @@ Do not claim to have completed a payment unless you have received confirmation.`
             : { type: "object", properties: {} },
       },
     }));
+
+    // The email capability belongs to this Worker, not to an MCP server, so it is
+    // appended here rather than discovered. One definition in email-tool.ts is what
+    // every agent's tool list is built from, so adding a field or an operation
+    // reaches all of them at once.
+    specs.push({
+      type: "function",
+      function: {
+        name: emailToolDefinition.name,
+        description: emailToolDefinition.description,
+        parameters: emailToolDefinition.parameters,
+      },
+    });
+
+    return specs;
+  }
+
+  /**
+   * Dispatch the email tool.
+   *
+   * Separate from callTool() because the email capability is not an MCP tool: it is
+   * another Durable Object in this Worker. Direct RPC first, A2A as the fallback, so
+   * the same method answers either way.
+   */
+  private async callEmailTool(args: Record<string, unknown>): Promise<string> {
+    const { emailAgentStub, callEmailAgent } = await import("./email-tool");
+    const operation = String((args && args.operation) || "");
+    if (!operation) return "email tool: missing operation.";
+
+    const stub = emailAgentStub(this.env as any);
+    if (stub) {
+      try {
+        switch (operation) {
+          case "email.summary":
+            return JSON.stringify(await stub.a2aSnapshot());
+          case "email.totals":
+            return JSON.stringify(await stub.emailTotals());
+          case "email.quota":
+            return JSON.stringify(await stub.sendQuota());
+          case "email.list": {
+            const rows = await stub.listEmails(
+              args.direction ? String(args.direction) : null,
+              Number(args.limit) > 0 ? Math.min(Number(args.limit), 100) : 20,
+            );
+            // Bodies are omitted: a listing is not a content dump.
+            return JSON.stringify({
+              emails: rows.map(({ body, html, ...rest }: any) => rest),
+            });
+          }
+          case "email.send": {
+            const result = await stub.sendEmail({
+              to: String(args.to || ""),
+              subject: String(args.subject || ""),
+              body: String(args.body || ""),
+            });
+            return JSON.stringify(result);
+          }
+          default:
+            return "email tool: unknown operation " + operation;
+        }
+      } catch (error) {
+        console.error("Email tool RPC failed; trying A2A:", error);
+      }
+    }
+
+    const remote = await callEmailAgent(this.env as any, operation, args, String(args.subject || operation));
+    if (remote) return remote.text || JSON.stringify(remote.data ?? {});
+    return "The email tool is unavailable, so nothing was sent or read.";
   }
 
   @callable()
@@ -1660,16 +1710,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
         createdAt: new Date().toISOString(),
       };
 
+      // The ledger is the payments agent's, exclusively. There is no local fallback:
+      // a second writer is what let a card payment settle into one store while the
+      // dashboard read the other.
       const pa = this.paymentsAgent();
-      if (pa) {
-        await pa.recordPayment(payment);
-      } else {
-        this.setState({
-          ...latest,
-          payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
-          totalPaymentsSent: latest.totalPaymentsSent + 1,
-        });
+      if (!pa) {
+        throw new Error(
+          "The payments agent is unavailable, so this outgoing payment cannot be recorded.",
+        );
       }
+      await pa.recordPayment(payment);
 
       return {
         success: response.ok,

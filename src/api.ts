@@ -828,6 +828,12 @@ export function createApp() {
     try {
       const agent = getAgent(c);
       const state = await agent.getDashboardData();
+      // Payment counts come from the ledger, not from this instance's counters: the
+      // payments agent owns the ledger now, and the local counters stopped moving
+      // when the split happened, which is why the dashboard read zero.
+      const totals = await agent
+        .getPaymentTotals()
+        .catch(() => ({ received: 0, sent: 0, stored: 0 }));
       const firstNetwork = Object.values(getPaymentConfig(c.env).networks)[0];
       const totalRevenue = firstNetwork?.usdcAmount
         ? `${formatAmount(firstNetwork.usdcAmount).replace("$", "")} USDC per request`
@@ -837,8 +843,8 @@ export function createApp() {
       return c.json({
         totalEmailsReceived: state.totalEmailsReceived || 0,
         totalEmailsSent: state.totalEmailsSent || 0,
-        totalPaymentsReceived: state.totalPaymentsReceived || 0,
-        totalPaymentsSent: state.totalPaymentsSent || 0,
+        totalPaymentsReceived: totals.received,
+        totalPaymentsSent: totals.sent,
         totalRevenue,
       });
     } catch (error: any) {

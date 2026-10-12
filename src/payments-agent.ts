@@ -109,7 +109,50 @@ export class PaymentsAgent extends Agent<Env, PaymentsState> {
     });
   }
 
-  /** Newest first. */
+  /**
+   * Adopt ledger entries written before this agent became authoritative.
+   *
+   * Idempotent by construction: an entry is matched on its transaction hash when it
+   * has one, otherwise on its id, so running this twice cannot duplicate the ledger.
+   * The monolith held payments of its own before the split, and those must not be
+   * lost - nor may re-running this resurrect them a second time.
+   *
+   * Returns how many were actually adopted, so a caller can tell a real migration
+   * from a no-op instead of assuming success.
+   */
+  @callable()
+  async backfillPayments(records: PaymentRecord[]): Promise<{ adopted: number; skipped: number }> {
+    const s = this.state_();
+    const seen = new Set<string>();
+    for (const p of s.payments) seen.add(p.txHash ? p.txHash.toLowerCase() : p.id);
+
+    let adopted = 0;
+    let skipped = 0;
+    const added: PaymentRecord[] = [];
+
+    for (const record of Array.isArray(records) ? records : []) {
+      if (!record || !record.id) { skipped++; continue; }
+      const key = record.txHash ? record.txHash.toLowerCase() : record.id;
+      if (seen.has(key)) { skipped++; continue; }
+      seen.add(key);
+      added.push(record);
+      adopted++;
+    }
+
+    if (adopted > 0) {
+      const payments = [...s.payments, ...added].slice(-MAX_STORED_PAYMENTS);
+      this.commit({
+        ...s,
+        payments,
+        totalReceived: s.totalReceived + added.filter((p) => p.direction === "received").length,
+        totalSent: s.totalSent + added.filter((p) => p.direction === "sent").length,
+      });
+    }
+
+    return { adopted, skipped };
+  }
+
+  /** Newest first. */  /** Newest first. */
   @callable()
   async listPayments(direction: string | null, limit: number): Promise<PaymentRecord[]> {
     const s = this.state_();
@@ -431,10 +474,19 @@ export class PaymentsAgent extends Agent<Env, PaymentsState> {
   }
 
   /**
-   * Deliver the fulfilment email through the EMAIL binding.
+   * Deliver the fulfilment email through the email tool.
    *
-   * Sending from here rather than calling the cfmail agent is what avoids the
-   * deadlock described on processPaidRequest.
+   * Goes through the email agent rather than the EMAIL binding directly. Two
+   * reasons, and only the first is tidiness:
+   *
+   *   - the send is rate limited where the capability lives, so this agent cannot
+   *     be the hole in that limit;
+   *   - sending from here rather than calling the cfmail agent is what avoids the
+   *     deadlock described on processPaidRequest. The email agent is a third
+   *     Durable Object, so nothing re-enters itself.
+   *
+   * A refusal is NOT retried through the binding. If the limit refused the send, a
+   * direct send would bypass it and the limit would be decorative.
    */
   private async sendFulfilmentEmail(
     to: string,
@@ -442,22 +494,67 @@ export class PaymentsAgent extends Agent<Env, PaymentsState> {
     paymentId: string,
     paymentSummary: string,
   ): Promise<{ success: boolean; emailId: string }> {
-    const emailId = generateId();
     const body = aiResponse + "\n\n---\nRequest ID: " + paymentId + "\nPayment: " + paymentSummary + "\nStatus: Confirmed";
+    const subject = "CFmail Agent Request Received";
+
+    const outcome = await this.deliverEmail(to, subject, body);
+    if (!outcome.ok) {
+      console.error("Fulfilment email not sent: " + outcome.error);
+    }
+    // The caller still records the ledger entry: the payment was taken, so hiding
+    // it would be worse than a failed send.
+    return { success: outcome.ok, emailId: outcome.emailId || generateId() };
+  }
+
+  /**
+   * One route to the email tool: direct RPC, then A2A, then the binding.
+   *
+   * The binding is last and is reachable only when no email agent answered at all
+   * - a rolling deploy. It is never used to override a refusal, which is why the
+   * refusal is carried out of the RPC attempt rather than collapsed into a null.
+   */
+  private async deliverEmail(
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<{ ok: boolean; emailId?: string; error?: string }> {
+    const { emailAgentStub, callEmailAgent } = await import("./email-tool");
+    const args = { to, subject, body };
+
+    const stub = emailAgentStub(this.env as any);
+    if (stub) {
+      try {
+        const result = await stub.sendEmail(args);
+        if (result && typeof result.ok === "boolean") {
+          return result;
+        }
+        // A result without an ok field means an older deployment answered. Fall
+        // through rather than misunderstanding it.
+      } catch (error) {
+        console.error("Email tool RPC failed:", error);
+      }
+    }
+
+    const remote = await callEmailAgent(this.env as any, "email.send", args, `Send: ${subject}`);
+    if (remote && remote.data && typeof (remote.data as any).ok === "boolean") {
+      return remote.data as any;
+    }
+
+    // Nothing answered. Send directly so the paid work is not lost; the payment is
+    // already recorded, and a recorded payment with no email is worse than an
+    // unthrottled one.
+    console.error("Email tool unreachable; sending through the binding directly.");
     try {
       await this.env.EMAIL.send({
         to,
         from: "agent@" + this.env.EMAIL_DOMAIN,
         replyTo: "agent@" + this.env.EMAIL_DOMAIN,
-        subject: "CFmail Agent Request Received",
+        subject,
         text: body,
       });
-      return { success: true, emailId };
+      return { ok: true, emailId: generateId() };
     } catch (error) {
-      console.error("Fulfilment email failed:", error);
-      // The caller still records the ledger entry: the payment was taken, so
-      // hiding it would be worse than a failed send.
-      return { success: false, emailId };
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
