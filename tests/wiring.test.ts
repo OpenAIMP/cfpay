@@ -1191,8 +1191,11 @@ describe("a QA report uses one browser session, not two", () => {
     // The raw message names wrangler.jsonc; the account being out of sessions is
     // the usual cause. The translation must say so.
     expect(qa).toContain("describeBrowserFailure");
-    expect(qa).toContain("Browser Rendering session limit");
-    expect(qa).toContain("not a missing binding");
+    // The message must point away from wrangler.jsonc without asserting a cause
+    // that was never confirmed.
+    expect(qa).toContain("treat this as a transient capacity refusal");
+    expect(qa).toContain("rather");
+    expect(qa).toContain("missing binding");
     // And it must be idempotent, so it cannot double-wrap into
     // "Browser check failed: Could not open a browser session: ...".
     expect(qa).toContain("message.startsWith(\"Could not open a browser session\")");

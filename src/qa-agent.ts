@@ -69,11 +69,16 @@ function describeBrowserFailure(err: unknown): string {
   // produced "Browser check failed: Could not open a browser session: ...".
   if (message.startsWith("Could not open a browser session")) return message;
   if (/did not return a WebSocket/i.test(message)) {
+    // States what is known and what to try, without asserting a cause that has
+    // not been established. The previous wording claimed "this is exhaustion",
+    // which is the leading explanation but was never confirmed - and a message
+    // that asserts a cause it cannot prove is worse than one that names the
+    // possibilities, because it stops the next person looking.
     return (
-      "Could not open a browser session: the Browser Rendering session limit " +
-      "appears to be reached. Sessions are short-lived, so waiting a few minutes " +
-      "and retrying usually succeeds. (The browser binding is configured; this is " +
-      "exhaustion, not a missing binding.)"
+      "Could not open a browser session. The browser binding is configured, so " +
+      "treat this as a transient capacity refusal (concurrency or quota) rather " +
+      "than a missing binding: sessions are short-lived, so waiting a moment and " +
+      "retrying is the first thing to try."
     );
   }
   return `Browser check failed: ${message}`;
@@ -147,12 +152,18 @@ export class QAAgent extends Think<Env> {
    * Open a Browser Rendering session, translating a refusal into something
    * actionable.
    *
-   * `connectBrowser` reports a session-limit refusal as "Browser Rendering
+   * `connectBrowser` reports a failure to open a session as "Browser Rendering
    * binding did not return a WebSocket. Ensure the 'browser' binding is
-   * configured in wrangler.jsonc." The binding is usually fine - the account is
-   * out of concurrent sessions - so that message sends you to the wrong file.
-   * Sessions are per-invocation and short-lived, so the fix is to wait, not to
-   * reconfigure.
+   * configured in wrangler.jsonc."
+   *
+   * That message points at configuration, but the browser binding being absent
+   * is the least likely cause: this Worker declares it, the deploy reports it as
+   * bound, and a request that fails this way has usually already spent seconds
+   * of wall time on browser work. A refusal for concurrency or quota reasons
+   * arrives through the same path, and reads identically. The exact limits are
+   * plan-specific and are NOT asserted here; what is asserted is that this is
+   * not a wrangler.jsonc problem, and that the sessions are short-lived so
+   * waiting and retrying is the first thing to try.
    */
   private async openBrowserSession(env: Env): Promise<CdpLike> {
     const { connectBrowser } = await import("agents/browser");
