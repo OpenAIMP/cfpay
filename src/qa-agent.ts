@@ -49,26 +49,12 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
-   * Browser tools via CDP. These give the model direct browser control
-   * (browser_execute, browser_markdown, etc.) when dispatched via agentTool().
-   * The @callable() methods below use direct CDP for deterministic checks.
+   * No tools of its own: this agent IS the tool. It exposes capabilities through
+   * @callable() methods and A2A, which does not require an AI SDK tool set.
+   * (Browser CDP is used directly in runBrowserCheckCDP below for deterministic checks.)
    */
-  override getTools() {
-    const env = this.env as Env;
-    if (!env.BROWSER) {
-      return {};
-    }
-    try {
-      // Dynamic import to avoid breaking if agents/browser/ai isn't available
-      const { createBrowserTools } = require("agents/browser/ai");
-      return createBrowserTools({
-        ctx: this.ctx,
-        browser: env.BROWSER,
-        loader: (env as any).LOADER,
-      });
-    } catch {
-      return {};
-    }
+  override getTools(): Record<string, never> {
+    return {};
   }
   /**
    * Shared browser-check logic.
