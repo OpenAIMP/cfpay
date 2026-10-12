@@ -95,6 +95,9 @@
       <p style="color:var(--muted);font-size:0.8rem;margin-bottom:1rem;">Enter your dashboard API key</p>
       <div class="form-group"><input type="password" id="apiKeyInput" placeholder="API Key" /></div>
       <button class="btn" style="width:100%;" onclick="login()">Login</button>
+      <div style="text-align:center;margin:0.75rem 0;color:var(--muted);font-size:0.8rem;">or</div>
+      <button class="btn" style="width:100%;background:#24292f;" onclick="location.href='/auth/login'">Sign in with GitHub</button>
+      <p id="oauthUser" style="display:none;color:var(--muted);font-size:0.8rem;margin-top:0.75rem;"></p>
     </div>
   </div>
   <div id="app" style="display:none;">
@@ -325,6 +328,30 @@
     // by the first status load so the user sees a confirmation on return.
     let publicConnectedCount = null;
     if (apiKey) { document.getElementById('login').style.display = 'none'; document.getElementById('app').style.display = 'block'; init(); }
+    // If a GitHub OAuth session cookie exists, skip the API-key prompt.
+    (async function probeOAuthSession() {
+      try {
+        const res = await fetch('/auth/me');
+        if (res.ok) {
+          const user = await res.json();
+          apiKey = 'oauth-session'; // marker; real auth is the httpOnly cookie
+          document.getElementById('login').style.display = 'none';
+          document.getElementById('app').style.display = 'block';
+          init();
+          window.connectAgent?.();
+          const badge = document.getElementById('oauthUser');
+          if (badge && user.login) {
+            badge.style.display = 'block';
+            badge.textContent = 'Signed in as ' + user.login + ' (GitHub)';
+          }
+        }
+      } catch (e) { /* no OAuth session — show API-key login */ }
+    })();
+    async function oauthLogout() {
+      await fetch('/auth/logout', { method: 'POST' });
+      localStorage.removeItem('cfmail_api_key');
+      location.reload();
+    }
     function login() {
       apiKey = document.getElementById('apiKeyInput').value;
       if (!apiKey) return;
