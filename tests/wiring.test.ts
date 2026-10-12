@@ -1080,3 +1080,60 @@ describe("the post-deploy QA job cannot break a deploy", () => {
     expect(smoke).toContain("process.exit(failed > 0 ? 1 : 0)");
   });
 });
+
+describe("browser teardown cannot fail a QA run", () => {
+  // The outage this covers: `await browser.close().catch(...)` where close() is
+  // declared `close(): void`. The throw happened in a `finally`, so it replaced
+  // a completed QA run's result with an opaque 500 on the route.
+  const qa = read("src/qa-agent.ts");
+
+  it("does not call .catch() on a void close()", () => {
+    // The precise anti-pattern. Matches the code form, not the doc comments that
+    // explain why it is banned.
+    const code = qa
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(
+      /\.close\(\)\s*\.catch/.test(code),
+      "a raw .close().catch() returns: close() is void, so .catch throws",
+    ).toBe(false);
+  });
+
+  it("routes browser teardown through the tested helper", () => {
+    expect(qa).toContain("closeConnectionQuietly");
+    // Exactly the two browser methods, so a new one cannot quietly reintroduce
+    // the raw pattern (and a removal is caught too).
+    const uses = qa.split("closeConnectionQuietly(").length - 1;
+    expect(uses, "both browser teardown sites must use the helper").toBe(2);
+  });
+
+  it("keeps the report's tab call inside a guard", () => {
+    // It sat outside the try, so any rejection from qaDashboardTabs bypassed the
+    // method's own error handling and reached the route as a 500.
+    expect(qa).toContain("The tab check failed before a report could be built");
+  });
+
+  it("reports a refused send instead of claiming success", () => {
+    // sendThroughAgent returns { ok:false } rather than throwing, so ignoring
+    // the result reported emailed:true for a report that never left.
+    expect(qa).toContain("sendResult?.ok");
+    expect(qa).toContain("The email agent refused the send.");
+  });
+});
+
+describe("the QA route names a serialization failure", () => {
+  const api = read("src/api.ts");
+
+  it("checks serializability inside the handler", () => {
+    // c.json() serializes inside Hono AFTER the handler returns, so a try/catch
+    // around it would catch nothing and the response would stay an opaque 500.
+    expect(api).toContain("function jsonOr500(");
+    expect(api).toContain('jsonOr500(c, result, "qa/email-report")');
+  });
+
+  it("cannot throw while reporting the failure", () => {
+    // Stringifying the value that just failed to serialize would throw again.
+    expect(api).toContain("safeStringify");
+    expect(api).toContain("Failed to serialize QA result");
+  });
+});

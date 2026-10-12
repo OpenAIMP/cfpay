@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { safeStringify } from "./browser-lifecycle";
 import Stripe from "stripe";
 import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
@@ -400,6 +401,37 @@ export function createApp() {
    * properties of a Promise without the compiler objecting, so every QA route threw a
    * TypeError and returned a plain-text 500 the dashboard could not parse.
    */
+  /**
+   * Serialize a QA result, turning a serialization failure into a named 500.
+   *
+   * c.json() serializes inside Hono, AFTER the handler returns, so a plain
+   * try/catch around it would not catch a failure - the response would still be
+   * an opaque 500 with no explanation, which is the situation this replaces.
+   * Serializing here keeps the failure inside the try.
+   *
+   * The stringify is a CHECK, not a transformation: the original value is
+   * still what gets sent, so this cannot alter the payload (a JSON round-trip
+   * would silently drop undefined fields, which is why it is not used).
+   *
+   * The log line matters as much as the response: without the culprit and a
+   * bounded preview, the only evidence is "500" and the cause has to be
+   * guessed. safeStringify is used because stringifying the value that just
+   * failed to serialize would throw again and destroy the diagnostic.
+   */
+  function jsonOr500(c: any, result: unknown, label: string) {
+    try {
+      JSON.stringify(result);
+      return c.json(result as any);
+    } catch (e) {
+      console.error(
+        `Failed to serialize QA result (${label}):`,
+        e instanceof Error ? e.message : e,
+        safeStringify(result),
+      );
+      return c.json({ error: "Failed to serialize result", route: label }, 500);
+    }
+  }
+
   async function getQAAgent(c: any) {
     // Awaiting is the fix: getAgentByName resolves to Promise<DurableObjectStub<T>>, and
     // the previous version returned that Promise while callers used it as a stub. Every QA
@@ -1121,7 +1153,7 @@ export function createApp() {
     }
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaAndEmailReport(apiKey, toEmail);
-    return c.json(result);
+    return jsonOr500(c, result, "qa/email-report");
   });
 
 

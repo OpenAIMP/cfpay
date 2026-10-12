@@ -12,6 +12,7 @@
 import { callable } from "agents";
 import { emailAgentTool } from "./agent-tools";
 import { Think } from "@cloudflare/think";
+import { closeConnectionQuietly } from "./browser-lifecycle";
 // Static import, deliberately. A dynamic import() cannot be used here:
 // Think's getTools() is synchronous, so there is no await available at the
 // point the tool set is built.
@@ -442,9 +443,10 @@ export class QAAgent extends Think<Env> {
         error: err instanceof Error ? err.message : String(err),
       };
     } finally {
-      if (browser && typeof browser.close === "function") {
-        await browser.close().catch(() => {});
-      }
+      // A void close(): the teardown helper exists precisely because
+      // `browser.close().catch(...)` throws here - close() returns undefined,
+      // and that throw used to replace this method's return value with a 500.
+      closeConnectionQuietly(browser);
     }
 
     const ok = results.length > 0 && results.every((r) => r.passed);
@@ -461,7 +463,23 @@ export class QAAgent extends Think<Env> {
     apiKey: string,
     toEmail: string,
   ): Promise<{ ok: boolean; emailed: boolean; tabs: any[]; error?: string }> {
-    const tabResult = await this.qaDashboardTabs(apiKey);
+    // Guarded deliberately: this call sat outside the try below, so any
+    // rejection from qaDashboardTabs bypassed this method's own error handling
+    // and surfaced as an opaque 500 on the route. That is exactly how a broken
+    // browser teardown turned a completed QA run into "Internal Server Error".
+    let tabResult: { ok: boolean; tabs: { name: string; passed: boolean; detail: string }[]; error?: string };
+    try {
+      tabResult = await this.qaDashboardTabs(apiKey);
+    } catch (err) {
+      return {
+        ok: false,
+        emailed: false,
+        tabs: [],
+        error: `The tab check failed before a report could be built: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      };
+    }
 
     const tabLines = tabResult.tabs
       .map((t: any) => `- ${t.name}: ${t.passed ? "PASS" : "FAIL"} - ${t.detail}`)
@@ -506,12 +524,23 @@ export class QAAgent extends Think<Env> {
           content: base64,
         });
       }
-      await emailAgent.sendThroughAgent({
+      const sendResult = await emailAgent.sendThroughAgent({
         to: toEmail,
         subject: `QA Report: Dashboard ${tabResult.ok ? "PASS" : "FAIL"} - ${new Date().toISOString().slice(0, 10)}`,
         body,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
+      // sendThroughAgent RETURNS a refusal rather than throwing, so ignoring the
+      // result reported emailed:true for a rate-limited or rejected send - the
+      // dashboard showed success for a report that never left.
+      if (!sendResult?.ok) {
+        return {
+          ok: tabResult.ok,
+          emailed: false,
+          tabs: tabResult.tabs,
+          error: sendResult?.error || "The email agent refused the send.",
+        };
+      }
       return { ok: tabResult.ok, emailed: true, tabs: tabResult.tabs };
     } catch (err) {
       return {
@@ -702,9 +731,10 @@ export class QAAgent extends Think<Env> {
         error: err instanceof Error ? err.message : String(err),
       };
     } finally {
-      if (browser && typeof browser.close === "function") {
-        await browser.close().catch(() => {});
-      }
+      // A void close(): the teardown helper exists precisely because
+      // `browser.close().catch(...)` throws here - close() returns undefined,
+      // and that throw used to replace this method's return value with a 500.
+      closeConnectionQuietly(browser);
     }
   }
 
