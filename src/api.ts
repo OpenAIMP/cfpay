@@ -839,9 +839,12 @@ export function createApp() {
       // Payment counts come from the ledger, not from this instance's counters: the
       // payments agent owns the ledger now, and the local counters stopped moving
       // when the split happened, which is why the dashboard read zero.
-      const totals = await agent
-        .getPaymentTotals()
-        .catch(() => ({ received: 0, sent: 0, stored: 0 }));
+      const totals = await agent.getPaymentTotals().catch((error: unknown) => {
+        // Logged, never silent. A swallowed error here is exactly how the dashboard
+        // reported 0 payments with no way to tell a broken read from an empty ledger.
+        console.error("Dashboard payment totals failed:", error);
+        return { received: 0, sent: 0, stored: 0 };
+      });
       const firstNetwork = Object.values(getPaymentConfig(c.env).networks)[0];
       const totalRevenue = firstNetwork?.usdcAmount
         ? `${formatAmount(firstNetwork.usdcAmount).replace("$", "")} USDC per request`
