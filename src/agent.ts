@@ -2063,7 +2063,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
       function: {
         name: "emailAgent",
         description:
-          "Dispatch the email agent for a conversational request about the mail resource, or to send a described message.",
+          "Dispatch the email agent for a CONVERSATIONAL request about mail, when you do not " +
+          "already know the fields. For an exact send or any read, use the `email` tool: it " +
+          "reaches the same agent with no model in the path.",
         parameters: agentToolInputSchema.email,
       },
     });
@@ -2155,11 +2157,15 @@ Do not claim to have completed a payment unless you have received confirmation.`
               emails: rows.map(({ body, html, ...rest }: any) => rest),
             });
           }
-          case "email.send": {
+          case "email.send":
+          case "email.sendWithAttachments": {
             const result = await stub.sendThroughAgent({
               to: String(args.to || ""),
               subject: String(args.subject || ""),
               body: String(args.body || ""),
+              // Passed through only for the attachments operation; absent for email.send,
+              // which validates undefined as no attachments.
+              attachments: args.attachments,
             });
             return JSON.stringify(result);
           }

@@ -76,10 +76,13 @@ const COMMON_NOTE =
  */
 export const emailAgentTool = agentTool<typeof emailInput>(EmailAgent, {
   description: [
-    "Dispatch the email agent to inspect or act on the mail resource.",
-    "Use it for conversational requests: summarise recent mail, report the send quota,",
-    "or send a message described in natural language.",
-    COMMON_NOTE,
+    "Dispatch the email agent for a CONVERSATIONAL request about mail: use this only",
+    "when the request is in natural language and you do not already know the recipient,",
+    "subject or body. It spends a model turn inside the child agent to work them out.",
+    "",
+    "For an exact send, or for any read, use the `email` tool instead. That reaches the",
+    "same agent with no model in the path, so it cannot mis-describe what it did and it",
+    "costs nothing extra. Prefer it whenever you know the fields.",
   ].join(" "),
   displayName: "Email Agent",
   inputSchema: emailInput,

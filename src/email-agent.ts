@@ -22,6 +22,39 @@ import type { Env, EmailRecord } from "./types";
 import { generateId } from "./payments";
 import { defaultModelId } from "./models";
 
+/**
+ * An attachment, as a caller supplies it.
+ *
+ * Content is base64. That is what the EMAIL binding accepts for inline data and what a
+ * JSON A2A call can carry at all, so a caller does not have to think about the wire. The
+ * cost is 33% overhead, which the byte cap below accounts for.
+ */
+export interface EmailAttachmentInput {
+  filename: string;
+  /** MIME type, e.g. text/plain or image/png. */
+  type: string;
+  /** Base64-encoded content, without a data: prefix. */
+  content: string;
+  /** Shown inline by the client rather than listed. Requires contentId. */
+  inline?: { contentId: string };
+}
+
+/**
+ * Total attachment budget per message, after base64 inflation.
+ *
+ * Cloudflare's send limits are finite and the exact ceiling is not documented here, so
+ * this is deliberately conservative. It exists to refuse a plausible-looking but oversized
+ * message with a named reason, rather than letting it fail somewhere inside the binding
+ * with an error a caller cannot act on.
+ */
+const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
+
+/** Per-file cap, so one huge file cannot consume the whole budget silently. */
+const MAX_SINGLE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+
+/** Cap on the count, since the binding has to encode each one. */
+const MAX_ATTACHMENTS = 5;
+
 /** Bound on stored message history, matching the monolith's previous limit. */
 const MAX_STORED_EMAILS = 500;
 
@@ -199,7 +232,93 @@ export class EmailAgent extends Think<Env, EmailState> {
     return { adopted, skipped };
   }
 
-  /* -------------------------------- send --------------------------------- */  /* -------------------------------- send --------------------------------- */
+  /* ----------------------------- attachments ----------------------------- */
+
+  /**
+   * Check and convert caller-supplied attachments.
+   *
+   * Returns a reason rather than throwing, because the caller is usually an agent that
+   * should report the refusal instead of failing a whole turn. Every limit is checked
+   * BEFORE the send, so an oversized message produces a named reason instead of an
+   * opaque binding error after a token has already been spent.
+   */
+  private prepareAttachments(input: unknown): {
+    ok: boolean;
+    error?: string;
+    attachments?: any[];
+  } {
+    if (input === undefined || input === null) return { ok: true, attachments: [] };
+    if (!Array.isArray(input)) return { ok: false, error: "attachments must be an array." };
+    if (input.length === 0) return { ok: true, attachments: [] };
+    if (input.length > MAX_ATTACHMENTS) {
+      return { ok: false, error: `At most ${MAX_ATTACHMENTS} attachments per message.` };
+    }
+
+    const out: any[] = [];
+    let total = 0;
+
+    for (const [i, raw] of input.entries()) {
+      const a = raw as EmailAttachmentInput;
+      if (!a || typeof a.filename !== "string" || a.filename.trim() === "") {
+        return { ok: false, error: `Attachment ${i} needs a filename.` };
+      }
+      if (typeof a.type !== "string" || a.type.trim() === "") {
+        return { ok: false, error: `Attachment ${i} needs a MIME type.` };
+      }
+      if (typeof a.content !== "string" || a.content.length === 0) {
+        return { ok: false, error: `Attachment ${i} needs base64 content.` };
+      }
+
+      // Reject a data: prefix explicitly. Accepting it would silently double-encode and
+      // produce a corrupt file that looks like a successful send.
+      if (a.content.startsWith("data:")) {
+        return {
+          ok: false,
+          error: `Attachment ${i} content must be raw base64 without a data: prefix.`,
+        };
+      }
+
+      // base64 length to bytes, minus padding. Used for the cap rather than decoding,
+      // which would allocate the whole buffer just to measure it.
+      const padding = a.content.endsWith("==") ? 2 : a.content.endsWith("=") ? 1 : 0;
+      const bytes = Math.floor((a.content.length * 3) / 4) - padding;
+
+      if (bytes > MAX_SINGLE_ATTACHMENT_BYTES) {
+        return {
+          ok: false,
+          error: `Attachment ${i} is ${Math.round(bytes / 1024)} KB; the per-file limit is ${Math.round(MAX_SINGLE_ATTACHMENT_BYTES / 1024)} KB.`,
+        };
+      }
+      total += bytes;
+      if (total > MAX_ATTACHMENT_BYTES) {
+        return {
+          ok: false,
+          error: `Attachments total ${Math.round(total / 1024)} KB; the limit is ${Math.round(MAX_ATTACHMENT_BYTES / 1024)} KB.`,
+        };
+      }
+
+      out.push(
+        a.inline && a.inline.contentId
+          ? {
+              disposition: "inline",
+              contentId: a.inline.contentId,
+              filename: a.filename,
+              type: a.type,
+              content: a.content,
+            }
+          : {
+              disposition: "attachment",
+              filename: a.filename,
+              type: a.type,
+              content: a.content,
+            },
+      );
+    }
+
+    return { ok: true, attachments: out };
+  }
+
+  /* -------------------------------- send --------------------------------- */
 
   /**
    * Send a message through the EMAIL binding and record it.
@@ -215,6 +334,8 @@ export class EmailAgent extends Think<Env, EmailState> {
     body: string;
     /** Recorded as the sender. Defaults to the agent's own address. */
     from?: string;
+    /** Base64 attachments. Validated and capped before anything is sent. */
+    attachments?: EmailAttachmentInput[];
   }): Promise<{ ok: boolean; emailId?: string; error?: string; remaining?: number }> {
     const to = String(input?.to || "").trim();
     const subject = String(input?.subject || "").trim();
@@ -233,6 +354,15 @@ export class EmailAgent extends Think<Env, EmailState> {
     if (to.toLowerCase() === this.ownAddress()) {
       return { ok: false, error: "Refusing to send to the agent's own address." };
     }
+
+    // Validated BEFORE the quota is consulted and before anything is sent. An oversized
+    // message should cost nothing: refusing it after a send attempt would consume a slot
+    // and return an error the caller cannot act on.
+    const prepared = this.prepareAttachments(input?.attachments);
+    if (!prepared.ok) {
+      return { ok: false, error: prepared.error };
+    }
+    const attachmentCount = prepared.attachments?.length ?? 0;
 
     const s = this.state_();
     const cutoff = Date.now() - SEND_WINDOW_MS;
@@ -260,6 +390,14 @@ export class EmailAgent extends Think<Env, EmailState> {
       paid: false,
     };
 
+    // Noted on the record: a transcript that arrived with a file is a different thing
+    // from one that did not, and the history should say which it was.
+    if (attachmentCount > 0) {
+      record.aiSummary =
+        "Sent with " + attachmentCount + " attachment(s): " +
+        (input?.attachments ?? []).map((a) => a.filename).join(", ");
+    }
+
     try {
       await this.env.EMAIL.send({
         to,
@@ -267,6 +405,9 @@ export class EmailAgent extends Think<Env, EmailState> {
         replyTo: `agent@${this.env.EMAIL_DOMAIN}`,
         subject,
         text: body,
+        // Spread conditionally: passing an empty array is harmless but noisy, and the
+        // binding only needs the field when there is something in it.
+        ...(attachmentCount > 0 ? { attachments: prepared.attachments } : {}),
       });
     } catch (error) {
       // A failed send must not consume the quota: refusing the next legitimate
@@ -393,13 +534,38 @@ export class EmailAgent extends Think<Env, EmailState> {
         };
       }
 
+      // Same send, with files. Separate from email.send so the common case carries no
+      // attachment machinery, and so a reader can see at a glance that this is the
+      // operation that moves bytes - the one worth thinking about before granting it.
+      case "email.sendWithAttachments": {
+        const result = await this.sendThroughAgent({
+          to: String(args.to || ""),
+          subject: String(args.subject || ""),
+          body: String(args.body || ""),
+          attachments: args.attachments,
+        });
+        return {
+          text: result.ok
+            ? `Sent with attachment(s). Message ${result.emailId}.`
+            : `Not sent: ${result.error}`,
+          data: result,
+        };
+      }
+
       default:
         return {
           text: `Unknown operation: ${op}`,
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["email.summary", "email.totals", "email.list", "email.quota", "email.send"],
+            supported: [
+              "email.summary",
+              "email.totals",
+              "email.list",
+              "email.quota",
+              "email.send",
+              "email.sendWithAttachments",
+            ],
           },
         };
     }

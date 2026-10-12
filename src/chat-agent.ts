@@ -246,6 +246,89 @@ export class ChatAgent extends Think<Env, ChatState> {
     return { sendersAdopted, messagesAdopted, skipped };
   }
 
+  /* ------------------------------- outbound ------------------------------- */
+
+  /**
+   * Email one sender's conversation as a transcript attachment.
+   *
+   * The first outbound call this agent makes, so the re-entrancy question was checked
+   * rather than assumed. It is safe because EmailAgent never calls back into anything:
+   * its send path reaches the EMAIL binding, and its own reads touch only its own state.
+   * A cycle needs a return edge, and there is none. The pair that WOULD deadlock is the
+   * monolith and a child it is awaiting, which is why the monolith's send path and this
+   * one are separate rather than shared.
+   *
+   * The transcript is rendered here and sent as an attachment rather than pasted into the
+   * body: a long conversation in a body is unreadable, and an attachment is what a reader
+   * can save, forward, or open in something else.
+   */
+  @callable()
+  async sendTranscriptByEmail(
+    senderId: string,
+    to: string,
+    subject?: string,
+  ): Promise<{ ok: boolean; emailId?: string; error?: string; messages?: number }> {
+    const key = String(senderId || "").trim();
+    const recipient = String(to || "").trim();
+    if (!key) return { ok: false, error: "sendTranscriptByEmail needs a senderId." };
+    if (!recipient) return { ok: false, error: "sendTranscriptByEmail needs a recipient." };
+
+    const history = await this.getHistory(key);
+    if (history.length === 0) {
+      return { ok: false, error: `No history for ${key}, so there is nothing to send.` };
+    }
+
+    const { emailAgentStub } = await import("./email-tool");
+    const stub = emailAgentStub(this.env as any);
+    if (!stub) {
+      return { ok: false, error: "The email agent is unavailable, so nothing was sent." };
+    }
+
+    // Plain text with a fixed shape: role, timestamp, content. A caller reading the
+    // attachment should be able to tell who said what and when without guessing.
+    const lines = history.map((m) => {
+      const who = m.role === "user" ? "User" : "Assistant";
+      return "[" + m.timestamp + "] " + who + ":\n" + m.content + "\n";
+    });
+    const transcript =
+      "Conversation transcript for " + key + "\n" +
+      "Messages: " + history.length + "\n" +
+      "Exported: " + new Date().toISOString() + "\n" +
+      "\n" + "-".repeat(60) + "\n\n" +
+      lines.join("\n");
+
+    // Base64 for the binding. Text is ASCII-safe here, but btoa would throw on a
+    // non-Latin character in a user message, so the bytes are encoded explicitly -
+    // a transcript with an emoji or an accent must not fail to send.
+    const bytes = new TextEncoder().encode(transcript);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    const content = btoa(binary);
+
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+    const result = await stub.sendThroughAgent({
+      to: recipient,
+      subject: subject?.trim() || `Chat transcript for ${key}` ,
+      body:
+        "The conversation transcript for " + key + " is attached (" + history.length +
+        " messages).",
+      attachments: [
+        {
+          filename: `transcript-${key}-${stamp}.txt`,
+          type: "text/plain",
+          content,
+        },
+      ],
+    });
+
+    // The attachment is refused rather than trimmed when it is too big, and this agent
+    // reports that rather than pretending the mail went out.
+    if (!result?.ok) {
+      return { ok: false, error: result?.error || "Send failed.", messages: history.length };
+    }
+    return { ok: true, emailId: result.emailId, messages: history.length };
+  }
+
   /* --------------------------------- A2A ---------------------------------- */
 
   /**
@@ -345,6 +428,24 @@ export class ChatAgent extends Think<Env, ChatState> {
         };
       }
 
+      case "chat.emailTranscript": {
+        const senderId = String(args.senderId || "").trim();
+        const to = String(args.to || "").trim();
+        if (!senderId || !to) {
+          return {
+            text: "chat.emailTranscript needs a senderId and a recipient.",
+            data: { ok: false, error: "missing_fields" },
+          };
+        }
+        const result = await this.sendTranscriptByEmail(senderId, to, args.subject);
+        return {
+          text: result.ok
+            ? `Transcript for ${senderId} sent to ${to} (${result.messages} messages).`
+            : `Not sent: ${result.error}`,
+          data: result,
+        };
+      }
+
       case "chat.clear": {
         const senderId = String(args.senderId || "").trim();
         if (!senderId) {
@@ -363,7 +464,13 @@ export class ChatAgent extends Think<Env, ChatState> {
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["chat.summary", "chat.totals", "chat.transcript", "chat.clear"],
+            supported: [
+              "chat.summary",
+              "chat.totals",
+              "chat.transcript",
+              "chat.emailTranscript",
+              "chat.clear",
+            ],
           },
         };
     }
