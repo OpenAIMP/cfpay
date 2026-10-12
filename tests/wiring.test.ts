@@ -27,6 +27,18 @@ import { join } from "node:path";
 const root = join(__dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
 
+/**
+ * Source with comments and string literals removed.
+ *
+ * Guards must assert on code. Matching raw text lets a doc comment satisfy - or
+ * violate - a rule about behaviour, which is how the first version of the webhook
+ * guards failed on their own module documentation.
+ */
+const readCode = (p: string) =>
+  read(p)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
 describe("agent wiring survives refactors", () => {
   const agent = read("src/agent.ts");
 
@@ -95,6 +107,8 @@ describe("A2A routing stays complete", () => {
       "A2A_PAYMENTS_RPC_PATH",
       "A2A_EMAIL_CARD_PATH",
       "A2A_EMAIL_RPC_PATH",
+      "A2A_WEBHOOK_CARD_PATH",
+      "A2A_WEBHOOK_RPC_PATH",
       "a2aAuthorised",
     ];
     for (const name of required) {
@@ -110,6 +124,8 @@ describe("A2A routing stays complete", () => {
       "url.pathname === A2A_EMAIL_RPC_PATH",
       "url.pathname === A2A_PAYMENTS_CARD_PATH",
       "url.pathname === A2A_EMAIL_CARD_PATH",
+      "url.pathname === A2A_WEBHOOK_RPC_PATH",
+      "url.pathname === A2A_WEBHOOK_CARD_PATH",
       "A2A_CARD_PATHS.includes(url.pathname)",
     ];
     for (const route of routed) {
@@ -121,13 +137,14 @@ describe("A2A routing stays complete", () => {
     expect(a2a).toContain("export function cfmailCard(");
     expect(a2a).toContain("export function paymentsCard(");
     expect(a2a).toContain("export function emailCard(");
+    expect(a2a).toContain("export function webhookCard(");
   });
 
   it("gates every A2A endpoint behind the credential", () => {
     // Three endpoints, three gates. An ungated endpoint spends Workers AI tokens or
     // sends mail on the operator's account.
     const gates = index.match(/a2aAuthorised\(request, env\)/g) ?? [];
-    expect(gates.length).toBeGreaterThanOrEqual(3);
+    expect(gates.length).toBeGreaterThanOrEqual(4);
   });
 });
 
@@ -141,6 +158,7 @@ describe("every declared agent is reachable", () => {
     { binding: "CfmailAgent", cls: "CfmailAgentSQLite" },
     { binding: "PAYMENTS_AGENT", cls: "PaymentsAgent" },
     { binding: "EMAIL_AGENT", cls: "EmailAgent" },
+    { binding: "WEBHOOK_AGENT", cls: "WebhookAgent" },
   ];
 
   for (const { binding, cls } of agents) {
@@ -174,6 +192,50 @@ describe("every declared agent is reachable", () => {
   }
 });
 
+describe("the webhook boundary is enforced in code, not assumed", () => {
+  const wagent = readCode("src/webhook-agent.ts");
+  const whelpers = read("src/webhooks.ts");
+
+  it("keeps signature verification outside the agent", () => {
+    // An A2A caller cannot mint a provider HMAC. If verification ever moved behind
+    // the agent, a bearer token would substitute for a provider signature and any
+    // credential holder could forge a GitHub or Stripe delivery.
+    expect(whelpers).toContain("export async function verifyAndParseWebhook(");
+    // Assert on the IMPORT, which is what would actually pull verification in.
+    expect(wagent, "the agent must not import verification").not.toMatch(
+      /from\s+"\.\/webhooks"/,
+    );
+    expect(wagent, "the agent must not call verification").not.toMatch(
+      /\bverifyAndParseWebhook\s*\(/,
+    );
+  });
+
+  it("never lets an external caller claim a GitHub delivery id", () => {
+    // Honouring a caller-supplied delivery id would let external input suppress a
+    // genuine GitHub delivery by pre-registering its id.
+    expect(wagent).toContain("webhook.receive");
+    // Structural, not prose: the caller's delivery id must never be READ, and the
+    // deliveryId slot passed to recordEvent must be undefined. Asserting on a comment
+    // broke the moment comments were stripped for the other guards - the comment and
+    // the code could have disagreed.
+    expect(wagent, "must not read a caller-supplied delivery id").not.toMatch(
+      /args\.deliveryId/,
+    );
+    expect(wagent, "recordEvent must get no delivery id from this path").toMatch(
+      /recordEvent\([\s\S]*?args\.payload \?\? null,\s*undefined,\s*undefined,?\s*\)/,
+    );
+  });
+
+  it("does not call back into the monolith", () => {
+    // A callback would deadlock: the monolith's sendOutboundEmail calls EmailAgent,
+    // so if cfmail awaited an A2A call to Webhook and Webhook called cfmail, the pair
+    // would hang. The resource moved; the fan-out did not.
+    // A doc comment naming the monolith is fine; calling it is not.
+    expect(wagent, "must not reach the monolith binding").not.toMatch(/CfmailAgent\b\s*\./);
+    expect(wagent, "must not send mail itself").not.toMatch(/\bsendOutboundEmail\s*\(/);
+    expect(wagent, "must not fulfil payments itself").not.toMatch(/\bhandleStripeWebhook\s*\(/);
+  });
+});
 describe("the agent-tool primitive stays wired", () => {
   // agentTool requires a chat-capable child, which means Think. Think extends Agent, so
   // the @callable() surface and A2A inherited unchanged - which is why both the

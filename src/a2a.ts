@@ -58,6 +58,9 @@ export const A2A_PAYMENTS_CARD_PATH = "/a2a/payments/agent-card.json";
 export const A2A_EMAIL_RPC_PATH = "/a2a/email";
 export const A2A_EMAIL_CARD_PATH = "/a2a/email/agent-card.json";
 
+export const A2A_WEBHOOK_RPC_PATH = "/a2a/webhooks";
+export const A2A_WEBHOOK_CARD_PATH = "/a2a/webhooks/agent-card.json";
+
 /** True when the presented credential authorises a /a2a call. */
 export function a2aAuthorised(request: Request, env: Env): boolean {
   const expected = (env.DASHBOARD_API_KEY ?? "").trim();
@@ -377,6 +380,44 @@ export function emailCard(origin: string): AgentCard {
           "How many emails has this agent handled?",
           "What were the last few subjects?",
           "Send a message to ops@example.com with this body.",
+        ],
+      },
+    ],
+  };
+}
+/**
+ * Card for the webhook channel.
+ *
+ * States the boundary explicitly, because the boundary is the security property:
+ * provider signatures are verified at the Worker edge, before anything here runs.
+ * An A2A caller cannot mint one, so webhook.receive records an event as
+ * a2a-sourced and unverified and never triggers the side effects a real delivery
+ * would. A card that implied otherwise would invite exactly that mistake.
+ */
+export function webhookCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Webhook Agent",
+    description:
+      "Owns the webhook event log and the GitHub delivery registry that makes redelivery safe. Provider signatures are verified at the Worker edge; this agent receives already-verified payloads. Reads freely over A2A; webhook.receive records an unverified a2a-sourced event only.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_WEBHOOK_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "webhook-channel",
+        name: "Webhook channel",
+        description:
+          "Report on recorded webhook deliveries and replay-protection state. webhook.receive stores an external event as unverified and a2a-sourced; it cannot claim a GitHub delivery id, so it cannot suppress a genuine delivery. No provider signature is accepted or forged here.",
+        tags: ["webhooks", "github", "stripe", "slack", "read-only-except-receive"],
+        examples: [
+          "How many webhook events have been recorded?",
+          "Which providers have delivered recently?",
+          "Has this GitHub delivery id already been seen?",
         ],
       },
     ],
