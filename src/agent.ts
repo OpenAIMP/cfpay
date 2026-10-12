@@ -675,8 +675,15 @@ Do not claim to have completed a payment unless you have received confirmation.`
       );
     }
 
-    // A2A could not complete. Fall back to RPC, which fails closed when the
-    // binding is missing rather than pretending the request was fulfilled.
+    // Any other explicit refusal is final. Falling through to RPC here would present
+    // the same payment to the same ledger a second time, which on the reconciliation
+    // path means charging twice for one request.
+    if (data && data.error) {
+      throw new Error(String(viaA2A && viaA2A.text) || "The payments agent refused this request.");
+    }
+
+    // A2A is genuinely unreachable (no data at all). Fall back to RPC, which fails
+    // closed when the binding is missing rather than pretending the request was done.
     const pa = this.paymentsAgent();
     if (!pa) {
       throw new Error(
@@ -1014,6 +1021,27 @@ Do not claim to have completed a payment unless you have received confirmation.`
       return { text: textOut, data: dataPart?.data };
     } catch (error) {
       console.error("A2A call to payments agent threw:", error);
+
+      // Tell "the other agent refused this" apart from "I could not reach the other
+      // agent". Collapsing both into null was a money bug: a REFUSAL was reported as
+      // unreachable, so the caller fell through to the direct RPC path and presented
+      // the same payment a second time. On the live x402 reconciliation path that is
+      // the same request twice, and the second attempt is told the payment has already
+      // been used - after the first has already been charged and fulfilled.
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes(PAYMENT_CLAIM_REUSED_PREFIX)) {
+        throw new Error(
+          PAYMENT_CLAIM_REUSED_PREFIX +
+            " This payment has already been used for a request; each on-chain payment can be redeemed only once.",
+        );
+      }
+
+      // A refusal has to surface to the caller, or it would be retried over RPC and
+      // the replay check would be pointless.
+      if (message.includes("Unknown operation")) {
+        return { text: error instanceof Error ? error.message : message, data: { ok: false, error: "refused" } };
+      }
+
       return null;
     }
   }
