@@ -16,6 +16,8 @@ import {
   A2A_CARD_PATHS,
   A2A_PAYMENTS_CARD_PATH,
   A2A_PAYMENTS_RPC_PATH,
+  A2A_EMAIL_CARD_PATH,
+  A2A_EMAIL_RPC_PATH,
   A2A_RPC_PATH,
   a2aAuthorised,
   cfmailCard,
@@ -151,6 +153,47 @@ export default {
       }
     }
 
+    // Email capability: its own agent card and its own /a2a endpoint.
+    //
+    // Extracted so any agent in this Worker sends mail through one tool rather than
+    // reaching into the monolith's state. Same credential gate as the others, and the
+    // agent itself caps how many sends that credential buys per hour.
+    if (url.pathname === A2A_EMAIL_CARD_PATH) {
+      const { emailCard } = await import("./a2a");
+      return new Response(JSON.stringify(emailCard(url.origin)), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" },
+      });
+    }
+
+    if (url.pathname === A2A_EMAIL_RPC_PATH) {
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key" },
+        });
+      }
+      if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      if (!a2aAuthorised(request, env)) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+      }
+      let ebody: unknown;
+      try { ebody = await request.json(); } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+      }
+      const eStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName("email")) as any;
+      try {
+        const outcome = await eStub.handleA2A(ebody, url.origin);
+        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (outcome.streamed) {
+          const events = Array.isArray(outcome.events) ? outcome.events : [];
+          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+        }
+        return new Response(JSON.stringify(outcome.result), {
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+      }
+    }
     if (url.pathname === A2A_RPC_PATH) {
       if (request.method === "OPTIONS") {
         return new Response(null, {
