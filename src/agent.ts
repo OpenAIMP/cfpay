@@ -1664,45 +1664,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // Webhooks: Incoming webhook handler (onRequest)
   // ===========================================================================
   async onRequest(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-
-    // Provider identified by the X-Webhook-Provider header set by the Worker
-    // when forwarding verified webhooks, or by the /webhooks/<provider> path.
-    const headerProvider = request.headers.get("X-Webhook-Provider");
-    const pathProvider = url.pathname.startsWith("/webhooks/")
-      ? url.pathname.split("/").pop()
-      : null;
-
-    // Direct agent requests (via routeAgentRequest) get a status summary.
-    if (request.method !== "POST") {
-      return this.statusResponse();
-    }
-
-    const rawBody = await request.text();
-    let payload: any;
-    try {
-      payload = JSON.parse(rawBody);
-    } catch {
-      return new Response("Invalid payload", { status: 400 });
-    }
-
-    const provider = (headerProvider || pathProvider) as "github" | "stripe" | "slack" | null;
-    if (!provider) {
-      return this.statusResponse();
-    }
-
-    // Slack URL verification challenge
-    if (provider === "slack" && payload?.type === "url_verification" && payload?.challenge) {
-      return new Response(JSON.stringify({ challenge: payload.challenge }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    // Records the event, runs the AI analysis, sends notifications and posts
-    // any response_url reply (all inside processWebhookEvent).
-    await this.processWebhookEvent(provider, payload);
-    return new Response("OK");
+    // Webhooks are handled via the handleWebhookRpc @callable() method (RPC),
+    // not through here. This handles other direct HTTP requests.
+    return this.statusResponse();
   }
 
   /** Status summary returned for direct agent requests. */
@@ -2007,7 +1971,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
     provider: "github" | "stripe" | "slack",
     payload: any,
     headers: Record<string, string>,
-  ): Promise<{ ok: boolean; status: number; message: string }> {
+  ): Promise<{ ok: boolean; status: number; message: string; challenge?: string }> {
+    // Slack URL verification challenge (must return the challenge)
+    if (provider === "slack" && payload?.type === "url_verification" && payload?.challenge) {
+      return { ok: true, status: 200, message: "OK", challenge: payload.challenge };
+    }
     // GitHub dedupe (same logic as onRequest)
     if (provider === "github") {
       const deliveryId = headers["x-github-delivery"] ?? headers["X-Github-Delivery"] ?? "";
