@@ -945,6 +945,68 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return emails.slice(-limit).reverse();
   }
 
+  // ===========================================================================
+  // A2A protocol
+  // ===========================================================================
+
+  /**
+   * Aggregate state for the A2A executor.
+   *
+   * Counts and types only. The A2A endpoint is reachable by other agents, so it
+   * must not hand out email bodies, addresses or transaction hashes that its
+   * read-only skill does not need.
+   */
+  /**
+   * Handle one A2A JSON-RPC call.
+   *
+   * Runs inside the Durable Object so it can use ctx.storage.sql directly. Doing
+   * this from the Worker would mean reaching into the DO's internals for the SQL
+   * handle, which is not part of any public surface.
+   *
+   * Returns { streamed, events, result } - always serializable, because the RPC
+   * boundary rejects anything else. The Worker frames events as SSE when streamed
+   * is true.
+   */
+  @callable()
+  async handleA2A(body: unknown, origin: string): Promise<unknown> {
+    const { createA2ATransport, handleCollecting } = await import("./a2a");
+    const a2a = createA2ATransport(
+      this.ctx.storage.sql,
+      this.env,
+      origin,
+      () => this.a2aSnapshot(),
+    );
+    // Collected, not streamed: an async iterable cannot cross the RPC boundary.
+    return await handleCollecting(a2a.transport, body);
+  }
+
+  @callable()
+  async a2aSnapshot(): Promise<{
+    emails: number;
+    payments: number;
+    webhooks: number;
+    webhookProviders: Record<string, number>;
+    recentPaymentDescriptions: string[];
+    recentWebhookTypes: string[];
+  }> {
+    const state = this.ensureState();
+    const webhookProviders: Record<string, number> = {};
+    for (const e of state.webhookEvents || []) {
+      const provider = e.provider || 'unknown';
+      webhookProviders[provider] = (webhookProviders[provider] || 0) + 1;
+    }
+    return {
+      emails: state.emails.length,
+      payments: state.payments.length,
+      webhooks: (state.webhookEvents || []).length,
+      webhookProviders,
+      recentPaymentDescriptions: state.payments
+        .slice(-5)
+        .map((p) => p.direction + ' ' + p.amount + ' ' + p.currency + ' (' + p.status + ')'),
+      recentWebhookTypes: (state.webhookEvents || []).slice(-5).map((e) => e.provider + '/' + e.eventType),
+    };
+  }
+
   @callable()
   async getPayments(
     direction: string | null,

@@ -6,6 +6,13 @@ import type { Env } from "./types";
 import { createApp } from "./api";
 import { CfmailAgentSQLite } from "./agent";
 import { verifyAndParseWebhook } from "./webhooks";
+import {
+  A2A_CARD_PATHS,
+  A2A_RPC_PATH,
+  a2aAuthorised,
+  agentCard,
+  streamFromAsyncIterable,
+} from "./a2a";
 import { createCfmailMcpHandler } from "./mcp";
 import { authorizeMcpRequest, timingSafeStringEqual } from "./mcp-auth";
 import { handleResourceMetadata } from "./mcp-oauth";
@@ -60,6 +67,74 @@ export default {
     // MCP_OAUTH_DISCOVERY is enabled; otherwise it 404s.
     if (url.pathname === "/.well-known/oauth-protected-resource") {
       return handleResourceMetadata(request, env);
+    }
+
+    // A2A protocol (agent-to-agent).
+    //
+    // The agent card is public because A2A clients discover by fetching it and it
+    // carries no data. The JSON-RPC endpoint requires a bearer credential: every
+    // call spends Workers AI tokens and this is a live payment system, so it is
+    // gated the same way /mcp is.
+    if (A2A_CARD_PATHS.includes(url.pathname)) {
+      return new Response(JSON.stringify(agentCard(url.origin)), {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=300",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+
+    if (url.pathname === A2A_RPC_PATH) {
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+          },
+        });
+      }
+      if (request.method !== "POST") {
+        return new Response("Method not allowed", { status: 405 });
+      }
+      if (!a2aAuthorised(request, env)) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" },
+        });
+      }
+
+      // Handling runs inside the Durable Object, which owns the SQL handle the
+      // task store needs. The origin is passed through so the agent card carries
+      // the host the client actually called - the SDK validates against it.
+      const agentId = env.CfmailAgent.idFromName("agent");
+      const doStub = env.CfmailAgent.get(agentId) as any;
+
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+      }
+
+      try {
+        const outcome = await doStub.handleA2A(body, url.origin);
+        if (!outcome) {
+          return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        }
+        // The DO cannot return a stream across RPC, so it collects events and we
+        // frame them as SSE here when the method was a streaming one.
+        if (outcome.streamed) {
+          const events = Array.isArray(outcome.events) ? outcome.events : [];
+          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+        }
+        return new Response(JSON.stringify(outcome.result), {
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+      }
     }
 
     if (url.pathname === "/mcp") {

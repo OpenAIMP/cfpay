@@ -341,6 +341,13 @@ export function createApp() {
 
   // The question library, so the UI can render it without duplicating the text
   // and so it can be edited in one place. Read-only, no credentials involved.
+  // Summary of what the agent holds, for the A2A executor. Read-only and
+  // deliberately aggregate: no email bodies, no addresses, no tx hashes.
+  app.get("/api/a2a/snapshot", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    return c.json(await agent.a2aSnapshot());
+  });
+
   app.get("/api/public/questions", requireAuth, async (c) => {
     return c.json(questionLibrary);
   });
