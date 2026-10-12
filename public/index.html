@@ -148,6 +148,7 @@
           <div class="form-group"><label>To</label><input type="email" id="sendTo" placeholder="recipient@example.com" /></div>
           <div class="form-group"><label>Subject</label><input type="text" id="sendSubject" placeholder="Subject" /></div>
           <div class="form-group"><label>Body</label><textarea id="sendBody" placeholder="Email content..."></textarea></div>
+          <div class="form-group"><label>Attachments</label><input type="file" id="sendAttachments" multiple style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);" /><div id="attachmentList" style="font-size:0.8rem;color:var(--muted);margin-top:0.25rem;"></div></div>
           <button class="btn" onclick="sendEmail()">Send Email</button>
           <div id="sendResult" style="margin-top:1rem;"></div>
         </div>
@@ -834,11 +835,39 @@ async function loadStats() {
     async function sendEmail() {
       const to = document.getElementById('sendTo').value, subject = document.getElementById('sendSubject').value, body = document.getElementById('sendBody').value;
       const result = document.getElementById('sendResult');
+      const fileInput = document.getElementById('sendAttachments');
       result.innerHTML = '<div class="loading">Sending...</div>';
-      const res = await api('/api/dashboard/send-email', 'POST', { to, subject, body });
-      if (res.success) { result.innerHTML = '<div class="status-msg success">Email sent successfully!</div>'; document.getElementById('sendTo').value=''; document.getElementById('sendSubject').value=''; document.getElementById('sendBody').value=''; }
+      const attachments = [];
+      if (fileInput && fileInput.files) {
+        for (const file of fileInput.files) {
+          const content = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+          attachments.push({ filename: file.name, type: file.type || 'application/octet-stream', content: content });
+        }
+      }
+      const res = await api('/api/dashboard/send-email', 'POST', { to, subject, body, attachments });
+      if (res.success) {
+        result.innerHTML = '<div class="status-msg success">Email sent successfully!</div>';
+        document.getElementById('sendTo').value='';
+        document.getElementById('sendSubject').value='';
+        document.getElementById('sendBody').value='';
+        if (fileInput) fileInput.value='';
+        const list = document.getElementById('attachmentList');
+        if (list) list.innerHTML='';
+      }
       else { result.innerHTML = '<div class="status-msg error">Failed to send email</div>'; }
     }
+    // Show selected file names
+    document.getElementById('sendAttachments')?.addEventListener('change', (e) => {
+      const list = document.getElementById('attachmentList');
+      const files = e.target.files;
+      list.innerHTML = files.length > 0 ? Array.from(files).map(f => f.name).join(', ') : '';
+    });
+
     async function sendChat() {
       const input = document.getElementById('chatInput');
       const msg = input.value;
