@@ -143,17 +143,35 @@ function messageText(message: Message): string {
  * transport serve the payments agent and the cfmail agent without either
  * leaking into the other.
  */
+/** Result of handling one A2A message. */
+export interface CapabilityResult {
+  /** Human-readable reply. Always present, so the task always ends with a message. */
+  text: string;
+  /**
+   * Optional structured result, published as a data artifact alongside the text.
+   *
+   * A caller that needs a machine-readable outcome (a payment id, a status) reads
+   * this rather than parsing prose.
+   */
+  data?: unknown;
+}
+
 export interface A2ACapability {
-  /** The card served at the well-known paths. `url` must be the request origin. */
+  /** The card served at the discovery paths. `url` must be the request origin. */
   card(origin: string): AgentCard;
   /**
-   * Answer one question, returning text.
+   * Handle one A2A message.
    *
-   * The implementation owns its own truth: it should compute facts and may use
-   * Workers AI only to phrase them, so a model cannot invent a figure it was not
-   * given. Throwing is fine - the executor reports the failure as the answer.
+   * Takes the message rather than a question string because a capability may
+   * accept structured input: a data part carrying an operation and its arguments.
+   * A capability that only answers questions ignores the parts it does not
+   * understand and treats the text parts as the question.
+   *
+   * Implementations own their own truth: compute facts and use Workers AI only to
+   * phrase them, so a model cannot invent a figure it was not given. Throwing is
+   * fine - the executor reports the failure as the reply.
    */
-  answer(question: string): Promise<string>;
+  handle(message: Message, context: { taskId: string; contextId: string }): Promise<CapabilityResult>;
 }
 
 /**
@@ -190,8 +208,11 @@ export class CapabilityExecutor implements AgentExecutor {
     const question = messageText(userMessage) || "Summarise the current state.";
 
     let answer: string;
+    let resultData: unknown;
     try {
-      answer = (await this.capability.answer(question)).trim();
+      const handled = await this.capability.handle(userMessage, { taskId, contextId });
+      answer = (handled.text || "").trim();
+      resultData = handled.data;
     } catch (error) {
       answer = "The agent could not answer: " + String(error);
     }
@@ -206,6 +227,22 @@ export class CapabilityExecutor implements AgentExecutor {
       parts: [{ kind: "text", text: answer }],
     };
     eventBus.publish(reply);
+
+    // Structured outcome, when the capability returned one. A caller that asked
+    // for work to be done reads this instead of parsing the prose reply.
+    if (resultData !== undefined) {
+      eventBus.publish({
+        kind: "artifact-update",
+        taskId,
+        contextId,
+        artifact: {
+          artifactId: crypto.randomUUID(),
+          name: "result",
+          parts: [{ kind: "data", data: resultData as Record<string, unknown> }],
+        },
+      } as never);
+    }
+
     eventBus.publish({
       kind: "status-update",
       taskId,

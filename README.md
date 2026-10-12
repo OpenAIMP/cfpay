@@ -179,6 +179,155 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 
 
 
+## Agents
+
+Two Durable Object agents, each owning a resource rather than a code path.
+
+| | CFmail Agent | Payments Agent |
+|---|---|---|
+| Class | `CfmailAgentSQLite` | `PaymentsAgent` |
+| Binding | `CfmailAgent` | `PAYMENTS_AGENT` |
+| Instance | `agent` | `payments` |
+| Owns | emails, webhooks, Slack, MCP server, Public.com chat | payment ledger, Stripe checkouts, x402 + Stripe replay registries, **Pay & Process** |
+| Card | `/.well-known/agent-card.json` | `/a2a/payments/agent-card.json` |
+| A2A endpoint | `/a2a` | `/a2a/payments` |
+| A2A access | read-only | read **and write** |
+
+The split is by resource, not by call graph: a payment is recorded by the agent
+that owns the ledger, while the work a payment buys is performed by the same
+agent so the charge and the fulfilment cannot diverge.
+
+### Agent cards
+
+Both cards are public and cacheable. They carry no data, and A2A clients discover
+by fetching them.
+
+`/.well-known/agent-card.json` — CFmail Agent
+
+```json
+{
+  "name": "CFmail Agent",
+  "description": "Inspects the state of a CFmail agent: emails it has handled, payments on its ledger, and inbound webhook events. Read-only.",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "url": "https://pay.openaimp.com/a2a",
+  "preferredTransport": "JSONRPC",
+  "capabilities": { "pushNotifications": false, "stateTransitionHistory": false, "streaming": true },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "provider": { "organization": "OpenAIMP", "url": "https://pay.openaimp.com" },
+  "skills": [
+    {
+      "id": "inspect-state",
+      "name": "Inspect agent state",
+      "description": "Answer questions about emails handled, payments recorded and webhook events received. Cannot send email, move funds or place trades.",
+      "tags": ["read-only", "email", "payments", "webhooks"],
+      "examples": [
+        "How many emails has this agent handled?",
+        "What payments are on the ledger?",
+        "Which webhook providers have sent events recently?"
+      ]
+    }
+  ]
+}
+```
+
+`/a2a/payments/agent-card.json` — Payments Agent
+
+```json
+{
+  "name": "CFmail Payments Agent",
+  "description": "Owns the CFmail payment ledger: payments received and sent, Stripe card checkouts, and replay protection for both rails. Read-only over A2A.",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "url": "https://pay.openaimp.com/a2a/payments",
+  "preferredTransport": "JSONRPC",
+  "capabilities": { "pushNotifications": false, "stateTransitionHistory": false, "streaming": true },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "provider": { "organization": "OpenAIMP", "url": "https://pay.openaimp.com" },
+  "skills": [
+    {
+      "id": "payment-ledger",
+      "name": "Payment ledger",
+      "description": "Report on payments received and sent, by currency and status. Cannot move funds, refund, or create a payment.",
+      "tags": ["read-only", "payments", "x402", "stripe"],
+      "examples": [
+        "How many payments have been received?",
+        "What currencies are on the ledger?",
+        "Are there any failed payments?"
+      ]
+    }
+  ]
+}
+```
+
+### Authentication
+
+The cards are public. **Every A2A call requires a bearer credential** — the same
+`DASHBOARD_API_KEY` used elsewhere — compared in constant time. Each call spends
+Workers AI tokens, so an open endpoint would be an open budget.
+
+```
+Authorization: Bearer <DASHBOARD_API_KEY>
+```
+
+### Calling the payments agent
+
+`message/send` with a text part answers a question. Adding a **data part** with an
+`operation` performs one. Both go to the same endpoint.
+
+```bash
+curl -X POST https://pay.openaimp.com/a2a/payments \
+  -H "Authorization: Bearer $DASHBOARD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0", "id": "1", "method": "message/send",
+    "params": { "message": {
+      "kind": "message", "messageId": "m1", "role": "user",
+      "parts": [
+        { "kind": "text", "text": "Summarise the ledger" },
+        { "kind": "data", "data": { "operation": "payments.list", "limit": 10 } }
+      ]
+    } }
+  }'
+```
+
+| Operation | Kind | Arguments | Effect |
+|---|---|---|---|
+| `ledger.summary` | read | — | counts, currencies, statuses |
+| `payments.list` | read | `direction?`, `limit?` | ledger entries |
+| `payments.totals` | read | — | received / sent / stored |
+| `payment.process` | **write** | `email`, `request`, `claim?` or `card?` | claims the payment, generates the answer, emails it, records the ledger entry |
+| `checkout.create` | write | `requestId`, `email`, `request` | records a Stripe intent |
+| `checkout.status` | read | `requestId` | checkout state |
+| `checkout.fulfil` | write | `requestId`, `paymentIntentId?` | marks a checkout fulfilled |
+
+An unknown operation is **refused with the supported list**, not ignored, so a
+typo cannot look like a silent success. `payment.process` requires either a
+verified `claim` or a `card` reference: without one it refuses rather than doing
+unpaid work.
+
+The outcome is returned as a **data artifact** alongside the prose reply, so a
+caller reads `paymentId` from the artifact rather than parsing the message.
+
+### How the two agents talk
+
+The CFmail agent forwards Pay & Process to the payments agent **over A2A** — an
+HTTP JSON-RPC message to the endpoint the payments agent card advertises. A
+direct Durable Object RPC call is kept as a fallback for when A2A is unavailable,
+such as during a rolling deploy.
+
+Two details worth knowing:
+
+- **A refusal is never retried over RPC.** A reused payment surfaced by A2A is
+  raised to the caller rather than retried through the other door, or the replay
+  check would be pointless.
+- **The payments agent sends fulfilment email itself** through the `EMAIL`
+  binding rather than calling back into the CFmail agent. A Durable Object cannot
+  re-enter itself, so if CFmail were awaiting an A2A call to Payments, a callback
+  from Payments to CFmail would deadlock the pair.
+
 ## Remote MCP Server
 
 The Worker serves a remote MCP server at `https://pay.openaimp.com/mcp` using the

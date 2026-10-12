@@ -48,3 +48,9 @@ SLACK_CLIENT_ID=your-slack-client-id
 # documentation warns a trade through an MCP client is a real order using real
 # money. Set this to true only if you intend the agent to place orders.
 # PUBLIC_ALLOW_TRADING=false
+
+# --- Agent-to-agent (A2A) ------------------------------------------------------
+# The CFmail agent calls the payments agent over A2A, which needs this Worker's
+# own origin: a Worker cannot discover its hostname without an inbound request,
+# and an inter-agent call may happen outside one.
+# SELF_ORIGIN=https://pay.openaimp.com

@@ -19,6 +19,14 @@ export interface Env {
    * registries for both payment rails.
    */
   PAYMENTS_AGENT: DurableObjectNamespace;
+  /**
+   * This Worker's own origin, used when one agent calls another over A2A.
+   *
+   * A Worker cannot discover its own hostname at runtime without a request, and an
+   * inter-agent call may not be inside one, so the origin is configuration. Defaults
+   * to the production host in the caller when unset.
+   */
+  SELF_ORIGIN?: string;
   SLACK_BOT_TOKEN: string;
   SLACK_SIGNING_SECRET: string;
   SLACK_APP_TOKEN: string;

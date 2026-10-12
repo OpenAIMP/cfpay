@@ -26,7 +26,7 @@
 
 import { Agent, callable } from "agents";
 import type { Env, PaymentRecord, StripeCheckout, StripeCheckoutStatus } from "./types";
-import { generateId } from "./payments";
+import { ZERO_ADDRESS, generateId } from "./payments";
 
 /** Bound on ledger size, matching the monolith's previous limit. */
 const MAX_STORED_PAYMENTS = 200;
@@ -316,6 +316,134 @@ export class PaymentsAgent extends Agent<Env, PaymentsState> {
     return null;
   }
 
+  /* --------------------------- Pay And Process --------------------------- */
+
+  /**
+   * Pay And Process, owned entirely by this agent.
+   *
+   * Previously this lived on CfmailAgentSQLite, so the capability and the resource
+   * it manages were in different Durable Objects. It runs here now: the ledger, the
+   * replay claim and the fulfilment are one unit, so a crash between taking a
+   * payment and recording it is not possible.
+   *
+   * It sends its own email through the EMAIL binding rather than calling back into
+   * the cfmail agent. That is deliberate: cfmail may be awaiting an A2A call to
+   * this agent, and a Durable Object cannot re-enter itself, so calling back would
+   * deadlock the pair.
+   *
+   * `claim` carries x402 fields already verified by the caller's signature check;
+   * `card` carries a Stripe reference. Exactly one is expected.
+   */
+  @callable()
+  async processPaidRequest(
+    senderEmail: string,
+    request: string,
+    claim?: { amount?: string; asset?: string; network?: string; txHash?: string },
+    card?: { amount: string; currency: string; reference: string },
+  ): Promise<{ success: boolean; response: string; paymentId: string }> {
+    const claimKey = claim?.txHash ? claim.txHash.toLowerCase() : undefined;
+
+    // Claim before doing any work. Check-and-record is atomic here because both
+    // happen inside one Durable Object, so two concurrent requests presenting the
+    // same payment cannot both proceed.
+    if (claimKey) {
+      const claimed = await this.claimX402(claimKey);
+      if (!claimed.ok) {
+        throw new Error(
+          "PAYMENT_CLAIM_REUSED: This payment has already been used for a request; each on-chain payment can be redeemed only once.",
+        );
+      }
+    }
+
+    const payment = await this.buildReceivedPayment({
+      amount: card?.amount ?? claim?.amount,
+      currency: card?.currency ?? (claim?.asset === ZERO_ADDRESS ? "ETH" : "USDC"),
+      network: card ? "card" : claim?.network,
+      reference: card?.reference ?? claim?.txHash,
+    });
+
+    const aiResponse = await this.generateFulfilmentResponse(request);
+
+    const emailResult = await this.sendFulfilmentEmail(
+      senderEmail,
+      aiResponse,
+      payment.id,
+      payment.amount + " " + payment.currency + " on " + payment.network,
+    );
+
+    await this.recordPayment({ ...payment, relatedEmailId: emailResult.emailId });
+
+    return { success: emailResult.success, response: aiResponse, paymentId: payment.id };
+  }
+
+  /**
+   * Generate the response a payment buys.
+   *
+   * Calls AI.run directly rather than importing the cfmail agent's prompt helpers,
+   * so this agent stays independent of that codebase.
+   */
+  async generateFulfilmentResponse(request: string): Promise<string> {
+    try {
+      const response: any = await this.env.AI.run(
+        "@cf/openai/gpt-oss-120b" as never,
+        {
+          messages: [
+            {
+              role: "system",
+              content: [
+                "You are the CFmail agent fulfilling a paid request.",
+                "Answer the request directly and concisely. Do not discuss payment.",
+                "If the request is unclear, state what you would need to know.",
+              ].join("\n"),
+            },
+            { role: "user", content: request },
+          ],
+          max_tokens: 800,
+        } as never,
+      );
+      const text = String(response?.response ?? "").trim();
+      if (text) return text;
+      if (Array.isArray(response?.choices) && response.choices.length) {
+        const alt = String(response.choices[0]?.message?.content ?? "").trim();
+        if (alt) return alt;
+      }
+    } catch (error) {
+      console.error("Fulfilment generation failed:", error);
+    }
+    return "Your request has been received and payment confirmed, but the agent could not generate a response. Please reply to this message and it will be handled manually.";
+  }
+
+  /**
+   * Deliver the fulfilment email through the EMAIL binding.
+   *
+   * Sending from here rather than calling the cfmail agent is what avoids the
+   * deadlock described on processPaidRequest.
+   */
+  private async sendFulfilmentEmail(
+    to: string,
+    aiResponse: string,
+    paymentId: string,
+    paymentSummary: string,
+  ): Promise<{ success: boolean; emailId: string }> {
+    const emailId = generateId();
+    const body = aiResponse + "\n\n---\nRequest ID: " + paymentId + "\nPayment: " + paymentSummary + "\nStatus: Confirmed";
+    try {
+      await this.env.EMAIL.send({
+        to,
+        from: "agent@" + this.env.EMAIL_DOMAIN,
+        replyTo: "agent@" + this.env.EMAIL_DOMAIN,
+        subject: "CFmail Agent Request Received",
+        text: body,
+      });
+      return { success: true, emailId };
+    } catch (error) {
+      console.error("Fulfilment email failed:", error);
+      // The caller still records the ledger entry: the payment was taken, so
+      // hiding it would be worse than a failed send.
+      return { success: false, emailId };
+    }
+  }
+
   /* ------------------------------- A2A ----------------------------------- */
 
   /**
@@ -366,10 +494,133 @@ export class PaymentsAgent extends Agent<Env, PaymentsState> {
       paymentsCard(origin),
       {
         card: paymentsCard,
-        answer: (question: string) => this.answerAboutPayments(question),
+        handle: (message, context) => this.handleA2AMessage(message, context),
       },
     );
     return await handleCollecting(transport.transport, body);
+  }
+
+  /**
+   * Route one A2A message.
+   *
+   * Two shapes are accepted over the same endpoint:
+   *   - text only            -> answer a question about the ledger (read)
+   *   - data part {operation} -> perform that operation (write)
+   *
+   * The write path is the reason this agent exists as a separate participant: a
+   * caller can hand it a verified payment and have it process the request, rather
+   * than the caller having to reach into the ledger itself.
+   *
+   * Authorisation is not decided here. The transport already gated the call with
+   * a bearer credential; this method only maps an operation to a method call, so
+   * the set of reachable operations is exactly the set listed below. Anything not
+   * listed is refused rather than falling through.
+   */
+  async handleA2AMessage(
+    message: any,
+    context: { taskId: string; contextId: string },
+  ): Promise<{ text: string; data?: unknown }> {
+    const parts: any[] = Array.isArray(message?.parts) ? message.parts : [];
+
+    const text = parts
+      .filter((x) => x && x.kind === "text" && typeof x.text === "string")
+      .map((x) => x.text as string)
+      .join("\n")
+      .trim();
+
+    const dataPart = parts.find((x) => x && x.kind === "data" && x.data && typeof x.data === "object");
+    const op = dataPart ? String((dataPart.data as any).operation || "") : "";
+
+    if (!op) {
+      // Read path: no operation requested, so answer the question.
+      return { text: await this.answerAboutPayments(text || "Summarise the ledger.") };
+    }
+
+    const args = (dataPart?.data as any) ?? {};
+    switch (op) {
+      // ---- read operations ----
+      case "ledger.summary":
+        return { text: JSON.stringify(await this.a2aSnapshot()), data: await this.a2aSnapshot() };
+
+      case "payments.list": {
+        const direction = args.direction ? String(args.direction) : null;
+        const limit = Number(args.limit) > 0 ? Math.min(Number(args.limit), 100) : 20;
+        const payments = await this.listPayments(direction, limit);
+        return { text: "Returned " + payments.length + " payment(s).", data: { payments } };
+      }
+
+      case "payments.totals":
+        return { text: "Ledger totals.", data: await this.paymentTotals() };
+
+      // ---- write operations ----
+      case "payment.process": {
+        const email = String(args.email || "").trim();
+        const request = String(args.request || "").trim();
+        if (!email || !request) {
+          return { text: "payment.process needs email and request.", data: { ok: false, error: "missing_fields" } };
+        }
+        if (!args.claim && !args.card) {
+          return {
+            text: "payment.process needs a verified claim or a card reference. Refusing to process unpaid work.",
+            data: { ok: false, error: "no_payment" },
+          };
+        }
+        try {
+          const result = await this.processPaidRequest(email, request, args.claim, args.card);
+          return {
+            text: "Processed. Payment " + result.paymentId + ".",
+            data: { ok: true, paymentId: result.paymentId, response: result.response },
+          };
+        } catch (error) {
+          const msg = String(error);
+          // A reused claim is a client error, not a server fault: report it as an
+          // outcome rather than letting it look like a transport failure.
+          const reused = msg.includes("PAYMENT_CLAIM_REUSED");
+          return { text: msg, data: { ok: false, error: reused ? "claim_reused" : "process_failed" } };
+        }
+      }
+
+      case "checkout.create": {
+        const requestId = String(args.requestId || "").trim();
+        const email = String(args.email || "").trim();
+        const request = String(args.request || "").trim();
+        if (!requestId || !email || !request) {
+          return { text: "checkout.create needs requestId, email and request.", data: { ok: false, error: "missing_fields" } };
+        }
+        const r = await this.createCheckoutIntent(requestId, email, request);
+        return { text: r.ok ? "Checkout intent created." : (r.error || "Failed."), data: r };
+      }
+
+      case "checkout.status": {
+        const r = await this.checkoutStatus(String(args.requestId || ""));
+        return { text: r.found ? "Checkout status: " + r.status : "No such checkout.", data: r };
+      }
+
+      case "checkout.fulfil": {
+        const r = await this.fulfilCheckout(String(args.requestId || ""), args.paymentIntentId);
+        return { text: r.ok ? "Checkout fulfilled." : "No such checkout.", data: r };
+      }
+
+      default:
+        // Refused rather than ignored, so an unknown operation cannot be mistaken
+        // for a no-op success.
+        return {
+          text: "Unknown operation: " + op,
+          data: {
+            ok: false,
+            error: "unknown_operation",
+            supported: [
+              "ledger.summary",
+              "payments.list",
+              "payments.totals",
+              "payment.process",
+              "checkout.create",
+              "checkout.status",
+              "checkout.fulfil",
+            ],
+          },
+        };
+    }
   }
 
   /**

@@ -623,113 +623,67 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
-   * Fulfil a paid request and record the payment.
+   * Fulfil a paid request.
    *
-   * Two callers: the x402 rail passes a `claim`, while the Stripe webhook passes
-   * a `card` descriptor. Only one may be supplied; without either, the payment
-   * is recorded with the legacy x402 defaults so existing behaviour is unchanged.
+   * The capability now belongs to the payments agent, so this forwards. Two paths
+   * reach the same method on the same Durable Object:
    *
-   * x402 claims are single-use: a verified claim whose txHash is already in
-   * `x402ProcessedClaims` throws (see PAYMENT_CLAIM_REUSED_PREFIX). The check
-   * runs after signature verification and before any AI inference or email.
+   *   - A2A: an HTTP JSON-RPC message to the endpoint the payments agent card
+   *     advertises. This is the inter-agent contract, and the path a third party
+   *     would use.
+   *   - Direct Durable Object RPC, used when A2A is unavailable - during a rolling
+   *     deploy, or when DASHBOARD_API_KEY is absent from the environment.
+   *
+   * A refusal from A2A is surfaced, not retried over RPC. A reused payment must not
+   * get a second attempt through a different door, or the replay check is pointless.
    */
-  @callable()
   async processPaidRequest(
     senderEmail: string,
     request: string,
     claim?: PaymentClaim,
     card?: { amount: string; currency: string; reference: string },
   ): Promise<{ success: boolean; response: string; paymentId: string }> {
-    const state = this.ensureState();
-
-    // Replay protection for the x402 rail. This runs after PAYMENT-SIGNATURE
-    // verification (api.ts verifyRequestPayment) and before any AI inference
-    // or email is burned, so a captured signature cannot be replayed for free
-    // work. The Stripe rail passes `card` instead of a claim and is
-    // unaffected. The txHash is lower-cased so equivalent representations of
-    // the same transaction map to a single key.
-    const claimKey = claim?.txHash.toLowerCase();
-    if (claimKey) {
-      // Prefer the payments agent as the authority on redemption. It is the same
-      // DO for every request, so its check-and-record is atomic; the local
-      // registry is only a fallback for when that binding is unavailable.
-      const pa = this.paymentsAgent();
-      if (pa) {
-        const claimed = await pa.isX402Claimed(claimKey);
-        if (claimed) {
-          throw new Error(
-            `${PAYMENT_CLAIM_REUSED_PREFIX} This payment has already been used for a request; each on-chain payment can be redeemed only once.`,
-          );
+    const clamped = claim
+      ? {
+          amount: claim.amount,
+          asset: claim.asset,
+          network: claim.network,
+          txHash: claim.txHash,
         }
-      }
-      const consumedClaims = state.x402ProcessedClaims || {};
-      if (consumedClaims[claimKey]) {
-        throw new Error(
-          `${PAYMENT_CLAIM_REUSED_PREFIX} This payment has already been used for a request; each on-chain payment can be redeemed only once.`,
-        );
-      }
-    }
+      : undefined;
 
-    const paymentId = generateId();
-
-    const payment: PaymentRecord = {
-      id: paymentId,
-      direction: "received",
-      amount: card?.amount ?? claim?.amount ?? "10000",
-      currency:
-        card?.currency ??
-        (claim?.asset === "0x0000000000000000000000000000000000000000" ? "ETH" : "USDC"),
-      network: card ? "card" : claim?.network || "base",
-      fromAddress: undefined,
-      toAddress: this.env.PAY_TO_ADDRESS,
-      description: this.env.PAYMENT_DESCRIPTION,
-      status: "confirmed",
-      txHash: card?.reference ?? claim?.txHash,
-      createdAt: new Date().toISOString(),
-    };
-
-    const aiResponse = await this.generateAIResponse(request, undefined, senderEmail);
-
-    const emailResult = await this.sendOutboundEmail(
-      senderEmail,
-      "CFmail Agent Request Received",
-      `${aiResponse}\n\n---\nRequest ID: ${paymentId}\nPayment: ${payment.amount} ${payment.currency} on ${payment.network}\nStatus: Confirmed`,
+    const viaA2A = await this.callPaymentsAgentOverA2A(
+      "payment.process",
+      { email: senderEmail, request, claim: clamped, card },
+      "Process this paid request: " + request,
     );
 
-    payment.relatedEmailId = emailResult.emailId;
+    const data = (viaA2A && (viaA2A.data as any)) || null;
 
-    // Re-read: sendOutboundEmail wrote state while we were awaiting, so the
-    // entry-time snapshot is stale. Mark the x402 claim consumed only now that
-    // fulfilment succeeded, mirroring stripeProcessedEvents.
-    const latest = this.ensureState();
-    // The ledger lives in the payments agent now. Record there when it is
-    // reachable; fall back to local state so a rolling deploy cannot lose a
-    // payment that the caller has already been charged for.
-    const pa = this.paymentsAgent();
-    if (pa) {
-      await pa.recordPayment(payment);
-      if (claimKey) await pa.claimX402(claimKey);
-    } else {
-      this.setState({
-        ...latest,
-        payments: [...latest.payments, payment].slice(-MAX_STORED_PAYMENTS),
-        totalPaymentsReceived: latest.totalPaymentsReceived + 1,
-        ...(claimKey
-          ? {
-              x402ProcessedClaims: {
-                ...(latest.x402ProcessedClaims || {}),
-                [claimKey]: new Date().toISOString(),
-              },
-            }
-          : {}),
-      });
+    if (data && data.ok) {
+      return {
+        success: true,
+        response: String(data.response ?? (viaA2A ? viaA2A.text : "") ?? ""),
+        paymentId: String(data.paymentId ?? ""),
+      };
     }
 
-    return {
-      success: emailResult.success,
-      response: aiResponse,
-      paymentId,
-    };
+    if (data && data.error === "claim_reused") {
+      throw new Error(
+        PAYMENT_CLAIM_REUSED_PREFIX +
+          " This payment has already been used for a request; each on-chain payment can be redeemed only once.",
+      );
+    }
+
+    // A2A could not complete. Fall back to RPC, which fails closed when the
+    // binding is missing rather than pretending the request was fulfilled.
+    const pa = this.paymentsAgent();
+    if (!pa) {
+      throw new Error(
+        "The payments agent is unavailable, so this request cannot be processed. No payment has been recorded.",
+      );
+    }
+    return await pa.processPaidRequest(senderEmail, request, claim, card);
   }
 
   // ===========================================================================
@@ -977,6 +931,93 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * payments DO has not been deployed yet. Callers fall back to writing their own
    * state in that case, which keeps a rolling deploy safe.
    */
+  /**
+   * Call the payments agent over A2A.
+   *
+   * This is the real inter-agent path: an HTTP POST of an A2A JSON-RPC message to
+   * the endpoint the payments agent card advertises, carrying the same bearer
+   * credential the transport checks. The direct Durable Object RPC remains for
+   * latency-critical ledger reads, but a capability call goes over the protocol so
+   * the two agents are only coupled by the contract, not by a binding.
+   *
+   * Returns null when the call could not be completed, so callers can decide
+   * whether to fall back rather than assuming success.
+   */
+  private async callPaymentsAgentOverA2A(
+    operation: string,
+    args: Record<string, unknown>,
+    text: string,
+  ): Promise<{ text: string; data?: any } | null> {
+    const origin = (this.env as any).SELF_ORIGIN || "https://pay.openaimp.com";
+    const key = (this.env as any).DASHBOARD_API_KEY || "";
+    if (!key) return null;
+
+    const { A2A_PAYMENTS_RPC_PATH } = await import("./a2a");
+    const body = {
+      jsonrpc: "2.0",
+      id: crypto.randomUUID(),
+      method: "message/send",
+      params: {
+        message: {
+          kind: "message",
+          messageId: crypto.randomUUID(),
+          role: "user",
+          parts: [{ kind: "text", text }, { kind: "data", data: { operation, ...args } }],
+        },
+      },
+    };
+
+    try {
+      const res = await fetch(origin + A2A_PAYMENTS_RPC_PATH, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer " + key,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        console.error("A2A call to payments agent failed:", res.status);
+        return null;
+      }
+      const raw = await res.text();
+      const parsed = raw.trim().startsWith("{")
+        ? JSON.parse(raw)
+        : (function () {
+            // SSE framing: take the last complete data frame.
+            const frames = raw.split(/\r?\n/).filter((l) => l.startsWith("data:"));
+            for (let i = frames.length - 1; i >= 0; i--) {
+              try { return JSON.parse(frames[i].slice(5).trim()); } catch { /* keep looking */ }
+            }
+            return null;
+          })();
+      if (!parsed) return null;
+
+      // The JSON-RPC result carries the task; the answer is in its artifacts and
+      // history. Pull whichever is present rather than assuming one shape.
+      const result = parsed.result ?? parsed;
+      const artifacts = Array.isArray(result?.artifacts) ? result.artifacts : [];
+      const dataArtifact = artifacts.find((a: any) =>
+        Array.isArray(a?.parts) && a.parts.some((p: any) => p && p.kind === "data"),
+      );
+      const dataPart = dataArtifact?.parts?.find((p: any) => p && p.kind === "data");
+
+      const history = Array.isArray(result?.history) ? result.history : [];
+      const lastAgent = [...history].reverse().find((m: any) => m && m.role === "agent");
+      const textOut = (Array.isArray(lastAgent?.parts) ? lastAgent.parts : [])
+        .filter((x: any) => x && x.kind === "text" && typeof x.text === "string")
+        .map((x: any) => x.text as string)
+        .join("\n")
+        .trim();
+
+      return { text: textOut, data: dataPart?.data };
+    } catch (error) {
+      console.error("A2A call to payments agent threw:", error);
+      return null;
+    }
+  }
+
   private paymentsAgent(): any | null {
     const ns = (this.env as any).PAYMENTS_AGENT;
     if (!ns) return null;
@@ -1057,7 +1098,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
       cfmailCard(origin),
       {
         card: cfmailCard,
-        answer: (question: string) => this.answerAboutState(question),
+        // The monolith's A2A surface stays read-only: it reports on emails,
+        // payments and webhooks. Writes belong to the agent that owns the resource.
+        handle: async (message: any) => {
+          const parts: any[] = Array.isArray(message?.parts) ? message.parts : [];
+          const question =
+            parts
+              .filter((x) => x && x.kind === "text" && typeof x.text === "string")
+              .map((x) => x.text as string)
+              .join("\n")
+              .trim() || "Summarise the current state.";
+          return { text: await this.answerAboutState(question) };
+        },
       },
     );
     // Collected, not streamed: an async iterable cannot cross the RPC boundary.
