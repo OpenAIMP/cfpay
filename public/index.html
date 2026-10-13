@@ -318,23 +318,30 @@
           <div class="form-group">
             <input type="text" id="qaChecks" placeholder='Text to find (comma-separated), e.g. PaymentAgent, Dashboard' style="width:100%;" />
           </div>
-          <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
-            <button class="btn" onclick="runQACheck()">Run QA Check</button>
-            <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
-            <button class="btn" onclick="runQATabs()" style="background:var(--muted);">Verify Tab Data</button>
-            <button class="btn" onclick="runQAAttachment()">Test Attachment via UI</button>
-            <button class="btn" onclick="runQAPaymentFlow()" style="background:var(--muted);">Check Payment Guards</button>
-            <button class="btn" onclick="runQAEdgeCases()" style="background:var(--muted);">Check Edge Cases</button>
-            <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);">
-              <h4 style="margin-bottom:0.5rem;font-size:0.9rem;">Email QA Report</h4>
-              <div class="form-group"><label>Send report to</label><input type="email" id="qaEmailTo" placeholder="you@example.com" /></div>
-              <div style="display:flex;gap:0.5rem;">
-                <button class="btn" onclick="emailQAReport()">Email QA Report</button>
-                
-              </div>
-              <div id="qaEmailResult" style="margin-top:0.5rem;"></div>
+          <div class="form-group"><label>Send report to</label><input type="email" id="qaEmailTo" placeholder="you@example.com" /></div>
+          <div style="display:grid;grid-template-columns:minmax(220px,1fr) 2fr;gap:1.5rem;margin-bottom:1rem;">
+            <div style="display:flex;flex-direction:column;gap:0.5rem;align-items:stretch;">
+              <button class="btn" onclick="runFullSuite()" style="background:var(--accent);font-weight:bold;">Run Full Suite</button>
+              <button class="btn" onclick="runQACheck()">Run QA Check</button>
+              <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
+              <button class="btn" onclick="runQATabs()" style="background:var(--muted);">Verify Tab Data</button>
+              <button class="btn" onclick="runQAAttachment()">Test Attachment via UI</button>
+              <button class="btn" onclick="runQAPaymentFlow()" style="background:var(--muted);">Check Payment Guards</button>
+              <button class="btn" onclick="runQAEdgeCases()" style="background:var(--muted);">Check Edge Cases</button>
+              <button class="btn" onclick="emailQAReport()">Email QA Report</button>
+            </div>
+            <div style="font-size:0.85rem;color:var(--muted);">
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Run Full Suite</strong> — runs every check below in order and returns one aggregate PASS/FAIL. The two email checks are included only when a recipient address is entered above.</p>
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Run QA Check</strong> — loads any URL in a headless browser and asserts the given text appears on the page.</p>
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check This Dashboard</strong> — smoke test: dashboard loads, key text present, screenshot captured. Does not prove authentication on its own.</p>
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Verify Tab Data</strong> — clicks Emails, Payments and Webhooks and verifies each tab loads real data. Fails loudly on the login page.</p>
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Test Attachment via UI</strong> — drives the real Send Email form, attaches a file and submits. Sends a <em>real email</em>; use a test recipient.</p>
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check Payment Guards</strong> — verifies the 402 payment challenge is well-formed and malformed signatures are refused. Moves no money.</p>
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check Edge Cases</strong> — wrong API key rejected, unauthenticated access rejected, unknown routes don't false-pass, errors are JSON not HTML.</p>
+              <p style="margin-bottom:0;"><strong style="color:var(--text);">Email QA Report</strong> — runs the tab checks plus a dashboard screenshot on one shared browser session, then emails the report with the PNG attached. Sends a <em>real email</em>.</p>
             </div>
           </div>
+          <div id="qaEmailResult" style="margin-top:0.5rem;"></div>
           <div id="qaResult"></div>
         </div>
       </div>
@@ -544,6 +551,17 @@
         renderQAChecks(res, resultEl);
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">Edge-case check failed: ' + escapeHtml(e.message || e) + '</p>';
+      }
+    }
+    async function runFullSuite() {
+      const resultEl = document.getElementById('qaResult');
+      const toEmail = (document.getElementById('qaEmailTo').value || '').trim();
+      resultEl.innerHTML = '<p style="color:var(--muted);">Running full QA suite — this takes a few minutes...</p>';
+      try {
+        const res = await api('/api/dashboard/qa/full-suite', 'POST', toEmail ? { toEmail } : {});
+        renderQAChecks(res, resultEl);
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">Full suite failed: ' + escapeHtml(e.message || e) + '</p>';
       }
     }
     function renderQAResult(res, el) {
