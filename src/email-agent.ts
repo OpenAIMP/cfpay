@@ -25,9 +25,12 @@ import { defaultModelId } from "./models";
 /**
  * An attachment, as a caller supplies it.
  *
- * Content is base64. That is what the EMAIL binding accepts for inline data and what a
- * JSON A2A call can carry at all, so a caller does not have to think about the wire. The
- * cost is 33% overhead, which the byte cap below accounts for.
+ * Content is base64: that is what a JSON A2A call can carry, so a caller does
+ * not have to think about the wire. The cost is 33% overhead, which the byte
+ * cap below accounts for. NOTE: the Workers EMAIL.send binding treats a string
+ * as raw bytes, not base64 (unlike the REST API), so prepareAttachments decodes
+ * to binary before sending — passing the base64 string through would produce a
+ * corrupt file.
  */
 export interface EmailAttachmentInput {
   filename: string;
@@ -297,6 +300,20 @@ export class EmailAgent extends Think<Env, EmailState> {
         };
       }
 
+      // The Workers EMAIL.send binding treats string content as RAW bytes, not
+      // base64 (the REST API differs). Decode here so binary attachments (PNG
+      // screenshots, PDFs) arrive intact instead of as base64 text in a file
+      // the recipient cannot open.
+      let binary: Uint8Array;
+      try {
+        binary = Uint8Array.from(atob(a.content), (c) => c.charCodeAt(0));
+      } catch {
+        return {
+          ok: false,
+          error: `Attachment ${i} content is not valid base64.`,
+        };
+      }
+
       out.push(
         a.inline && a.inline.contentId
           ? {
@@ -304,13 +321,13 @@ export class EmailAgent extends Think<Env, EmailState> {
               contentId: a.inline.contentId,
               filename: a.filename,
               type: a.type,
-              content: a.content,
+              content: binary,
             }
           : {
               disposition: "attachment",
               filename: a.filename,
               type: a.type,
-              content: a.content,
+              content: binary,
             },
       );
     }
