@@ -10,6 +10,7 @@ Seven `@callable()` methods, all behind `requireAuth`, exposed as `POST /api/das
 
 | Button | Endpoint | Method | What it proves |
 |---|---|---|---|
+| Run Full Suite | `/qa/full-suite` | `qaFullSuite(apiKey, toEmail?)` | Runs every check below in order; one aggregate PASS/FAIL. The two email checks are skipped unless a recipient is entered. |
 | Run QA Check | `/qa/check` | `qaCheck(url, checks)` | Browser-check any URL with text assertions |
 | Check This Dashboard | `/qa/dashboard` | `qaDashboard(apiKey)` | Dashboard loads, key elements present, screenshot captured |
 | Verify Tab Data | `/qa/tabs` | `qaDashboardTabs(apiKey)` | Tab click-through with data verification (see below) |
@@ -57,7 +58,7 @@ Each entry maps a tab button ID → the data container it populates → the expe
 
 ### Running the checks (dashboard QA tab)
 
-Run in this order, lightest first:
+The QA tab shows buttons on the left and a plain-language description of each on the right. Run in this order, lightest first — or click **Run Full Suite** to run everything below in one go and get a single aggregate PASS/FAIL (the two email checks are included only when a recipient address is entered):
 
 1. **Check This Dashboard** — smoke test. Loads the dashboard, checks key text, captures a screenshot. Note: its text assertions also appear on the public landing page, so a PASS here does not prove authentication — treat it as a load check only.
 2. **Verify Tab Data** — clicks Emails → Payments → Webhooks and verifies each tab loads real data. This is the honest auth check: it fails loudly on the login page instead of reporting "container missing".
@@ -80,6 +81,7 @@ The same methods are `POST /api/dashboard/qa/*`, all behind `requireAuth`:
 | `/qa/test-attachment` | Requires `apiKey` + `toEmail` |
 | `/qa/payment-flow` | No key needed (tests unauthenticated guards) |
 | `/qa/edge-cases` | Requires `apiKey` |
+| `/qa/full-suite` | Requires `apiKey`; optional `toEmail` (validated when present). Email checks skipped without it. |
 | `/qa/email-report` | Requires `apiKey` + `toEmail` |
 
 Pass the key via the `X-API-Key` header (`Authorization: Bearer` works as a fallback for non-browser callers).
