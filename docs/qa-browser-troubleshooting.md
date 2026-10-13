@@ -10,14 +10,14 @@ Seven `@callable()` methods, all behind `requireAuth`, exposed as `POST /api/das
 
 | Button | Endpoint | Method | What it proves |
 |---|---|---|---|
-| Run Full Suite | `/qa/full-suite` | `qaFullSuite(apiKey, toEmail?)` | Runs every check below in order; one aggregate PASS/FAIL. The two email checks are skipped unless a recipient is entered. |
+| Run Full Suite | `/qa/full-suite` | `qaFullSuite(apiKey, toEmail?)` | Runs every check below in order; one aggregate PASS/FAIL. Payment/edge sub-checks are expanded individually. The two email checks show as SKIP (neutral, not failures) unless a recipient is entered. |
 | Run QA Check | `/qa/check` | `qaCheck(url, checks)` | Browser-check any URL with text assertions |
 | Check This Dashboard | `/qa/dashboard` | `qaDashboard(apiKey)` | Dashboard loads, key elements present, screenshot captured |
 | Verify Tab Data | `/qa/tabs` | `qaDashboardTabs(apiKey)` | Tab click-through with data verification (see below) |
 | Test Attachment via UI | `/qa/test-attachment` | `testEmailAttachmentUI(apiKey, toEmail)` | End-to-end Send Email form: fill fields, attach file via `DataTransfer`, submit via real button, verify success. Sends a **real email** with attachment. |
 | Check Payment Guards | `/qa/payment-flow` | `qaPaymentFlow(apiKey)` | Payment *gate* holds: 402 challenge is well-formed, malformed signatures refused. **No money moves** — no crypto, no card. |
 | Check Edge Cases | `/qa/edge-cases` | `qaEdgeCases(apiKey)` | Unauthenticated reads rejected, wrong API key rejected, unknown routes don't report success, errors are JSON not HTML |
-| Email QA Report | `/qa/email-report` | `qaAndEmailReport(apiKey, toEmail)` | Runs tab checks + dashboard screenshot on one shared browser session, emails the report with PNG attached. Sends a **real email**. |
+| Email QA Report | `/qa/email-report` | `qaAndEmailReport(apiKey, toEmail)` | Runs tab checks + screenshots on one shared browser session, emails the report with 4 PNGs attached (dashboard home + one per tab). Sends a **real email**. |
 
 ### Tab coverage
 
