@@ -338,7 +338,7 @@
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Test Attachment via UI</strong> — drives the real Send Email form, attaches a file and submits. Sends a <em>real email</em>; use a test recipient.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check Payment Guards</strong> — verifies the 402 payment challenge is well-formed and malformed signatures are refused. Moves no money.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check Edge Cases</strong> — wrong API key rejected, unauthenticated access rejected, unknown routes don't false-pass, errors are JSON not HTML.</p>
-              <p style="margin-bottom:0;"><strong style="color:var(--text);">Email QA Report</strong> — runs the tab checks plus a dashboard screenshot on one shared browser session, then emails the report with the PNG attached. Sends a <em>real email</em>.</p>
+              <p style="margin-bottom:0;"><strong style="color:var(--text);">Email QA Report</strong> — runs the tab checks on one shared browser session, then emails the report with a screenshot of the dashboard and of each tab attached (4 PNGs). Sends a <em>real email</em>.</p>
             </div>
           </div>
           <div id="qaEmailResult" style="margin-top:0.5rem;"></div>
@@ -490,8 +490,10 @@
       if (rows && rows.length) {
         html += '<ul style="margin:0.5rem 0;">';
         for (const c of rows) {
-          html += '<li style="color:' + (c.passed ? 'green' : 'red') + ';">'
-            + (c.passed ? 'PASS' : 'FAIL') + ' ' + escapeHtml(c.name)
+          const label = c.skipped ? 'SKIP' : (c.passed ? 'PASS' : 'FAIL');
+          const color = c.skipped ? 'var(--muted)' : (c.passed ? 'green' : 'red');
+          html += '<li style="color:' + color + ';">'
+            + label + ' ' + escapeHtml(c.name)
             + (c.detail ? ' - ' + escapeHtml(c.detail) : '')
             + '</li>';
         }
