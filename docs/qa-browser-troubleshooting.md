@@ -48,6 +48,46 @@ Each entry maps a tab button ID → the data container it populates → the expe
 
 `qaAndEmailReport` attaches **one** screenshot: the dashboard homepage (`qa-dashboard-YYYY-MM-DD.png`), captured on the same shared browser session as the tab checks. The tab checks verify data but capture no per-tab screenshots. (Open issue: capture per-tab screenshots after each click lands.)
 
+## QA workflow — how to use it
+
+### Prerequisites
+
+- The QA tab is on the dashboard at `https://pay.openaimp.com` (sign in with your API key first).
+- The login-seeding fix (PR #74) must be merged **and** deployed. Before it, "Verify Tab Data" always failed with "Dashboard showed the login page... The API key was not accepted" even with a valid key, because the agent seeded `localStorage` on the `about:blank` target (opaque origin) before navigating — `localStorage` is origin-scoped, so the dashboard never saw the key. The fix reorders to navigate → seed → reload.
+
+### Running the checks (dashboard QA tab)
+
+Run in this order, lightest first:
+
+1. **Check This Dashboard** — smoke test. Loads the dashboard, checks key text, captures a screenshot. Note: its text assertions also appear on the public landing page, so a PASS here does not prove authentication — treat it as a load check only.
+2. **Verify Tab Data** — clicks Emails → Payments → Webhooks and verifies each tab loads real data. This is the honest auth check: it fails loudly on the login page instead of reporting "container missing".
+3. **Check Payment Guards** — verifies the 402 challenge is well-formed and malformed signatures are refused. No money moves.
+4. **Check Edge Cases** — wrong key rejected, unauthenticated access rejected, unknown routes don't false-pass, errors are JSON not HTML.
+5. **Test Attachment via UI** — drives the real Send Email form and sends a **real email with attachment**. Use a test recipient.
+6. **Email QA Report** — runs the tab checks + one dashboard screenshot on a single shared browser session, then emails the report with the PNG attached. Sends a **real email**.
+
+**Pacing:** wait 3–5 minutes between runs. The Free plan allows 3 concurrent browsers and 10 browser-minutes per day — back-to-back clicks exhaust this and produce "Could not open a browser session", which is a capacity refusal, not a misconfiguration.
+
+### Programmatic use
+
+The same methods are `POST /api/dashboard/qa/*`, all behind `requireAuth`:
+
+| Endpoint | Notes |
+|---|---|
+| `/qa/check` | Takes `url` + `checks.textContains[]`; optional `apiKey` |
+| `/qa/dashboard` | Optional `apiKey` |
+| `/qa/tabs` | **Requires** `X-API-Key` header (400 otherwise — session/OAuth auth is not enough, the browser needs a key to seed) |
+| `/qa/test-attachment` | Requires `apiKey` + `toEmail` |
+| `/qa/payment-flow` | No key needed (tests unauthenticated guards) |
+| `/qa/edge-cases` | Requires `apiKey` |
+| `/qa/email-report` | Requires `apiKey` + `toEmail` |
+
+Pass the key via the `X-API-Key` header (`Authorization: Bearer` works as a fallback for non-browser callers).
+
+### Reading results
+
+Each check returns per-item `{ name, passed, detail }`. `detail` names the actual cause — e.g. the tab check reports the login-page failure explicitly rather than burying it as "container missing". A result of `FAIL` on all tabs with the login-page message means the seeded key was not accepted: verify the key is valid and that the deployed code includes the PR #74 ordering fix.
+
 ## Limitations
 
 ### Deterministic, not LLM-driven
