@@ -469,6 +469,15 @@ export function createApp() {
         detail: string;
         checks: { name: string; passed: boolean; detail: string }[];
       }>;
+      qaFullSuite(
+        apiKey: string,
+        toEmail?: string,
+      ): Promise<{
+        ok: boolean;
+        checks: { name: string; passed: boolean; detail: string }[];
+        emailed: boolean;
+        error?: string;
+      }>;
     };
   }
 
@@ -1194,6 +1203,26 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaEdgeCases(body.origin as string | undefined);
+    return c.json(result);
+  });
+
+  // Full suite: runs every dashboard QA check in order and returns the
+  // aggregate. The email-sending checks are skipped unless the caller supplies
+  // a recipient, so this can never mail a hard-coded address.
+  app.post("/api/dashboard/qa/full-suite", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const toEmail = (body.toEmail as string) || undefined;
+    if (toEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail)) {
+      return c.json({ error: "toEmail is not a valid email address" }, 400);
+    }
+    const presented = c.req.header("X-API-Key") || "";
+    const authHeader = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const apiKey = presented || authHeader || undefined;
+    if (!apiKey) {
+      return c.json({ error: "API key required" }, 401);
+    }
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaFullSuite(apiKey, toEmail);
     return c.json(result);
   });
 

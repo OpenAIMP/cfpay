@@ -693,6 +693,109 @@ export class QAAgent extends Think<Env> {
     }
   }
 
+  /**
+   * RPC: run the full dashboard QA suite in order and return an aggregate
+   * result. Each check runs sequentially and manages its own browser session
+   * (openBrowserSession retries once on a capacity refusal), so a full run
+   * takes a few minutes — this is the "one button" equivalent of clicking
+   * every QA button in turn.
+   *
+   * The two email-sending checks (testEmailAttachmentUI, qaAndEmailReport)
+   * are skipped when no recipient is given, rather than failing: they send
+   * real emails and must never fire without an explicit address.
+   */
+  @callable()
+  async qaFullSuite(
+    apiKey: string,
+    toEmail?: string,
+  ): Promise<{
+    ok: boolean;
+    checks: { name: string; passed: boolean; detail: string }[];
+    emailed: boolean;
+    error?: string;
+  }> {
+    const checks: { name: string; passed: boolean; detail: string }[] = [];
+    const record = (
+      name: string,
+      r: { ok: boolean; detail?: string; error?: string },
+    ) => {
+      checks.push({ name, passed: r.ok, detail: r.error || r.detail || "" });
+    };
+
+    try {
+      // 1. Dashboard smoke test.
+      const dash = await this.qaDashboard(apiKey);
+      record("Check This Dashboard", {
+        ok: dash.ok,
+        detail: `${dash.textLength} chars extracted`,
+        error: dash.error,
+      });
+
+      // 2. Tab click-through with data verification.
+      const tabs = await this.qaDashboardTabs(apiKey);
+      for (const t of tabs.tabs) {
+        checks.push({ name: `Tab: ${t.name}`, passed: t.passed, detail: t.detail });
+      }
+      if (tabs.error && tabs.tabs.length === 0) {
+        checks.push({ name: "Verify Tab Data", passed: false, detail: tabs.error });
+      }
+
+      // 3. Payment guards (no browser session needed; HTTP-level checks).
+      const pay = await this.qaPaymentFlow();
+      record("Check Payment Guards", {
+        ok: pay.ok,
+        detail: pay.detail,
+        error: pay.error,
+      });
+
+      // 4. Edge cases (auth and error handling).
+      const edge = await this.qaEdgeCases();
+      record("Check Edge Cases", {
+        ok: edge.ok,
+        detail: edge.detail,
+        error: (edge as { error?: string }).error,
+      });
+
+      // 5 & 6. Real-email checks: skipped without an explicit recipient.
+      let emailed = false;
+      if (toEmail) {
+        const att = await this.testEmailAttachmentUI(apiKey, toEmail);
+        record("Test Attachment via UI", {
+          ok: att.ok,
+          detail: att.detail,
+          error: att.error,
+        });
+        const rep = await this.qaAndEmailReport(apiKey, toEmail);
+        emailed = rep.emailed;
+        record("Email QA Report", {
+          ok: rep.emailed,
+          detail: rep.emailed ? "Report emailed with screenshot" : "Report not sent",
+          error: rep.error,
+        });
+      } else {
+        checks.push({
+          name: "Test Attachment via UI",
+          passed: false,
+          detail: "Skipped: no recipient address provided (sends a real email).",
+        });
+        checks.push({
+          name: "Email QA Report",
+          passed: false,
+          detail: "Skipped: no recipient address provided (sends a real email).",
+        });
+      }
+
+      return { ok: checks.every((c) => c.passed), checks, emailed };
+    } catch (err) {
+      return {
+        ok: false,
+        checks,
+        emailed: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
 
 
   /**
