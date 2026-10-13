@@ -356,7 +356,8 @@ export class QAAgent extends Think<Env> {
   async qaDashboardTabs(
     apiKey: string,
     sharedConnection?: CdpLike,
-  ): Promise<{ ok: boolean; tabs: { name: string; passed: boolean; detail: string }[]; error?: string }> {
+    captureScreenshots?: boolean,
+  ): Promise<{ ok: boolean; tabs: { name: string; passed: boolean; detail: string; screenshot?: string }[]; error?: string }> {
     const env = this.env as Env;
     if (!env.BROWSER) {
       return { ok: false, tabs: [], error: "Browser binding not configured" };
@@ -378,7 +379,7 @@ export class QAAgent extends Think<Env> {
     // Only opens a session when one was not supplied. This is what keeps a QA
     // report to a single session instead of two.
     const ownsConnection = !sharedConnection;
-    const results: { name: string; passed: boolean; detail: string }[] = [];
+    const results: { name: string; passed: boolean; detail: string; screenshot?: string }[] = [];
     let browser: CdpLike | null = sharedConnection ?? null;
 
     try {
@@ -543,6 +544,23 @@ export class QAAgent extends Think<Env> {
                 detail: `Rendered ${state.rows} row(s) from '#${tab.containerId}'.`,
               });
             }
+
+            // Optional: keep a picture of the tab as it rendered, for the
+            // emailed report. Best-effort — a failed capture never fails the
+            // check itself.
+            if (captureScreenshots) {
+              try {
+                const { data } = (await cdp.send(
+                  "Page.captureScreenshot",
+                  { format: "png" },
+                  { sessionId },
+                )) as { data?: string };
+                const last = results[results.length - 1];
+                if (data && last) last.screenshot = data;
+              } catch {
+                // Screenshot is evidence, not the assertion; ignore failures.
+              }
+            }
           } catch (err) {
             results.push({
               name: tab.name,
@@ -573,9 +591,9 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
-   * RPC: run dashboard QA checks and email a plain-text report.
+   * RPC: run dashboard QA checks and email a plain-text report with PNG
+   * screenshots attached (dashboard home plus one per tab).
    * Uses EmailAgent as a tool (via DO RPC) to send the report.
-   * EmailAgent sends text only (no HTML/attachments), so the report is plain text.
    */
   @callable()
   async qaAndEmailReport(
@@ -591,7 +609,7 @@ export class QAAgent extends Think<Env> {
     let connection: CdpLike | null = null;
     let tabResult: {
       ok: boolean;
-      tabs: { name: string; passed: boolean; detail: string }[];
+      tabs: { name: string; passed: boolean; detail: string; screenshot?: string }[];
       error?: string;
     };
 
@@ -599,7 +617,7 @@ export class QAAgent extends Think<Env> {
       if (env.BROWSER && apiKey) {
         connection = await this.openBrowserSession(env);
       }
-      tabResult = await this.qaDashboardTabs(apiKey, connection ?? undefined);
+      tabResult = await this.qaDashboardTabs(apiKey, connection ?? undefined, true);
     } catch (err) {
       // Released here as well as in the finally below: this early return would
       // otherwise leak the session it opened, which is the exhaustion this
@@ -623,6 +641,8 @@ export class QAAgent extends Think<Env> {
       ``,
       `Tab Results:`,
       tabLines,
+      ``,
+      `Screenshots of the dashboard and of each tab are attached.`,
       ``,
       `Dashboard: https://pay.openaimp.com`,
       ``,
@@ -653,14 +673,27 @@ export class QAAgent extends Think<Env> {
         connection ?? undefined,
       );
       const attachments: { filename: string; type: string; content: string }[] = [];
+      const dateStr = new Date().toISOString().slice(0, 10);
       if (dashResult.screenshot) {
         // screenshot is data:image/png;base64,... — strip prefix for attachment
         const base64 = dashResult.screenshot.split(',')[1] || dashResult.screenshot;
         attachments.push({
-          filename: `qa-dashboard-${new Date().toISOString().slice(0, 10)}.png`,
+          filename: `qa-dashboard-${dateStr}.png`,
           type: 'image/png',
           content: base64,
         });
+      }
+      // One screenshot per tab, captured by qaDashboardTabs during the
+      // click-through above (raw base64 from CDP, no prefix to strip). The
+      // recipient asked for every snap, not just the dashboard home.
+      for (const tab of tabResult.tabs) {
+        if (tab.screenshot) {
+          attachments.push({
+            filename: `qa-${tab.name.toLowerCase()}-${dateStr}.png`,
+            type: 'image/png',
+            content: tab.screenshot,
+          });
+        }
       }
       const sendResult = await emailAgent.sendThroughAgent({
         to: toEmail,
@@ -710,11 +743,11 @@ export class QAAgent extends Think<Env> {
     toEmail?: string,
   ): Promise<{
     ok: boolean;
-    checks: { name: string; passed: boolean; detail: string }[];
+    checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[];
     emailed: boolean;
     error?: string;
   }> {
-    const checks: { name: string; passed: boolean; detail: string }[] = [];
+    const checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[] = [];
     const record = (
       name: string,
       r: { ok: boolean; detail?: string; error?: string },
@@ -741,20 +774,33 @@ export class QAAgent extends Think<Env> {
       }
 
       // 3. Payment guards (no browser session needed; HTTP-level checks).
+      // Expand the sub-checks: a bare summary line hides which guard failed.
       const pay = await this.qaPaymentFlow();
-      record("Check Payment Guards", {
-        ok: pay.ok,
-        detail: pay.detail,
-        error: pay.error,
-      });
+      if (pay.checks.length > 0) {
+        for (const c of pay.checks) {
+          checks.push({ name: `Payment: ${c.name}`, passed: c.passed, detail: c.detail });
+        }
+      } else {
+        record("Check Payment Guards", {
+          ok: pay.ok,
+          detail: pay.detail,
+          error: pay.error,
+        });
+      }
 
-      // 4. Edge cases (auth and error handling).
+      // 4. Edge cases (auth and error handling). Sub-checks expanded too.
       const edge = await this.qaEdgeCases();
-      record("Check Edge Cases", {
-        ok: edge.ok,
-        detail: edge.detail,
-        error: (edge as { error?: string }).error,
-      });
+      if (edge.checks.length > 0) {
+        for (const c of edge.checks) {
+          checks.push({ name: `Edge: ${c.name}`, passed: c.passed, detail: c.detail });
+        }
+      } else {
+        record("Check Edge Cases", {
+          ok: edge.ok,
+          detail: edge.detail,
+          error: (edge as { error?: string }).error,
+        });
+      }
 
       // 5 & 6. Real-email checks: skipped without an explicit recipient.
       let emailed = false;
@@ -769,23 +815,25 @@ export class QAAgent extends Think<Env> {
         emailed = rep.emailed;
         record("Email QA Report", {
           ok: rep.emailed,
-          detail: rep.emailed ? "Report emailed with screenshot" : "Report not sent",
+          detail: rep.emailed ? "Report emailed with screenshots" : "Report not sent",
           error: rep.error,
         });
       } else {
         checks.push({
           name: "Test Attachment via UI",
-          passed: false,
+          passed: true,
+          skipped: true,
           detail: "Skipped: no recipient address provided (sends a real email).",
         });
         checks.push({
           name: "Email QA Report",
-          passed: false,
+          passed: true,
+          skipped: true,
           detail: "Skipped: no recipient address provided (sends a real email).",
         });
       }
 
-      return { ok: checks.every((c) => c.passed), checks, emailed };
+      return { ok: checks.filter((c) => !c.skipped).every((c) => c.passed), checks, emailed };
     } catch (err) {
       return {
         ok: false,

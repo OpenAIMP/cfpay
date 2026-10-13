@@ -474,7 +474,7 @@ export function createApp() {
         toEmail?: string,
       ): Promise<{
         ok: boolean;
-        checks: { name: string; passed: boolean; detail: string }[];
+        checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[];
         emailed: boolean;
         error?: string;
       }>;
