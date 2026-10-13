@@ -63,6 +63,16 @@ interface CdpLike {
  * "HTTP 500: Internal Server Error". Both are fixed by deciding here what the
  * error actually means.
  */
+/**
+ * True when the error is the "did not return a WebSocket" refusal from
+ * connectBrowser, which is how Browser Rendering reports that it could not
+ * allocate a session (concurrency or quota) rather than a missing binding.
+ */
+function isCapacityRefusal(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /did not return a WebSocket/i.test(message);
+}
+
 function describeBrowserFailure(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   // Idempotent: openBrowserSession already translated this, and re-wrapping
@@ -77,8 +87,9 @@ function describeBrowserFailure(err: unknown): string {
     return (
       "Could not open a browser session. The browser binding is configured, so " +
       "treat this as a transient capacity refusal (concurrency or quota) rather " +
-      "than a missing binding: sessions are short-lived, so waiting a moment and " +
-      "retrying is the first thing to try."
+      "than a missing binding: sessions are short-lived, and one automatic " +
+      "retry was already attempted. Waiting a few minutes before trying again " +
+      "is the next thing to try."
     );
   }
   return `Browser check failed: ${message}`;
@@ -170,6 +181,18 @@ export class QAAgent extends Think<Env> {
     try {
       return (await connectBrowser(env.BROWSER)) as CdpLike;
     } catch (err) {
+      // One automatic retry on a capacity refusal. The Free plan allows one new
+      // browser instance every 20 seconds, so a refusal is often a slot that is
+      // about to free up — failing outright forces the user to wait minutes and
+      // retry manually for no reason. Non-capacity errors are not retried.
+      if (isCapacityRefusal(err)) {
+        await new Promise((r) => setTimeout(r, 20000));
+        try {
+          return (await connectBrowser(env.BROWSER)) as CdpLike;
+        } catch (retryErr) {
+          throw new Error(describeBrowserFailure(retryErr));
+        }
+      }
       throw new Error(describeBrowserFailure(err));
     }
   }
