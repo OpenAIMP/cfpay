@@ -1879,35 +1879,69 @@ Do not claim to have completed a payment unless you have received confirmation.`
     // checked that budget, so a 24k-context model (llama-3.3-70b) was handed a
     // ~22k-token tool set plus a fixed 2048-token answer reservation, and the
     // provider rejected the request outright (AiError 8007: input + requested
-    // output over the context limit) - the tab 502'd on any question. The
-    // output reservation now shrinks to what actually remains, and a request
-    // that cannot fit even a short answer fails here with the reason instead
-    // of surfacing the provider's raw error.
+    // output over the context limit) - the tab 502'd on any question.
+    //
+    // Two defences, because the first alone was not enough: PR #81 shipped the
+    // estimate only, and the provider still rejected the request - the
+    // char-based estimate ran ~500 tokens optimistic while the payload sits
+    // within a token of the limit, so "close" was indistinguishable from
+    // "over". So:
+    //
+    //   1. Estimate the prompt size and shrink the output reservation to what
+    //      remains, floored so a small-context model is still tried.
+    //   2. If the provider rejects the request as over-length anyway, its
+    //      error reports the real limit and input size - recompute the
+    //      reservation from THOSE numbers and retry once. Only when the
+    //      provider's own figures leave no room for an answer does the
+    //      question fail, with the reason stated plainly instead of the raw
+    //      AiError.
     const contextWindow = contextWindowFor(modelId);
+    const contextError = (limit: number, inputTokens: number) =>
+      new Error(
+        "The selected model (" +
+          modelId +
+          ") has a " +
+          limit.toLocaleString() +
+          "-token context, but the Public.com tool set and this conversation already need about " +
+          inputTokens.toLocaleString() +
+          " tokens before an answer. Pick a larger-context model on the Public tab (the default, GPT-OSS 120B, has 128k) and ask again.",
+      );
     for (let turn = 0; turn < 10 && trace.length < MAX_TOOL_CALLS; turn++) {
       let maxTokens = 2048;
       if (contextWindow) {
         const estimatedInput = Math.ceil(
           (JSON.stringify(messages).length + JSON.stringify(toolSpecs).length) / 3.5,
         );
-        const available = contextWindow - estimatedInput - 512;
-        if (available < 256) {
-          throw new Error(
-            "The selected model (" +
-              modelId +
-              ") has a " +
-              contextWindow.toLocaleString() +
-              "-token context, but the Public.com tool set and this conversation already need about " +
-              estimatedInput.toLocaleString() +
-              " tokens before an answer. Pick a larger-context model on the Public tab (the default, GPT-OSS 120B, has 128k) and ask again.",
-          );
-        }
-        maxTokens = Math.min(2048, available);
+        maxTokens = Math.max(384, Math.min(2048, contextWindow - estimatedInput - 512));
       }
-      const response: any = await this.env.AI.run(
-        modelId as never,
-        { messages, tools: toolSpecs, max_tokens: maxTokens } as never,
-      );
+      let response: any = undefined;
+      try {
+        response = await this.env.AI.run(
+          modelId as never,
+          { messages, tools: toolSpecs, max_tokens: maxTokens } as never,
+        );
+      } catch (err) {
+        // Only the context-length rejection is recoverable here; anything else
+        // propagates unchanged.
+        const m = /maximum context length is (\d+) tokens[\s\S]*?at least (\d+) input tokens/.exec(
+          String(err),
+        );
+        if (!m) throw err;
+        const limit = Number(m[1]);
+        const reportedInput = Number(m[2]);
+        const retryTokens = limit - reportedInput - 512;
+        if (retryTokens < 128) throw contextError(limit, reportedInput);
+        try {
+          response = await this.env.AI.run(
+            modelId as never,
+            { messages, tools: toolSpecs, max_tokens: retryTokens } as never,
+          );
+        } catch {
+          // The reported count is a floor ("at least"), so a retry can still
+          // overflow. State it plainly rather than leaking a second AiError.
+          throw contextError(limit, reportedInput);
+        }
+      }
 
       // Models disagree on the envelope: older ones put response/tool_calls at the
       // top level, newer ones nest them under choices[0].message. Reading the wrong
