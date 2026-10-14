@@ -90,6 +90,7 @@ jobs:
           OUTBOUND_PAY_TO_WHITELIST: ${{ secrets.OUTBOUND_PAY_TO_WHITELIST }}
           OUTBOUND_MAX_AMOUNT_ATOMIC: ${{ secrets.OUTBOUND_MAX_AMOUNT_ATOMIC }}
           WEBHOOK_NOTIFY_EMAIL: ${{ secrets.WEBHOOK_NOTIFY_EMAIL }}
+          PUBLIC_ALLOW_TRADING: ${{ secrets.PUBLIC_ALLOW_TRADING }}
         run: |
           printf '%s' "$PAYMENT_PRIVATE_KEY" | npx wrangler@4 secret put PAYMENT_PRIVATE_KEY
           printf '%s' "$EMAIL_SECRET" | npx wrangler@4 secret put EMAIL_SECRET
@@ -141,6 +142,7 @@ jobs:
           push_optional WEBHOOK_NOTIFY_PROVIDERS  "$WEBHOOK_NOTIFY_PROVIDERS"
           push_optional OUTBOUND_PAY_TO_WHITELIST "$OUTBOUND_PAY_TO_WHITELIST"
           push_optional OUTBOUND_MAX_AMOUNT_ATOMIC "$OUTBOUND_MAX_AMOUNT_ATOMIC"
+          push_optional PUBLIC_ALLOW_TRADING "$PUBLIC_ALLOW_TRADING"          
 
   # Runs the QA suite against production after a successful deploy.
   #
