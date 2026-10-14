@@ -280,7 +280,7 @@
             <button class="btn" onclick="sendPublic()">Ask</button>
           </div>
           <div id="publicTools" style="margin-top:0.75rem;color:var(--muted);font-size:0.75rem;"></div>
-          <div id="publicToolList" style="margin-top:0.5rem;color:var(--muted);font-size:0.72rem;"></div>
+          <div id="publicToolList" style="margin-top:1rem;"></div>
         </div>
 
         <div class="card" style="border-left:3px solid #b45309;">
@@ -1282,15 +1282,73 @@ async function loadStats() {
       }
       return parts.join('  \u00b7  ');
     }
+    // A JSON Schema fragment's display type. Schemas express it as a plain
+    // type, a union array, a oneOf/anyOf of typed branches, or an enum;
+    // collapse all of those to one short label.
+    function schemaTypeLabel(s) {
+      if (!s || typeof s !== 'object') return 'any';
+      if (typeof s.type === 'string') return s.type;
+      if (Array.isArray(s.type)) return s.type.join(' | ');
+      const combo = s.oneOf || s.anyOf || s.allOf;
+      if (Array.isArray(combo) && combo.length) {
+        const parts = combo.map(schemaTypeLabel).filter((v, i, a) => a.indexOf(v) === i);
+        return parts.join(' | ') || 'any';
+      }
+      if (Array.isArray(s.enum)) return 'enum';
+      if (s.properties) return 'object';
+      return 'any';
+    }
+
+    // One tool's parameter rows from its input schema: name, type, whether it
+    // is required, the allowed values for an enum, and the schema's own
+    // description of the parameter.
+    function renderToolParams(schema) {
+      const props = schema && typeof schema === 'object' ? schema.properties : null;
+      if (!props || typeof props !== 'object' || Object.keys(props).length === 0) {
+        return '<div style="color:var(--muted);font-size:0.72rem;">No parameters.</div>';
+      }
+      const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+      return Object.entries(props).map(([name, s]) => {
+        const spec = s && typeof s === 'object' ? s : {};
+        const type = schemaTypeLabel(spec);
+        const enumNote = Array.isArray(spec.enum)
+          ? ' <span style="color:var(--muted);">(' + spec.enum.map((v) => escapeHtml(String(v))).join(', ') + ')</span>'
+          : '';
+        const desc = typeof spec.description === 'string'
+          ? '<div style="color:var(--muted);font-size:0.72rem;line-height:1.5;">' + escapeHtml(spec.description) + '</div>'
+          : '';
+        return '<div style="border-top:1px solid var(--border);padding:0.3rem 0;">'
+          + '<code style="font-size:0.74rem;">' + escapeHtml(name) + '</code> '
+          + '<span style="font-size:0.7rem;color:var(--muted);">' + escapeHtml(type) + '</span>' + enumNote
+          + (required.has(name) ? ' <span class="badge-confirmed" style="font-size:0.62rem;">required</span>' : '')
+          + desc + '</div>';
+      }).join('');
+    }
+
+    // The tool catalogue as a grid: one card per tool with its full
+    // description and parameters, so what each tool does is readable here
+    // rather than only in the payload sent to the model.
     async function loadPublicTools() {
       const el = document.getElementById('publicToolList');
       try {
         const res = await api('/api/public/tools');
-        if (res.error) { el.textContent = ''; return; }
-        const names = (res.tools || []).map(t => t.name);
-        el.textContent = names.length ? 'Tools: ' + names.join(', ') : '';
+        if (res.error) { el.innerHTML = ''; return; }
+        const tools = Array.isArray(res.tools) ? res.tools : [];
+        if (!tools.length) { el.innerHTML = ''; return; }
+        const cards = tools.map((t) =>
+          '<div style="border:1px solid var(--border);border-radius:6px;padding:0.6rem;background:var(--bg);">'
+          + '<code style="font-size:0.8rem;">' + escapeHtml(t.name || '') + '</code>'
+          + (t.description
+              ? '<div style="color:var(--muted);font-size:0.74rem;line-height:1.55;margin:0.35rem 0;">' + escapeHtml(t.description) + '</div>'
+              : '')
+          + renderToolParams(t.inputSchema)
+          + '</div>'
+        ).join('');
+        el.innerHTML =
+          '<div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:0.5rem;">Public.com tools (' + tools.length + ')</div>'
+          + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:0.6rem;">' + cards + '</div>';
       } catch (err) {
-        el.textContent = '';
+        el.innerHTML = '';
       }
     }
 
