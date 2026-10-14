@@ -70,6 +70,17 @@ export function resolveModelId(requested?: string | null): string {
   return defaultModelId();
 }
 
+/**
+ * The context window configured for a model, or null when the catalogue does
+ * not say. Callers sizing a request against a model need this: the Public.com
+ * tool definitions alone measure ~22k tokens, which a 24k-context model
+ * cannot hold alongside the question, the tool results and an answer.
+ */
+export function contextWindowFor(modelId: string): number | null {
+  const info = CATALOGUE.models.find((m) => m.id === modelId);
+  return typeof info?.contextWindow === "number" ? info.contextWindow : null;
+}
+
 /* ------------------------------- pricing -------------------------------- */
 
 /**
