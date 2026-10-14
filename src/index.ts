@@ -469,6 +469,12 @@ export default {
           verified.payload,
           headers,
         );
+        if (result.challenge) {
+          return new Response(JSON.stringify({ challenge: result.challenge }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
         return new Response(result.message, { status: result.status });
       } catch (err) {
         console.error("Webhook RPC failed:", err);
