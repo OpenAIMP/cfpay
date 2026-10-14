@@ -17,6 +17,7 @@ jobs:
           node-version: '22'
       - run: npm install
       - run: npx tsc --noEmit
+      - run: npm test      
       - run: npx wrangler deploy --dry-run --outdir /tmp/wrangler-out
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
