@@ -42,6 +42,7 @@ import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
 import {
   computeCost,
+  contextWindowFor,
   defaultModelId,
   normaliseToolCalls,
   readCompletion,
@@ -1871,10 +1872,41 @@ Do not claim to have completed a payment unless you have received confirmation.`
     // as call count rather than round count.
     const MAX_TOOL_CALLS = 12;
     const PRUNE_AFTER_CALLS = 4;
+    // Built once: the definitions do not change between rounds.
+    const toolSpecs = this.toAiToolSpecs(tools);
+    // The model's whole context has to hold the tool definitions, the system
+    // prompt, the question, every tool result so far, AND the answer. Nothing
+    // checked that budget, so a 24k-context model (llama-3.3-70b) was handed a
+    // ~22k-token tool set plus a fixed 2048-token answer reservation, and the
+    // provider rejected the request outright (AiError 8007: input + requested
+    // output over the context limit) - the tab 502'd on any question. The
+    // output reservation now shrinks to what actually remains, and a request
+    // that cannot fit even a short answer fails here with the reason instead
+    // of surfacing the provider's raw error.
+    const contextWindow = contextWindowFor(modelId);
     for (let turn = 0; turn < 10 && trace.length < MAX_TOOL_CALLS; turn++) {
+      let maxTokens = 2048;
+      if (contextWindow) {
+        const estimatedInput = Math.ceil(
+          (JSON.stringify(messages).length + JSON.stringify(toolSpecs).length) / 3.5,
+        );
+        const available = contextWindow - estimatedInput - 512;
+        if (available < 256) {
+          throw new Error(
+            "The selected model (" +
+              modelId +
+              ") has a " +
+              contextWindow.toLocaleString() +
+              "-token context, but the Public.com tool set and this conversation already need about " +
+              estimatedInput.toLocaleString() +
+              " tokens before an answer. Pick a larger-context model on the Public tab (the default, GPT-OSS 120B, has 128k) and ask again.",
+          );
+        }
+        maxTokens = Math.min(2048, available);
+      }
       const response: any = await this.env.AI.run(
         modelId as never,
-        { messages, tools: this.toAiToolSpecs(tools), max_tokens: 2048 } as never,
+        { messages, tools: toolSpecs, max_tokens: maxTokens } as never,
       );
 
       // Models disagree on the envelope: older ones put response/tool_calls at the
@@ -2024,6 +2056,34 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return target.displayName + " failed: " + String(run.error ?? "unknown error");
   }
 
+  /**
+   * Shrink an MCP-provided parameter schema before it is sent to the model.
+   *
+   * Public.com's schemas carry a prose description on nearly every property,
+   * nested several levels deep on the order tools. Sent verbatim, the tool
+   * definitions alone measured ~22k prompt tokens - enough to overflow a
+   * 24k-context model before the question is even asked. Property names,
+   * types, enums and required lists are what the model needs to form a call;
+   * the prose is capped rather than removed, so short guidance survives, and
+   * the $schema declaration (which names a dialect, not a parameter) is
+   * dropped.
+   */
+  private compactSchema(schema: unknown): unknown {
+    if (Array.isArray(schema)) return schema.map((s) => this.compactSchema(s));
+    if (schema && typeof schema === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+        if (key === "$schema") continue;
+        out[key] =
+          key === "description" && typeof value === "string"
+            ? value.slice(0, 160)
+            : this.compactSchema(value);
+      }
+      return out;
+    }
+    return schema;
+  }
+
   private toAiToolSpecs(tools: McpTool[]): Array<Record<string, unknown>> {
     const specs = tools.map((t) => ({
       type: "function",
@@ -2032,7 +2092,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
         description: t.description ? String(t.description).slice(0, 600) : t.name,
         parameters:
           t.inputSchema && typeof t.inputSchema === "object"
-            ? t.inputSchema
+            ? this.compactSchema(t.inputSchema)
             : { type: "object", properties: {} },
       },
     }));
