@@ -1120,10 +1120,11 @@ describe("browser teardown cannot fail a QA run", () => {
   it("keeps the report's tab call inside a guard", () => {
     // It sat outside the try, so any rejection from qaDashboardTabs bypassed the
     // method's own error handling and reached the route as a 500. The guard now
-    // also translates a browser refusal into an actionable message.
+    // also translates a browser refusal into an actionable message. The trailing
+    // `true` is captureScreenshots: the report wants a PNG per tab.
     const start = qa.indexOf("async qaAndEmailReport(");
     const body = qa.slice(start, qa.indexOf("async testEmailAttachmentUI(", start));
-    expect(body).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined)");
+    expect(body).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined, true)");
     // The catch immediately after the tab call must translate the failure.
     const catchAt = body.indexOf("} catch (err) {");
     expect(catchAt).toBeGreaterThan(-1);
@@ -1164,16 +1165,17 @@ describe("a QA report uses one browser session, not two", () => {
   const qa = read("src/qa-agent.ts");
 
   it("opens browser sessions through a single helper", () => {
-    // Exactly one: inside openBrowserSession. Every other call site goes through
-    // it, which is what makes the session count auditable.
+    // Exactly two, both inside openBrowserSession: the first attempt and the
+    // single capacity retry after a 20s wait. Every other call site goes through
+    // the helper, which is what makes the session count auditable.
     const direct = qa.split("await connectBrowser(").length - 1;
-    expect(direct, "every browser session must go through openBrowserSession").toBe(1);
+    expect(direct, "every browser session must go through openBrowserSession").toBe(2);
     expect(qa).toContain("private async openBrowserSession(");
   });
 
   it("hands the report's session to both checks instead of opening its own", () => {
     // The two calls that used to each open a session must now receive one.
-    expect(qa).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined)");
+    expect(qa).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined, true)");
     expect(qa).toMatch(
       /runBrowserCheck\(\s*env\.SELF_ORIGIN[\s\S]{0,200}?connection \?\? undefined,?\s*\)/,
     );
