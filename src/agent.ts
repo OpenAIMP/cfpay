@@ -28,6 +28,7 @@ import type {
   StripeConfig,
   WebhookEvent,
   ToolTrace,
+  TradeProposal,
 } from "./types";
 import type { UsageCost } from "./models";
 import type { ToolSet } from "ai";
@@ -1803,6 +1804,178 @@ Do not claim to have completed a payment unless you have received confirmation.`
     this.setState(next);
   }
 
+  // -- Public.com trade proposals -------------------------------------------
+  //
+  // An order the model wants to place never executes in the model's turn.
+  // It is recorded here and a TradeWorkflow instance is started for it; the
+  // workflow waits for a human decision from the dashboard, and only an
+  // approval lets its deterministic step call executeTradeProposal. The
+  // proposal list in agent state is the single record: the dashboard renders
+  // it, the workflow updates it, the executor reads it. Workflow params
+  // carry only the proposal id.
+
+  /** All recorded proposals, newest first. Capped so state stays bounded. */
+  private readTradeProposals(): TradeProposal[] {
+    const state = this.ensureState() as any;
+    return Array.isArray(state.tradeProposals) ? (state.tradeProposals as TradeProposal[]) : [];
+  }
+
+  private async writeTradeProposal(proposal: TradeProposal): Promise<void> {
+    const state = this.ensureState() as any;
+    const list = this.readTradeProposals().filter((p) => p.id !== proposal.id);
+    list.unshift(proposal);
+    this.setState({ ...state, tradeProposals: list.slice(0, 50) });
+  }
+
+  @callable()
+  async getTradeProposal(proposalId: string): Promise<TradeProposal | null> {
+    return this.readTradeProposals().find((p) => p.id === proposalId) ?? null;
+  }
+
+  @callable()
+  async listTradeProposals(): Promise<TradeProposal[]> {
+    return this.readTradeProposals();
+  }
+
+  /**
+   * Record a model-proposed order and start its approval workflow. Called
+   * from the answerInstrumentQuestion tool loop in place of executing the
+   * call. Throws when the workflow cannot be started; the caller turns that
+   * into a tool error, and the proposal is left marked failed so the
+   * dashboard shows why nothing is waiting for approval.
+   */
+  @callable()
+  async proposeTrade(
+    tool: string,
+    args: Record<string, unknown>,
+    question: string,
+  ): Promise<TradeProposal> {
+    const proposal: TradeProposal = {
+      id: crypto.randomUUID(),
+      workflowId: null,
+      tool,
+      args: args ?? {},
+      question,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    };
+    await this.writeTradeProposal(proposal);
+    try {
+      proposal.workflowId = await this.runWorkflow(
+        "TRADE_WORKFLOW",
+        { proposalId: proposal.id },
+        { metadata: { proposalId: proposal.id, tool } },
+      );
+    } catch (err) {
+      proposal.status = "failed";
+      proposal.result = "The approval workflow could not be started: " + String(err);
+      await this.writeTradeProposal(proposal);
+      throw err;
+    }
+    await this.writeTradeProposal(proposal);
+    return proposal;
+  }
+
+  /**
+   * Deliver the dashboard's decision to the waiting workflow. The workflow
+   * records the outcome itself (recordTradeDecision), so this method only
+   * sends the event; a proposal that is no longer pending (already decided,
+   * expired, or executed) is returned unchanged.
+   */
+  @callable()
+  async decideTradeProposal(
+    proposalId: string,
+    approved: boolean,
+    notes?: string,
+  ): Promise<TradeProposal> {
+    const proposal = await this.getTradeProposal(proposalId);
+    if (!proposal) throw new Error("No such trade proposal.");
+    if (proposal.status !== "pending") return proposal;
+    if (!proposal.workflowId) throw new Error("This proposal has no approval workflow.");
+    try {
+      await this.sendWorkflowEvent("TRADE_WORKFLOW", proposal.workflowId, {
+        type: "approval",
+        payload: { approved, notes },
+      });
+    } catch {
+      // The workflow may have expired between the status read and the send;
+      // the recorded status is the truth, so return it rather than failing.
+      return (await this.getTradeProposal(proposalId)) ?? proposal;
+    }
+    return proposal;
+  }
+
+  /** Workflow callback: persist the human decision. First decision wins. */
+  @callable()
+  async recordTradeDecision(proposalId: string, approved: boolean, notes?: string): Promise<void> {
+    const proposal = await this.getTradeProposal(proposalId);
+    if (!proposal || proposal.status !== "pending") return;
+    proposal.status = approved ? "approved" : "rejected";
+    proposal.decidedAt = new Date().toISOString();
+    if (notes) proposal.decisionNotes = notes;
+    await this.writeTradeProposal(proposal);
+  }
+
+  /** Workflow callback: the approval window closed with no decision. */
+  @callable()
+  async expireTradeProposal(proposalId: string): Promise<void> {
+    const proposal = await this.getTradeProposal(proposalId);
+    if (!proposal || proposal.status !== "pending") return;
+    proposal.status = "expired";
+    await this.writeTradeProposal(proposal);
+  }
+
+  /**
+   * Workflow callback: the deterministic side effect. Executes the recorded
+   * call against Public.com exactly as approved.
+   *
+   * Fail-closed in three places: the proposal must be in `approved` state,
+   * trading must still be enabled on the deployment, and the claim to
+   * `executing` is persisted BEFORE the call goes out, so a workflow retry
+   * cannot place the order a second time (a replayed step returns the
+   * recorded outcome). The credential is re-read here, through the OAuth
+   * refresh path, rather than carried in workflow params.
+   */
+  @callable()
+  async executeTradeProposal(proposalId: string): Promise<{ ok: boolean; output: string }> {
+    const proposal = await this.getTradeProposal(proposalId);
+    if (!proposal) return { ok: false, output: "Proposal not found." };
+    if (proposal.status === "executed") {
+      return { ok: true, output: proposal.result ?? "" };
+    }
+    if (proposal.status !== "approved") {
+      return { ok: false, output: "Proposal is " + proposal.status + ", not approved." };
+    }
+    proposal.status = "executing";
+    await this.writeTradeProposal(proposal);
+
+    const fail = async (reason: string) => {
+      proposal.status = "failed";
+      proposal.result = reason;
+      await this.writeTradeProposal(proposal);
+      return { ok: false, output: reason };
+    };
+
+    const tradingAllowed =
+      String((this.env as any).PUBLIC_ALLOW_TRADING || "").trim().toLowerCase() === "true";
+    if (!tradingAllowed) {
+      return fail("Trading was disabled on this deployment after the proposal was approved.");
+    }
+    const token = await this.getPublicToken();
+    if (!token) {
+      return fail("Public.com is not connected, so the approved trade could not run.");
+    }
+    try {
+      const output = await callTool(token, proposal.tool, proposal.args, {});
+      proposal.status = "executed";
+      proposal.result = output.slice(0, 4000);
+      await this.writeTradeProposal(proposal);
+      return { ok: true, output };
+    } catch (err) {
+      return fail(String(err));
+    }
+  }
+
   /**
    * Answer a question by letting the model call Public.com's MCP tools.
    *
@@ -1811,7 +1984,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
    *
    * Read-only unless PUBLIC_ALLOW_TRADING is "true": an order-placing tool is
    * refused before it is called, because their guide warns that a trade through
-   * an MCP client is a real order using real money.
+   * an MCP client is a real order using real money. With trading enabled, an
+   * order-placing call is still not executed here: it becomes a trade
+   * proposal that a human approves in the dashboard, and a TradeWorkflow
+   * executes it only after approval (see proposeTrade).
    */
   async answerInstrumentQuestion(
     token: string,
@@ -1851,7 +2027,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
           "Stop gathering once you can answer. Say which instruments you compared and why.",
           "This is not investment advice; say so when recommending anything.",
           tradingAllowed
-            ? "Order-placing tools are enabled, but only call one when the user has clearly asked to trade."
+            ? "Order-placing tools are enabled, but calling one does not execute it: the call becomes a trade proposal that a human must approve in the dashboard before anything runs. Only call one when the user has clearly asked to trade, and afterwards tell the user the order is awaiting their approval."
             : "Trading is disabled on this deployment. Do not attempt order-placing tools; explain that reads work and trading is off.",
           // The tool list is NOT repeated here: 37 entries cost ~450 prompt tokens on
           // every round, and the definitions are already sent structurally via the
@@ -2000,11 +2176,38 @@ Do not claim to have completed a payment unless you have received confirmation.`
         const name = call.function.name;
         const args = safeJson(call.function.arguments);
 
-        if (!tradingAllowed && isOrderPlacingTool(name)) {
-          const refusal =
-            "Refused: " + name + " would place or modify an order, and this deployment is read-only.";
-          trace.push({ name, args, ok: false, refused: true, result: refusal });
-          messages.push({ role: "tool", content: refusal, tool_call_id: id });
+        if (isOrderPlacingTool(name)) {
+          if (!tradingAllowed) {
+            const refusal =
+              "Refused: " + name + " would place or modify an order, and this deployment is read-only.";
+            trace.push({ name, args, ok: false, refused: true, result: refusal });
+            messages.push({ role: "tool", content: refusal, tool_call_id: id });
+            continue;
+          }
+          // Trading is enabled, but an order still never executes inside the
+          // model's turn: the call becomes a proposal that a human approves
+          // in the dashboard, and a durable workflow executes it only after
+          // that approval (see src/trade-workflow.ts). The model is told the
+          // order is parked, so it can report that instead of a fill.
+          try {
+            const proposal = await this.proposeTrade(
+              name,
+              (args ?? {}) as Record<string, unknown>,
+              question,
+            );
+            const note =
+              "Proposed, not executed: " +
+              name +
+              " is awaiting human approval in the dashboard (proposal " +
+              proposal.id +
+              "). It runs only if approved. Tell the user it is awaiting their approval; do not place it again.";
+            trace.push({ name, args, ok: true, proposed: true, result: note });
+            messages.push({ role: "tool", content: note, tool_call_id: id });
+          } catch (err) {
+            const msg = "Could not create a trade proposal: " + String(err);
+            trace.push({ name, args, ok: false, result: msg });
+            messages.push({ role: "tool", content: msg, tool_call_id: id });
+          }
           continue;
         }
 
