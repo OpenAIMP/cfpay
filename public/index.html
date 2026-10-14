@@ -280,7 +280,21 @@
             <button class="btn" onclick="sendPublic()">Ask</button>
           </div>
           <div id="publicTools" style="margin-top:0.75rem;color:var(--muted);font-size:0.75rem;"></div>
-          <div id="publicToolList" style="margin-top:1rem;"></div>
+          <div style="margin-top:0.75rem;">
+            <button class="btn" id="publicCapsBtn" style="background:var(--bg);color:var(--text);border:1px solid var(--border);" onclick="togglePublicCaps()">Model &amp; MCP capabilities</button>
+          </div>
+          <!-- Floating capabilities card: the selected model's capabilities and
+               the full MCP tool catalogue, in a panel that floats over the page
+               and scrolls internally instead of stretching the tab. -->
+          <div id="publicCapsBackdrop" onclick="togglePublicCaps(false)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:999;"></div>
+          <div id="publicCapsCard" style="display:none;position:fixed;top:4.5rem;right:1rem;width:min(600px,calc(100vw - 2rem));max-height:calc(100vh - 6rem);z-index:1000;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,0.45);flex-direction:column;overflow:hidden;">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.7rem 0.9rem;border-bottom:1px solid var(--border);">
+              <div style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Model &amp; MCP capabilities</div>
+              <button class="btn" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:0.2rem 0.55rem;" onclick="togglePublicCaps(false)">&times;</button>
+            </div>
+            <div id="publicCapsModel" style="padding:0.7rem 0.9rem;border-bottom:1px solid var(--border);"></div>
+            <div id="publicCapsTools" style="overflow-y:auto;padding:0.7rem 0.9rem;"></div>
+          </div>
         </div>
 
         <div class="card" id="publicTradesCard" style="display:none;border-left:3px solid #b45309;">
@@ -1210,7 +1224,9 @@ async function loadStats() {
         await api('/api/public/disconnect', 'POST', {});
         document.getElementById('publicMessages').innerHTML = '';
         document.getElementById('publicTools').textContent = '';
-        document.getElementById('publicToolList').textContent = '';
+        togglePublicCaps(false);
+        const capsTools = document.getElementById('publicCapsTools');
+        if (capsTools) capsTools.innerHTML = '';
         notice.innerHTML = '<div class="status-msg info">Disconnected. The stored token was removed.</div>';
         loadPublicStatus();
       } catch (err) {
@@ -1339,30 +1355,77 @@ async function loadStats() {
       }).join('');
     }
 
-    // The tool catalogue as a grid: one card per tool with its full
-    // description and parameters, so what each tool does is readable here
-    // rather than only in the payload sent to the model.
+    // Show or hide the floating capabilities card. Called with no argument it
+    // toggles; the backdrop, the close button, and Escape pass false.
+    function togglePublicCaps(force) {
+      const card = document.getElementById('publicCapsCard');
+      const backdrop = document.getElementById('publicCapsBackdrop');
+      if (!card || !backdrop) return;
+      const show = typeof force === 'boolean' ? force : card.style.display === 'none';
+      card.style.display = show ? 'flex' : 'none';
+      backdrop.style.display = show ? 'block' : 'none';
+    }
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') togglePublicCaps(false);
+    });
+
+    // The selected model's capabilities block at the top of the floating
+    // card: what it is, how much context it holds, and what it costs.
+    function renderCapsModel(m) {
+      const bits = [];
+      if (m.contextWindow) bits.push(m.contextWindow.toLocaleString() + ' token context');
+      if (m.functionCalling) bits.push('function calling');
+      if (m.inputPerMTok != null || m.outputPerMTok != null) {
+        bits.push('$' + (m.inputPerMTok ?? '?') + ' / $' + (m.outputPerMTok ?? '?') + ' per Mtok in/out');
+      }
+      return '<div style="font-size:0.85rem;"><strong>' + escapeHtml(m.label || m.id) + '</strong>'
+        + ' <code style="font-size:0.72rem;color:var(--muted);">' + escapeHtml(m.id) + '</code></div>'
+        + (bits.length
+            ? '<div style="color:var(--muted);font-size:0.74rem;margin-top:0.25rem;">' + escapeHtml(bits.join(' \u00b7 ')) + '</div>'
+            : '')
+        + (m.description
+            ? '<div style="color:var(--muted);font-size:0.74rem;line-height:1.55;margin-top:0.25rem;">' + escapeHtml(m.description) + '</div>'
+            : '');
+    }
+
+    // Fill the floating capabilities card: the selected model up top, and the
+    // MCP tool catalogue as a single-column list in the scrolling region -
+    // one entry per tool with its full description and parameters, so what
+    // each tool does is readable here rather than only in the payload sent
+    // to the model. The toggle button carries the tool count.
     async function loadPublicTools() {
-      const el = document.getElementById('publicToolList');
+      const toolsEl = document.getElementById('publicCapsTools');
+      const modelEl = document.getElementById('publicCapsModel');
+      const btn = document.getElementById('publicCapsBtn');
       try {
-        const res = await api('/api/public/tools');
-        if (res.error) { el.innerHTML = ''; return; }
+        const [res, modelsRes] = await Promise.all([
+          api('/api/public/tools'),
+          api('/api/public/models').catch(() => null),
+        ]);
+        if (res.error) { if (toolsEl) toolsEl.innerHTML = ''; return; }
         const tools = Array.isArray(res.tools) ? res.tools : [];
-        if (!tools.length) { el.innerHTML = ''; return; }
-        const cards = tools.map((t) =>
-          '<div style="border:1px solid var(--border);border-radius:6px;padding:0.6rem;background:var(--bg);">'
-          + '<code style="font-size:0.8rem;">' + escapeHtml(t.name || '') + '</code>'
-          + (t.description
-              ? '<div style="color:var(--muted);font-size:0.74rem;line-height:1.55;margin:0.35rem 0;">' + escapeHtml(t.description) + '</div>'
-              : '')
-          + renderToolParams(t.inputSchema)
-          + '</div>'
-        ).join('');
-        el.innerHTML =
-          '<div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:0.5rem;">Public.com tools (' + tools.length + ')</div>'
-          + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:0.6rem;">' + cards + '</div>';
+        if (btn) btn.textContent = 'Model & MCP capabilities (' + tools.length + ' tools)';
+        if (modelEl) {
+          const models = modelsRes && Array.isArray(modelsRes.models) ? modelsRes.models : [];
+          const sel = models.find((m) => m.id === (modelsRes && modelsRes.selected)) || null;
+          modelEl.innerHTML = sel ? renderCapsModel(sel) : '';
+          modelEl.style.display = sel ? '' : 'none';
+        }
+        if (toolsEl) {
+          toolsEl.innerHTML = tools.length
+            ? tools.map((t) =>
+                '<div style="border:1px solid var(--border);border-radius:6px;padding:0.6rem;margin-bottom:0.6rem;background:var(--bg);">'
+                + '<code style="font-size:0.8rem;">' + escapeHtml(t.name || '') + '</code>'
+                + (t.description
+                    ? '<div style="color:var(--muted);font-size:0.74rem;line-height:1.55;margin:0.35rem 0;">' + escapeHtml(t.description) + '</div>'
+                    : '')
+                + renderToolParams(t.inputSchema)
+                + '</div>'
+              ).join('')
+            : '<div style="color:var(--muted);font-size:0.8rem;">No tools reported by the MCP server.</div>';
+        }
       } catch (err) {
-        el.innerHTML = '';
+        if (toolsEl) toolsEl.innerHTML = '';
       }
     }
 
