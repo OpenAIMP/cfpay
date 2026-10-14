@@ -283,6 +283,16 @@
           <div id="publicToolList" style="margin-top:1rem;"></div>
         </div>
 
+        <div class="card" id="publicTradesCard" style="display:none;border-left:3px solid #b45309;">
+          <h3 style="font-size:1.1rem;margin-bottom:0.35rem;">Trade approvals</h3>
+          <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.5rem;">
+            Orders the model proposes wait here — nothing runs until you approve it.
+            Approving executes exactly the call shown, through the approval workflow;
+            rejecting (or waiting 24 hours) closes the proposal without executing anything.
+          </p>
+          <div id="publicTrades"></div>
+        </div>
+
         <div class="card" style="border-left:3px solid #b45309;">
           <h3 style="font-size:1rem;margin-bottom:0.5rem;">Read-only by default</h3>
           <p style="color:var(--muted);font-size:0.875rem;line-height:1.7;margin:0;">
@@ -290,7 +300,10 @@
             documentation warns that a trade placed through an MCP client is a
             <strong style="color:var(--text);">real order using real money</strong>.
             This dashboard refuses order-placing tools unless the Worker secret
-            <code>PUBLIC_ALLOW_TRADING</code> is set to <code>true</code>. Reads
+            <code>PUBLIC_ALLOW_TRADING</code> is set to <code>true</code>. With it
+            set, an order-placing call still does not run directly: it becomes a
+            proposal in the Trade approvals card above, and only your approval
+            executes it. Reads
             &mdash; balances, quotes, option chains, holdings &mdash; work either way.
           </p>
         </div>
@@ -1154,6 +1167,7 @@ async function loadStats() {
           }
           loadPublicModels();
           loadPublicTools();
+          loadPublicTrades();
         }
       } catch (err) {
         notice.innerHTML = '<div class="status-msg error">Could not read status: ' + escapeHtml(err.message) + '</div>';
@@ -1352,6 +1366,67 @@ async function loadStats() {
       }
     }
 
+    // One trade proposal: the exact call that would run, its state, and -
+    // while it waits - the decision buttons. The arguments are shown in full
+    // because approving executes precisely this call.
+    function renderTradeProposal(p) {
+      const status = String(p.status || '');
+      const badge = status === 'pending'
+        ? '<span style="background:#b45309;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;font-size:0.68rem;">awaiting approval</span>'
+        : status === 'executed'
+          ? '<span class="badge-confirmed">executed</span>'
+          : (status === 'rejected' || status === 'expired' || status === 'failed')
+            ? '<span class="badge-failed">' + escapeHtml(status) + '</span>'
+            : '<span style="color:var(--muted);">' + escapeHtml(status) + '</span>';
+      const when = p.createdAt ? new Date(p.createdAt).toLocaleString() : '';
+      const actions = status === 'pending'
+        ? '<div style="margin-top:0.5rem;display:flex;gap:0.5rem;">'
+          + '<button class="btn" onclick="decideTrade(\'' + escapeHtml(p.id) + '\', true)">Approve &amp; execute</button>'
+          + '<button class="btn" style="background:var(--bg);color:var(--text);border:1px solid var(--border);" onclick="decideTrade(\'' + escapeHtml(p.id) + '\', false)">Reject</button>'
+          + '</div>'
+        : '';
+      const result = p.result
+        ? '<div style="margin-top:0.4rem;"><strong style="font-size:0.72rem;">result</strong>'
+          + '<pre style="white-space:pre-wrap;word-break:break-word;max-height:12rem;overflow:auto;background:var(--bg);border-radius:4px;padding:0.4rem;margin:0.2rem 0 0;font-size:0.72rem;">' + escapeHtml(p.result) + '</pre></div>'
+        : '';
+      return '<div style="border:1px solid var(--border);border-radius:6px;padding:0.6rem;margin-top:0.5rem;background:var(--bg);">'
+        + '<div style="font-size:0.8rem;"><code>' + escapeHtml(p.tool || '') + '</code> ' + badge
+        + ' <span style="color:var(--muted);font-size:0.72rem;">' + escapeHtml(when) + '</span></div>'
+        + (p.question
+            ? '<div style="color:var(--muted);font-size:0.74rem;margin-top:0.3rem;">Asked: ' + escapeHtml(p.question) + '</div>'
+            : '')
+        + '<pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0.4rem;margin:0.4rem 0 0;font-size:0.72rem;">'
+        + escapeHtml(JSON.stringify(p.args || {}, null, 2)) + '</pre>'
+        + result + actions + '</div>';
+    }
+
+    // The approvals card is hidden until at least one proposal exists.
+    async function loadPublicTrades() {
+      const card = document.getElementById('publicTradesCard');
+      const el = document.getElementById('publicTrades');
+      if (!card || !el) return;
+      try {
+        const res = await api('/api/public/trades');
+        const proposals = Array.isArray(res.proposals) ? res.proposals : [];
+        if (!proposals.length) { card.style.display = 'none'; el.innerHTML = ''; return; }
+        card.style.display = '';
+        el.innerHTML = proposals.map(renderTradeProposal).join('');
+      } catch (err) {
+        card.style.display = 'none';
+      }
+    }
+
+    // Send the decision, then poll briefly: the workflow records the outcome
+    // and executes asynchronously, so the card settles on its own.
+    async function decideTrade(id, approved) {
+      try {
+        await api('/api/public/trades/' + encodeURIComponent(id) + '/decision', 'POST', { approved });
+      } catch (err) { /* the refreshed list shows the recorded state */ }
+      loadPublicTrades();
+      setTimeout(loadPublicTrades, 1500);
+      setTimeout(loadPublicTrades, 4000);
+    }
+
     // Render one tool call so the answer can be checked against what ran.
     // Collapsed by default; the summary line is the first line of the result.
     function renderToolTrace(trace) {
@@ -1359,9 +1434,11 @@ async function loadStats() {
         return '<div class="status-msg error" style="margin-top:0.5rem;">No tools were called. The answer below is not backed by Public.com data.</div>';
       }
       const rows = trace.map((t, i) => {
-        const badge = t.refused
-          ? '<span class="badge-failed">blocked</span>'
-          : (t.ok ? '<span class="badge-confirmed">ok</span>' : '<span class="badge-failed">error</span>');
+        const badge = t.proposed
+          ? '<span style="background:#b45309;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;">proposed</span>'
+          : t.refused
+            ? '<span class="badge-failed">blocked</span>'
+            : (t.ok ? '<span class="badge-confirmed">ok</span>' : '<span class="badge-failed">error</span>');
         const args = escapeHtml(JSON.stringify(t.args || {}));
         const body = escapeHtml(t.result || '');
         const summary = escapeHtml(t.summary || '');
@@ -1420,6 +1497,8 @@ async function loadStats() {
           // Inline the trace with the answer so a claim can be traced to a result.
           container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
             + renderToolTrace(trace) + '</div>';
+          // The answer may have created a trade proposal; surface it.
+          loadPublicTrades();
         }
       } catch (err) {
         const t = document.getElementById('publicThinking');
