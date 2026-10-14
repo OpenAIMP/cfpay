@@ -1226,3 +1226,53 @@ describe("a QA report uses one browser session, not two", () => {
     );
   });
 });
+
+describe("the Public trade-approval workflow stays wired", () => {
+  const agent = read("src/agent.ts");
+  const api = read("src/api.ts");
+  const workflow = read("src/trade-workflow.ts");
+  const index = read("src/index.ts");
+  const wrangler = read("wrangler.jsonc");
+  const html = read("public/index.html");
+
+  it("declares the workflow binding and exports the class", () => {
+    expect(wrangler).toContain('"binding": "TRADE_WORKFLOW"');
+    expect(wrangler).toContain('"class_name": "TradeWorkflow"');
+    expect(index).toContain('export { TradeWorkflow } from "./trade-workflow"');
+  });
+
+  it("waits for a human decision before any side effect", () => {
+    expect(workflow).toContain("waitForEvent");
+    expect(workflow).toContain("executeTradeProposal");
+    expect(workflow.indexOf("waitForEvent")).toBeLessThan(
+      workflow.indexOf("executeTradeProposal"),
+    );
+  });
+
+  it("turns an order-placing call into a proposal with its own workflow", () => {
+    expect(agent).toContain("proposeTrade");
+    expect(agent).toContain("runWorkflow(");
+    expect(agent).toContain('"TRADE_WORKFLOW"');
+    expect(agent).toContain("sendWorkflowEvent");
+  });
+
+  it("exposes the list and decision routes the card calls", () => {
+    expect(api).toContain('"/api/public/trades"');
+    expect(api).toContain('"/api/public/trades/:id/decision"');
+    expect(api).toContain("listTradeProposals");
+    expect(api).toContain("decideTradeProposal");
+  });
+
+  it("renders the approvals card with decision controls", () => {
+    expect(html).toContain('id="publicTradesCard"');
+    expect(html).toContain("loadPublicTrades");
+    expect(html).toContain("decideTrade");
+  });
+
+  it("keeps execution fail-closed behind approval and the master switch", () => {
+    const exec = agent.slice(agent.indexOf("async executeTradeProposal"));
+    expect(exec).toContain("PUBLIC_ALLOW_TRADING");
+    expect(exec).toContain('"executing"');
+    expect(exec).toContain("getPublicToken()");
+  });
+});

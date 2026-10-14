@@ -14,6 +14,12 @@ export interface Env {
   DASHBOARD_API_KEY: string;
   CfmailAgent: DurableObjectNamespace;
   /**
+   * Trade-approval workflow for the Public tab (src/trade-workflow.ts). A
+   * model-proposed order becomes a durable Workflow instance that waits for a
+   * human decision and only then executes. See TradeProposal below.
+   */
+  TRADE_WORKFLOW: Workflow;
+  /**
    * The payments capability, extracted from CfmailAgentSQLite into its own
    * Durable Object. Owns the ledger, Stripe checkout state and the replay
    * registries for both payment rails.
@@ -303,8 +309,59 @@ export interface ToolTrace {
   ok: boolean;
   /** Set when the call was blocked locally rather than by Public.com. */
   refused?: boolean;
+  /** Set when the call became a trade proposal awaiting human approval. */
+  proposed?: boolean;
   /** Full tool output, truncated for transport. */
   result: string;
   /** First non-empty line, for the collapsed view. */
   summary?: string;
+}
+
+/**
+ * One model-proposed order on the Public tab, and its lifecycle.
+ *
+ * The model never executes an order inside its own turn. When trading is
+ * enabled, an order-placing call is recorded as a proposal and a
+ * TradeWorkflow instance is started for it; the workflow waits for a human
+ * decision from the dashboard and only an approval lets the workflow's
+ * deterministic step execute the recorded call. Statuses:
+ *
+ *   pending   -> awaiting a decision (workflow parked in waitForEvent)
+ *   approved  -> a human approved; execution has not run yet
+ *   rejected  -> a human rejected; terminal, nothing executed
+ *   expired   -> no decision inside the window; terminal, nothing executed
+ *   executing -> the workflow claimed the execution step (double-place guard)
+ *   executed  -> the call ran against Public.com; `result` holds its output
+ *   failed    -> execution or workflow startup failed; `result` says why
+ */
+export type TradeProposalStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "executing"
+  | "executed"
+  | "failed";
+
+export interface TradeProposal {
+  id: string;
+  /** The TradeWorkflow instance waiting on this proposal, once started. */
+  workflowId: string | null;
+  /** The MCP tool that will run on approval, e.g. "place_order". */
+  tool: string;
+  /** The exact arguments that will run on approval. Shown to the approver. */
+  args: Record<string, unknown>;
+  /** The user question that prompted the model to propose this call. */
+  question: string;
+  status: TradeProposalStatus;
+  createdAt: string;
+  decidedAt?: string;
+  decisionNotes?: string;
+  /** Execution output, or the failure reason. Truncated for storage. */
+  result?: string;
+}
+
+/** Parameters handed to a TradeWorkflow instance: which proposal it owns. */
+export interface TradeWorkflowParams {
+  proposalId: string;
 }

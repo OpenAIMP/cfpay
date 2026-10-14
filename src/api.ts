@@ -326,6 +326,32 @@ export function createApp() {
     }
   });
 
+  // Trade proposals awaiting (or past) a human decision. Listing is open to
+  // any authenticated dashboard user; deciding is the approval action itself,
+  // so it goes through the agent, which delivers the decision to the waiting
+  // workflow. Execution happens in the workflow, never in these routes.
+  app.get("/api/public/trades", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const proposals = await agent.listTradeProposals();
+    return c.json({ proposals });
+  });
+
+  app.post("/api/public/trades/:id/decision", requireAuth, async (c) => {
+    const body = await c.req
+      .json<{ approved?: boolean; notes?: string }>()
+      .catch(() => ({}) as { approved?: boolean; notes?: string });
+    if (typeof body.approved !== "boolean") {
+      return c.json({ error: "approved (boolean) is required." }, 400);
+    }
+    const agent = getAgent(c);
+    try {
+      const proposal = await agent.decideTradeProposal(c.req.param("id"), body.approved, body.notes);
+      return c.json({ proposal });
+    } catch (err) {
+      return c.json({ error: String(err) }, 400);
+    }
+  });
+
   // The catalogue the picker renders. Read-only, no credentials involved.
   app.get("/api/public/models", requireAuth, async (c) => {
     const agent = getAgent(c);

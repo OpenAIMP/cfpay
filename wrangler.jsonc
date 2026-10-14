@@ -49,6 +49,13 @@
   { "tag": "v7", "new_sqlite_classes": ["QAAgent"] },
     { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] }
   ],
+  "workflows": [
+    {
+      "name": "trade-workflow",
+      "binding": "TRADE_WORKFLOW",
+      "class_name": "TradeWorkflow"
+    }
+  ],
   "send_email": [
     {
       "name": "EMAIL",

@@ -59,6 +59,7 @@ export { WebhookAgent } from "./webhook-agent";
 export { SlackAgent } from "./slack-agent";
 export { QAAgent } from "./qa-agent";
 export { ChatAgent } from "./chat-agent";
+export { TradeWorkflow } from "./trade-workflow";
 
 const app = createApp();
 
