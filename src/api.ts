@@ -310,7 +310,17 @@ export function createApp() {
     if (!token) return c.json({ error: "Not connected." }, 409);
     try {
       const tools = await listTools(token, {});
-      return c.json({ tools: tools.map((t) => ({ name: t.name, description: t.description || "" })) });
+      // Full definitions, not just names: the Public tab renders these as a
+      // grid (name, description, parameters from the input schema) so what
+      // each tool does - and what it takes - is readable in the UI, not only
+      // visible to the model.
+      return c.json({
+        tools: tools.map((t) => ({
+          name: t.name,
+          description: t.description || "",
+          inputSchema: t.inputSchema ?? null,
+        })),
+      });
     } catch (err) {
       return c.json({ error: String(err) }, 502);
     }
