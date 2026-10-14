@@ -1046,7 +1046,9 @@ export class QAAgent extends Think<Env> {
    *   1. With no PAYMENT-SIGNATURE, /api/process must answer 402 and advertise a
    *      well-formed challenge (version, accepts[], and a network/asset/amount
    *      per entry) - the challenge is what a real client pays against, so a
-   *      malformed one is a genuine outage.
+   *      malformed one is a genuine outage. x402 v2 carries the challenge
+   *      base64-encoded in the PAYMENT-REQUIRED header (this deployment);
+   *      v1 put it in the body. Both are read.
    *   2. With a syntactically invalid signature, it must still refuse rather
    *      than accept or 500.
    *   3. The request must not be processed: no success payload is returned.
@@ -1085,7 +1087,27 @@ export class QAAgent extends Think<Env> {
         detail: `status=${challengeRes.status}`,
       });
 
-      const accepts = challengeBody?.accepts;
+      // x402 v2 carries the challenge base64-encoded in the PAYMENT-REQUIRED
+      // header; v1 put it in the body. This deployment is v2 — its body is
+      // just {"error":"Payment required"} — so read the header first and fall
+      // back to the body. (Reading only the body false-failed this check
+      // against a well-formed v2 challenge.)
+      let challenge: any = null;
+      let challengeSource = "body";
+      const challengeHeader =
+        challengeRes.headers.get("payment-required") ??
+        challengeRes.headers.get("x-payment-required");
+      if (challengeHeader) {
+        try {
+          challenge = JSON.parse(atob(challengeHeader));
+          challengeSource = "PAYMENT-REQUIRED header";
+        } catch {
+          challenge = null;
+        }
+      }
+      if (!challenge) challenge = challengeBody;
+
+      const accepts = challenge?.accepts;
       const wellFormed =
         Array.isArray(accepts) &&
         accepts.length > 0 &&
@@ -1096,10 +1118,10 @@ export class QAAgent extends Think<Env> {
         name: "challenge advertises at least one payable option",
         passed: wellFormed,
         detail: wellFormed
-          ? `${accepts.length} option(s), networks: ${accepts
+          ? `${accepts.length} option(s) via ${challengeSource}, networks: ${accepts
               .map((a: any) => a.network)
               .join(", ")}`
-          : `malformed or absent accepts: ${JSON.stringify(challengeBody).slice(0, 200)}`,
+          : `malformed or absent accepts (checked ${challengeSource}): ${JSON.stringify(challenge).slice(0, 200)}`,
       });
 
       // 3. A 402 must not leak a success result.
