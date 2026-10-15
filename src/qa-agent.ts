@@ -76,6 +76,43 @@ export const UX_RULES = {
 };
 
 /**
+ * A per-target rule profile for the generalized audit (issue #94): every
+ * field is optional and merges over UX_RULES. The ignore list is how a
+ * target declares legitimate exceptions (a cookie banner's small close
+ * button, say) so the findings stay signal, and expectedButtonBg is a
+ * declared design token the pages are held to, beyond agreeing with each
+ * other.
+ */
+export interface UxRuleProfile {
+  contrastNormal?: number;
+  contrastLarge?: number;
+  minTargetPx?: number;
+  ignoreSelectors?: string[];
+  expectedButtonBg?: string;
+}
+
+/**
+ * A target spec for qaUxAuditUrl (issue #94): what to audit, how to get
+ * in, when a page counts as settled, and which rules apply. Credentials
+ * are referenced by the caller (their own session values), never stored.
+ */
+export interface UxAuditSpec {
+  /** Absolute URLs to audit; all must share the first page's origin. */
+  pages: string[];
+  auth?: {
+    mode: "none" | "localStorage" | "headers";
+    /** Seeded on the origin before the page loop (mode: localStorage). */
+    localStorage?: Record<string, string>;
+    /** Sent on every request of the session (mode: headers). */
+    headers?: Record<string, string>;
+  };
+  /** Audit a page once this selector exists; default: readyState complete. */
+  settleSelector?: string;
+  settleTimeoutMs?: number;
+  rules?: UxRuleProfile;
+}
+
+/**
  * The in-page UX probe for qaUxAudit: one evaluate that measures everything
  * the audit's rules need from the currently rendered view and returns it as
  * data. The audit's verdicts are computed from this data in the agent, so
@@ -83,11 +120,22 @@ export const UX_RULES = {
  * literals (thresholds arrive via interpolation) and without optional
  * chaining in hot paths, matching the other in-page probes in this file.
  */
-function uxProbeExpression(): string {
+function uxProbeExpression(profile?: UxRuleProfile): string {
+  const normal = profile?.contrastNormal ?? UX_RULES.contrastNormal;
+  const large = profile?.contrastLarge ?? UX_RULES.contrastLarge;
+  const minPx = profile?.minTargetPx ?? UX_RULES.minTargetPx;
+  const ignored = profile?.ignoreSelectors ?? [];
   return `(() => {
-    const NORMAL = ${UX_RULES.contrastNormal};
-    const LARGE = ${UX_RULES.contrastLarge};
-    const MINPX = ${UX_RULES.minTargetPx};
+    const NORMAL = ${normal};
+    const LARGE = ${large};
+    const MINPX = ${minPx};
+    const IGNORED = ${JSON.stringify(ignored)};
+    const isIgnored = (el) => {
+      for (const sel of IGNORED) {
+        try { if (el.closest(sel)) return true; } catch (e) { /* a bad selector in a profile skips itself */ }
+      }
+      return false;
+    };
     const vis = (el) => {
       const r = el.getBoundingClientRect();
       const st = getComputedStyle(el);
@@ -125,6 +173,7 @@ function uxProbeExpression(): string {
     const contrastBad = [];
     for (const el of document.querySelectorAll("body *")) {
       if (!vis(el)) continue;
+      if (isIgnored(el)) continue;
       let own = false;
       for (const nd of el.childNodes) {
         if (nd.nodeType === 3 && nd.textContent.trim().length > 0) { own = true; break; }
@@ -146,6 +195,7 @@ function uxProbeExpression(): string {
     const interactive = Array.from(document.querySelectorAll('a, button, input, select, textarea, [data-tab], [role="button"]')).filter(vis);
     const targetBad = [];
     for (const el of interactive) {
+      if (isIgnored(el)) continue;
       const r = el.getBoundingClientRect();
       if ((r.width < MINPX || r.height < MINPX) && targetBad.length < 24) {
         targetBad.push({ el: describe(el), w: Math.round(r.width), h: Math.round(r.height) });
@@ -154,7 +204,7 @@ function uxProbeExpression(): string {
     const headings = Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6")).filter(vis).map((h) => parseInt(h.tagName.slice(1), 10));
     const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
     const overlaps = [];
-    const rects = interactive.slice(0, 80).map((el) => ({ d: describe(el), r: el.getBoundingClientRect() }));
+    const rects = interactive.filter((el) => !isIgnored(el)).slice(0, 80).map((el) => ({ d: describe(el), r: el.getBoundingClientRect() }));
     for (let i = 0; i < rects.length && overlaps.length < 8; i++) {
       for (let j = i + 1; j < rects.length && overlaps.length < 8; j++) {
         const a = rects[i].r;
@@ -165,13 +215,144 @@ function uxProbeExpression(): string {
         if (smaller > 0 && (ix * iy) / smaller > 0.25) overlaps.push(rects[i].d + " overlaps " + rects[j].d);
       }
     }
-    const imgBad = Array.from(document.querySelectorAll("img")).filter((im) => im.getAttribute("alt") === null).map((im) => (im.getAttribute("src") || "img").slice(-40));
+    const imgBad = Array.from(document.querySelectorAll("img")).filter((im) => im.getAttribute("alt") === null && !isIgnored(im)).map((im) => (im.getAttribute("src") || "img").slice(-40));
     const firstBtn = Array.from(document.querySelectorAll(".btn, button")).filter(vis)[0];
     const btnStyle = firstBtn ? (() => { const st = getComputedStyle(firstBtn); return { bg: st.backgroundColor, color: st.color, fontSize: st.fontSize }; })() : null;
     const firstH1 = Array.from(document.querySelectorAll("h1")).filter(vis)[0];
     const h1Style = firstH1 ? (() => { const st = getComputedStyle(firstH1); return { fontFamily: st.fontFamily, fontSize: st.fontSize }; })() : null;
     return { textChecked: textChecked, contrastBad: contrastBad, targetChecked: interactive.length, targetBad: targetBad, headings: headings, overflowPx: overflowPx, overlaps: overlaps, imgBad: imgBad, btnStyle: btnStyle, h1Style: h1Style };
   })()`;
+}
+
+/**
+ * Turn per-page probe measurements into findings for the generalized
+ * audit (issue #94). Same rules as qaUxAudit computes for the dashboard —
+ * contrast, target size, heading hierarchy, button-style consistency,
+ * layout integrity, image alt — plus design-token conformance when the
+ * profile declares an expected primary-button background. Pure: same
+ * measurements in, same findings out.
+ */
+function summarizeUxProbes(
+  probes: { view: string; data: any }[],
+  rules: { minTargetPx: number; expectedButtonBg?: string },
+): { name: string; passed: boolean; detail: string }[] {
+  const findings: { name: string; passed: boolean; detail: string }[] = [];
+  const summarize = (items: string[]): string =>
+    items.slice(0, 3).join("; ") + (items.length > 3 ? `; +${items.length - 3} more` : "");
+
+  const contrastBad = probes.flatMap((p) =>
+    (p.data.contrastBad ?? []).map((b: any) => `${p.view}: ${b.el} at ${b.ratio}:1 (needs ${b.need}:1)`),
+  );
+  const textChecked = probes.reduce((n, p) => n + (p.data.textChecked ?? 0), 0);
+  findings.push({
+    name: "Contrast (WCAG AA)",
+    passed: contrastBad.length === 0,
+    detail:
+      contrastBad.length === 0
+        ? `${textChecked} text elements across ${probes.length} pages meet AA ratios.`
+        : summarize(contrastBad),
+  });
+
+  const targetBad = probes.flatMap((p) =>
+    (p.data.targetBad ?? []).map((b: any) => `${p.view}: ${b.el} is ${b.w}x${b.h}px`),
+  );
+  const targetChecked = probes.reduce((n, p) => n + (p.data.targetChecked ?? 0), 0);
+  findings.push({
+    name: "Target size",
+    passed: targetBad.length === 0,
+    detail:
+      targetBad.length === 0
+        ? `${targetChecked} interactive elements across ${probes.length} pages are at least ${rules.minTargetPx}px in both dimensions.`
+        : summarize(targetBad),
+  });
+
+  const headingIssues: string[] = [];
+  for (const p of probes) {
+    const levels: number[] = p.data.headings ?? [];
+    const h1s = levels.filter((l) => l === 1).length;
+    if (h1s !== 1) headingIssues.push(`${p.view}: ${h1s} visible h1 elements (expected exactly 1)`);
+    for (let i = 1; i < levels.length; i++) {
+      if (levels[i] > levels[i - 1] + 1) {
+        headingIssues.push(`${p.view}: heading level skips h${levels[i - 1]} to h${levels[i]}`);
+      }
+    }
+  }
+  findings.push({
+    name: "Heading hierarchy",
+    passed: headingIssues.length === 0,
+    detail:
+      headingIssues.length === 0
+        ? `Exactly one h1 and no skipped levels across ${probes.length} pages.`
+        : summarize(headingIssues),
+  });
+
+  const sigOf = (p: any): string | null =>
+    p.data.btnStyle
+      ? `${p.data.btnStyle.bg}|${p.data.btnStyle.color}|${p.data.btnStyle.fontSize}`
+      : null;
+  const sigs = probes
+    .map((p) => ({ view: p.view, sig: sigOf(p) }))
+    .filter((x) => x.sig !== null);
+  const distinctSigs = new Set(sigs.map((x) => x.sig));
+  findings.push({
+    name: "Style consistency",
+    passed: sigs.length > 0 && distinctSigs.size === 1,
+    detail:
+      sigs.length === 0
+        ? "No primary button was visible on any page to compare."
+        : distinctSigs.size === 1
+          ? `Primary button style is identical across ${sigs.length} pages.`
+          : `Primary button style differs across pages (${sigs.map((x) => x.view).join(", ")}).`,
+  });
+
+  const layoutIssues: string[] = [
+    ...probes
+      .filter((p) => (p.data.overflowPx ?? 0) > 0)
+      .map((p) => `${p.view}: horizontal overflow of ${p.data.overflowPx}px`),
+    ...probes.flatMap((p) => (p.data.overlaps ?? []).map((o: string) => `${p.view}: ${o}`)),
+  ];
+  findings.push({
+    name: "Layout integrity",
+    passed: layoutIssues.length === 0,
+    detail:
+      layoutIssues.length === 0
+        ? "No horizontal overflow and no overlapping interactive elements on any page."
+        : summarize(layoutIssues),
+  });
+
+  const imgBad = probes.flatMap((p) =>
+    (p.data.imgBad ?? []).map((src: string) => `${p.view}: img ${src} has no alt attribute`),
+  );
+  findings.push({
+    name: "Image alt text",
+    passed: imgBad.length === 0,
+    detail:
+      imgBad.length === 0
+        ? "Every rendered image carries an alt attribute."
+        : summarize(imgBad),
+  });
+
+  if (rules.expectedButtonBg) {
+    const expected = rules.expectedButtonBg.trim().toLowerCase();
+    const offenders = probes
+      .filter(
+        (p) => !p.data.btnStyle || p.data.btnStyle.bg.trim().toLowerCase() !== expected,
+      )
+      .map(
+        (p) =>
+          `${p.view}: ${p.data.btnStyle ? p.data.btnStyle.bg : "no primary button found"}`,
+      );
+    findings.push({
+      name: "Design token conformance",
+      passed: offenders.length === 0,
+      detail:
+        offenders.length === 0
+          ? `Primary button background matches the declared token on all ${probes.length} pages.`
+          : summarize(offenders),
+    });
+  }
+
+  return findings;
 }
 
 /**
@@ -1165,6 +1346,203 @@ export class QAAgent extends Think<Env> {
     );
 
     return { ok: findings.every((f) => f.passed), checks: findings };
+  }
+
+  /**
+   * RPC: the generalized UX audit (issue #94, step 1). Audits the pages of
+   * one origin named by a target spec — public pages, localStorage-seeded
+   * apps, or header-authed sessions — measuring each settled page with the
+   * same probe the dashboard audit uses and judging it against the spec's
+   * rule profile (UX_RULES by default). qaUxAudit above remains the cfpay
+   * preset: it knows this app's login and tab flow, which a generic spec
+   * cannot; the probe and the rules are shared.
+   *
+   * Auth values in the spec are the caller's own session material: they
+   * are applied to the browser session and never stored or logged.
+   */
+  @callable()
+  async qaUxAuditUrl(
+    spec: UxAuditSpec,
+    runId?: string,
+  ): Promise<{ ok: boolean; checks: { name: string; passed: boolean; detail: string }[]; pagesAudited: string[]; error?: string }> {
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return { ok: false, checks: [], pagesAudited: [], error: "Browser binding not configured" };
+    }
+    const pagesIn = Array.isArray(spec?.pages)
+      ? spec.pages.filter((u): u is string => typeof u === "string" && u.length > 0)
+      : [];
+    if (pagesIn.length === 0) {
+      return { ok: false, checks: [], pagesAudited: [], error: "spec.pages must list at least one URL" };
+    }
+    let origin: string;
+    try {
+      origin = new URL(pagesIn[0]).origin;
+    } catch {
+      return { ok: false, checks: [], pagesAudited: [], error: `Invalid URL: ${pagesIn[0]}` };
+    }
+    for (const u of pagesIn) {
+      let o: string;
+      try {
+        o = new URL(u).origin;
+      } catch {
+        return { ok: false, checks: [], pagesAudited: [], error: `Invalid URL: ${u}` };
+      }
+      if (o !== origin) {
+        return {
+          ok: false,
+          checks: [],
+          pagesAudited: [],
+          error: `All pages must share one origin (${origin}); ${u} does not`,
+        };
+      }
+    }
+    // A runaway page list would burn the day's browser minutes; cap it.
+    const pages = pagesIn.slice(0, 8);
+    const rules = {
+      contrastNormal: spec.rules?.contrastNormal ?? UX_RULES.contrastNormal,
+      contrastLarge: spec.rules?.contrastLarge ?? UX_RULES.contrastLarge,
+      minTargetPx: spec.rules?.minTargetPx ?? UX_RULES.minTargetPx,
+      ignoreSelectors: spec.rules?.ignoreSelectors ?? [],
+      expectedButtonBg: spec.rules?.expectedButtonBg,
+    };
+    this.emitLive(runId, { kind: "step", label: `Running UX audit of ${origin}` });
+
+    let browser: CdpLike | null = null;
+    const probes: { view: string; data: any }[] = [];
+    const failures: string[] = [];
+    try {
+      const cdp = await this.openBrowserSession(env);
+      browser = cdp;
+      const { targetId } = (await cdp.send("Target.createTarget", {
+        url: "about:blank",
+      })) as { targetId: string };
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+
+        if (spec.auth?.mode === "headers" && spec.auth.headers) {
+          await cdp.send("Network.enable", {}, { sessionId }).catch(() => {});
+          await cdp
+            .send("Network.setExtraHTTPHeaders", { headers: spec.auth.headers }, { sessionId })
+            .catch(() => {});
+        }
+
+        let seeded = false;
+        for (const pageUrl of pages) {
+          const label = (() => {
+            try {
+              const u = new URL(pageUrl);
+              return u.pathname === "/" ? u.origin : u.origin + u.pathname;
+            } catch {
+              return pageUrl;
+            }
+          })();
+          this.emitLive(runId, { kind: "step", label: `Auditing ${label}` });
+          try {
+            await cdp.send("Page.navigate", { url: pageUrl }, { sessionId });
+            if (!seeded && spec.auth?.mode === "localStorage" && spec.auth.localStorage) {
+              await new Promise((r) => setTimeout(r, 1500));
+              await cdp.send(
+                "Runtime.evaluate",
+                {
+                  expression: `(() => { const items = ${JSON.stringify(spec.auth.localStorage)}; for (const k of Object.keys(items)) localStorage.setItem(k, items[k]); })()`,
+                },
+                { sessionId },
+              );
+              seeded = true;
+              await cdp.send("Page.navigate", { url: pageUrl }, { sessionId });
+            }
+
+            // Settle: the caller's selector, else readyState complete.
+            const settleTimeout = Math.min(Math.max(spec.settleTimeoutMs ?? 10000, 1000), 30000);
+            const deadline = Date.now() + settleTimeout;
+            for (;;) {
+              const settleExpr = spec.settleSelector
+                ? `!!document.querySelector(${JSON.stringify(spec.settleSelector)})`
+                : `document.readyState === "complete"`;
+              const st = (await cdp
+                .send("Runtime.evaluate", { expression: settleExpr, returnByValue: true }, { sessionId })
+                .catch(() => null)) as { result?: { value?: boolean } } | null;
+              if (st?.result?.value === true) break;
+              if (Date.now() > deadline) break;
+              await new Promise((r) => setTimeout(r, 250));
+            }
+            await new Promise((r) => setTimeout(r, 500));
+
+            const ux = (await cdp.send(
+              "Runtime.evaluate",
+              { expression: uxProbeExpression(rules), returnByValue: true },
+              { sessionId },
+            )) as { result?: { value?: any } };
+            if (!ux.result?.value) {
+              failures.push(`${label}: probe returned no data`);
+              continue;
+            }
+            probes.push({ view: label, data: ux.result.value });
+
+            try {
+              const { data } = (await cdp.send(
+                "Page.captureScreenshot",
+                { format: "png" },
+                { sessionId },
+              )) as { data?: string };
+              if (data) {
+                this.emitLive(runId, {
+                  kind: "screenshot",
+                  label: `${label} view`,
+                  image: `data:image/png;base64,${data}`,
+                });
+              }
+            } catch {
+              // Evidence for the panel, never the audit itself.
+            }
+          } catch (err) {
+            failures.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      } finally {
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        checks: [],
+        pagesAudited: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      closeConnectionQuietly(browser);
+    }
+
+    if (probes.length === 0) {
+      return {
+        ok: false,
+        checks: [],
+        pagesAudited: [],
+        error: `No page could be measured. ${failures.join("; ")}`,
+      };
+    }
+
+    const findings: { name: string; passed: boolean; detail: string }[] = [];
+    const addFinding = (name: string, passed: boolean, detail: string) => {
+      findings.push({ name, passed, detail });
+      this.emitLive(runId, { kind: "result", label: name, ok: passed, detail });
+    };
+    addFinding(
+      "Coverage",
+      failures.length === 0,
+      failures.length === 0
+        ? `${probes.length}/${pages.length} pages measured.`
+        : `${probes.length}/${pages.length} pages measured; failed: ${failures.join("; ")}`,
+    );
+    for (const f of summarizeUxProbes(probes, rules)) {
+      addFinding(f.name, f.passed, f.detail);
+    }
+    return {
+      ok: findings.every((f) => f.passed),
+      checks: findings,
+      pagesAudited: probes.map((p) => p.view),
+    };
   }
 
   /**
