@@ -42,6 +42,12 @@ import {
 import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
 import {
+  AUTOPILOT_MAX_RUNS_KEPT,
+  AUTOPILOT_STEP_TOOL_BUDGET,
+  runAutopilotPipeline,
+} from "./public-autopilot";
+import type { AutopilotRun } from "./public-autopilot";
+import {
   computeCost,
   contextWindowFor,
   defaultModelId,
@@ -1995,6 +2001,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     tools: McpTool[],
     session: McpSession,
     model?: string | null,
+    options?: { maxToolCalls?: number },
   ): Promise<{
     answer: string;
     trace: ToolTrace[];
@@ -2046,7 +2053,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     // Bounded by tool calls, not by rounds: a round may make several calls, and 
     // the failure this guards against is unbounded backtracking, which shows up
     // as call count rather than round count.
-    const MAX_TOOL_CALLS = 12;
+    const MAX_TOOL_CALLS = options?.maxToolCalls ?? 12;
     const PRUNE_AFTER_CALLS = 4;
     // Built once: the definitions do not change between rounds.
     const toolSpecs = this.toAiToolSpecs(tools);
@@ -2257,6 +2264,61 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * it makes the model report that the provided function definitions do not
    * cover the task, and it then avoids the tools.
    */
+  private readAutopilotRuns(): AutopilotRun[] {
+    const state = this.ensureState() as any;
+    return Array.isArray(state.autopilotRuns) ? (state.autopilotRuns as AutopilotRun[]) : [];
+  }
+
+  private async writeAutopilotRun(run: AutopilotRun): Promise<void> {
+    const state = this.ensureState() as any;
+    const list = this.readAutopilotRuns().filter((r) => r.id !== run.id);
+    list.unshift(run);
+    this.setState({ ...state, autopilotRuns: list.slice(0, AUTOPILOT_MAX_RUNS_KEPT) });
+  }
+
+  /** Autopilot runs, newest first — the dashboard's run history reads these. */
+  async listAutopilotRuns(): Promise<AutopilotRun[]> {
+    return this.readAutopilotRuns();
+  }
+
+  /**
+   * Goal-oriented autopilot (issue #107): Goal → Planner → Task Queue →
+   * Executor → Verifier. The pipeline lives in src/public-autopilot.ts;
+   * this wrapper injects the agent-owned pieces — the raw model call, the
+   * reactive loop as the step executor (so trade safety carries over: an
+   * order-placing call inside a step still becomes an approval-gated
+   * proposal), and run persistence in agent state.
+   */
+  async runAutopilot(
+    token: string,
+    goal: string,
+    tools: McpTool[],
+    session: McpSession,
+    model?: string | null,
+  ): Promise<{
+    answer: string;
+    trace: ToolTrace[];
+    model: string;
+    cost: UsageCost | null;
+    autopilot: AutopilotRun;
+  }> {
+    const modelId = resolveModelId(model);
+    return runAutopilotPipeline(
+      {
+        aiRun: (mid, messages, maxTokens) =>
+          this.env.AI.run(mid as never, { messages, max_tokens: maxTokens } as never),
+        runStep: (question) =>
+          this.answerInstrumentQuestion(token, question, tools, session, modelId, {
+            maxToolCalls: AUTOPILOT_STEP_TOOL_BUDGET,
+          }),
+        save: (run) => this.writeAutopilotRun(run),
+      },
+      goal,
+      tools.map((t) => t.name),
+      modelId,
+    );
+  }
+
   /**
    * Run one capability agent as a tool.
    *

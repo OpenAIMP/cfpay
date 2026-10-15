@@ -1411,3 +1411,45 @@ describe("the UX audit's self-test stays wired (post-deploy smoke)", () => {
     expect(smoke).toContain("planted-tiny");
   });
 });
+
+describe("the Public autopilot stays wired (issue #107)", () => {
+  const agent = read("src/agent.ts");
+  const api = read("src/api.ts");
+  const idx = read("public/index.html");
+  const ap = read("src/public-autopilot.ts");
+
+  it("the host agent injects its pieces into the pipeline", () => {
+    expect(agent).toContain("async runAutopilot(");
+    expect(agent).toContain("runAutopilotPipeline(");
+    expect(agent).toContain("maxToolCalls: AUTOPILOT_STEP_TOOL_BUDGET");
+    expect(agent).toContain("options?.maxToolCalls ?? 12");
+  });
+
+  it("the pipeline stages live in the contracts module", () => {
+    expect(ap).toContain("export async function runAutopilotPipeline(");
+    expect(ap).toContain("AUTOPILOT_PLANNER_SYSTEM");
+    expect(ap).toContain("AUTOPILOT_VERIFIER_SYSTEM");
+    expect(ap).toContain("AUTOPILOT_SYNTHESIS_SYSTEM");
+    expect(ap).toContain("parseVerification(verifyText)");
+    expect(ap).toContain("export const AUTOPILOT_MAX_STEPS = 6");
+    expect(ap).toContain("export function parseVerification(");
+  });
+
+  it("runs persist in agent state and list through the API", () => {
+    expect(agent).toContain("autopilotRuns");
+    expect(agent).toContain("async listAutopilotRuns(");
+    expect(api).toContain('"/api/public/autopilot-runs"');
+    expect(api).toContain("agent.listAutopilotRuns()");
+  });
+
+  it("the chat route branches on the autopilot flag", () => {
+    expect(api).toContain("body.autopilot");
+    expect(api).toContain("agent.runAutopilot(");
+  });
+
+  it("the Public tab carries the toggle and the run renderer", () => {
+    expect(idx).toContain('id="publicAutopilot"');
+    expect(idx).toContain("renderAutopilotRun(res.autopilot)");
+    expect(idx).toContain("autopilot: useAutopilot");
+  });
+});
