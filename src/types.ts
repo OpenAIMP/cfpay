@@ -1,5 +1,7 @@
 // Shared types for the CFmail Agent
 
+import type { AutopilotRun } from "./public-autopilot";
+
 export interface Env {
   EMAIL: SendEmail;
   EMAIL_DOMAIN: string;
@@ -276,6 +278,12 @@ export interface AgentState {
    * unknown id falls back to the configured default rather than erroring.
    */
   publicModel?: string;
+  /**
+   * Public.com autopilot runs (issue #107), newest first, capped at
+   * AUTOPILOT_MAX_RUNS_KEPT. Each run's transcript is also recorded in the
+   * Sessions store (agents/sessions) under the id `autopilot-<runId>`.
+   */
+  autopilotRuns?: AutopilotRun[];
 }
 
 export interface ChatMessage {
