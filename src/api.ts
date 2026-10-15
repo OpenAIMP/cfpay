@@ -482,18 +482,23 @@ export function createApp() {
     // references Env) against Env (which references QA_AGENT) until it reports TS2589.
     const stub = await getAgentByName(c.env.QA_AGENT as any, "qa");
     return stub as unknown as {
-      qaCheck(url: string, checks?: { textContains?: string[]; apiKey?: string }): Promise<unknown>;
-      qaDashboard(apiKey?: string): Promise<unknown>;
+      qaCheck(url: string, checks?: { textContains?: string[]; apiKey?: string; runId?: string }): Promise<unknown>;
+      qaDashboard(apiKey?: string, runId?: string): Promise<unknown>;
       qaDashboardTabs(
         apiKey: string,
+        sharedConnection?: unknown,
+        captureScreenshots?: boolean,
+        runId?: string,
       ): Promise<{ ok: boolean; tabs: { name: string; passed: boolean; detail: string }[]; error?: string }>;
       qaAndEmailReport(
         apiKey: string,
         toEmail: string,
+        runId?: string,
       ): Promise<{ ok: boolean; emailed: boolean; tabs: unknown[]; error?: string }>;
       testEmailAttachmentUI(
         apiKey: string,
         toEmail: string,
+        runId?: string,
       ): Promise<{ ok: boolean; detail: string; error?: string }>;
       qaPaymentFlow(origin?: string): Promise<{
         ok: boolean;
@@ -511,6 +516,7 @@ export function createApp() {
       qaFullSuite(
         apiKey: string,
         toEmail?: string,
+        runId?: string,
       ): Promise<{
         ok: boolean;
         checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[];
@@ -1146,7 +1152,8 @@ export function createApp() {
     const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const apiKey = presented || bearer || undefined;
     const qaAgent = await getQAAgent(c);
-    const result = await qaAgent.qaCheck(url, { ...body.checks, apiKey });
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const result = await qaAgent.qaCheck(url, { ...body.checks, apiKey, ...(runId ? { runId } : {}) });
     return c.json(result);
   });
 
@@ -1159,7 +1166,9 @@ export function createApp() {
     const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const apiKey = presented || bearer || undefined;
     const qaAgent = await getQAAgent(c);
-    const result = await qaAgent.qaDashboard(apiKey);
+    const body = await c.req.json().catch(() => ({}));
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const result = await qaAgent.qaDashboard(apiKey, runId);
     return c.json(result);
   });
 
@@ -1180,7 +1189,9 @@ export function createApp() {
         400,
       );
     }
-    const result = await qaAgent.qaDashboardTabs(apiKey);
+    const body = await c.req.json().catch(() => ({}));
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const result = await qaAgent.qaDashboardTabs(apiKey, undefined, undefined, runId);
     return c.json(result);
   });
 
@@ -1200,7 +1211,8 @@ export function createApp() {
       return c.json({ error: "API key required" }, 401);
     }
     const qaAgent = await getQAAgent(c);
-    const result = await qaAgent.qaAndEmailReport(apiKey, toEmail);
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const result = await qaAgent.qaAndEmailReport(apiKey, toEmail, runId);
     return jsonOr500(c, result, "qa/email-report");
   });
 
@@ -1223,7 +1235,8 @@ export function createApp() {
       return c.json({ error: "API key required" }, 401);
     }
     const qaAgent = await getQAAgent(c);
-    const result = await qaAgent.testEmailAttachmentUI(apiKey, toEmail);
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const result = await qaAgent.testEmailAttachmentUI(apiKey, toEmail, runId);
     return c.json(result);
   });
 
@@ -1261,7 +1274,8 @@ export function createApp() {
       return c.json({ error: "API key required" }, 401);
     }
     const qaAgent = await getQAAgent(c);
-    const result = await qaAgent.qaFullSuite(apiKey, toEmail);
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const result = await qaAgent.qaFullSuite(apiKey, toEmail, runId);
     return c.json(result);
   });
 
