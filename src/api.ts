@@ -494,6 +494,10 @@ export function createApp() {
         apiKey: string,
         runId?: string,
       ): Promise<{ ok: boolean; checks: { name: string; passed: boolean; detail: string }[]; error?: string }>;
+      qaUxAuditUrl(
+        spec: any,
+        runId?: string,
+      ): Promise<{ ok: boolean; checks: { name: string; passed: boolean; detail: string }[]; pagesAudited: string[]; error?: string }>;
       qaAndEmailReport(
         apiKey: string,
         toEmail: string,
@@ -1217,6 +1221,25 @@ export function createApp() {
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaUxAudit(apiKey, runId);
+    return c.json(result);
+  });
+
+  // Generalized UX audit (issue #94, step 1): audit any single-origin
+  // target from a spec in the body — pages, auth mode, settle rule, rule
+  // profile. Auth values in the spec are the caller's own session
+  // material for the target; they are passed to the agent and not stored.
+  app.post("/api/dashboard/qa/ux-audit-url", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const spec = body.spec;
+    if (!spec || !Array.isArray(spec.pages) || spec.pages.length === 0) {
+      return c.json(
+        { error: "Body must carry spec.pages: at least one URL, all on one origin." },
+        400,
+      );
+    }
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaUxAuditUrl(spec, runId);
     return c.json(result);
   });
 
