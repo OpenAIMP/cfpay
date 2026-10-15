@@ -1369,6 +1369,9 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(api).toContain("qaUxAuditUrl(spec, runId)");
     expect(html).toContain("runQAUxUrl");
     expect(html).toContain('id="qaUxUrl"');
+    // The Audit URL box opens on the fixture page: one click is the
+    // audit's self-test, with a known-correct expected result.
+    expect(html).toContain('value="https://pay.openaimp.com/qa-fixture.html"');
   });
 });
 
