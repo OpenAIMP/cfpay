@@ -1417,6 +1417,8 @@ describe("the Public autopilot stays wired (issue #107)", () => {
   const api = read("src/api.ts");
   const idx = read("public/index.html");
   const ap = read("src/public-autopilot.ts");
+  const types = read("src/types.ts");
+  const wrangler = read("wrangler.jsonc");
 
   it("the host agent injects its pieces into the pipeline", () => {
     expect(agent).toContain("async runAutopilot(");
@@ -1440,6 +1442,23 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(agent).toContain("async listAutopilotRuns(");
     expect(api).toContain('"/api/public/autopilot-runs"');
     expect(api).toContain("agent.listAutopilotRuns()");
+  });
+
+  it("runs use typed agent state with a declared default (state lifecycle)", () => {
+    expect(types).toContain("autopilotRuns?: AutopilotRun[]");
+    expect(agent).toContain("autopilotRuns: []");
+  });
+
+  it("run transcripts record into the Sessions store (sessions lifecycle)", () => {
+    expect(ap).toContain("export async function recordRunToSession(");
+    expect(ap).toContain('sessions.session(autopilotSessionId(run.id))');
+    expect(agent).toContain("recordRunToSession(this.sessions, run)");
+    expect(api).toContain('"/api/public/autopilot-runs/:id/session"');
+    expect(api).toContain("agent.getAutopilotRunSession(");
+  });
+
+  it("agent tracing is enabled in the Worker config (observability)", () => {
+    expect(wrangler).toMatch(/"traces":\s*{\s*"enabled": true/);
   });
 
   it("the chat route branches on the autopilot flag", () => {
