@@ -15,8 +15,11 @@
 const BASE_URL = (process.env.BASE_URL || "https://pay.openaimp.com").replace(/\/$/, "");
 const API_KEY = process.env.DASHBOARD_API_KEY || "";
 const TEST_EMAIL = process.env.QA_TEST_EMAIL || "";
+// The attachment check is part of the suite and runs by default. It sends a
+// real email, so QA_RUN_ATTACHMENT_CHECK=false remains as an explicit
+// off-switch — included unless deliberately disabled (Mubasher, 2026-10-15).
 const RUN_ATTACHMENT =
-  String(process.env.QA_RUN_ATTACHMENT_CHECK || "").toLowerCase() === "true";
+  String(process.env.QA_RUN_ATTACHMENT_CHECK || "").toLowerCase() !== "false";
 
 const results = [];
 let failed = 0;
@@ -198,9 +201,10 @@ async function main() {
     record("UX audit catches the fixture's planted violations", false, err.message);
   }
 
-  // 7. The attachment check SENDS REAL MAIL, so it is opt-in and off by default.
+  // 7. Attachment check: drives the real Send Email form end to end and sends
+  // a real email to QA_TEST_EMAIL. Runs by default; see RUN_ATTACHMENT above.
   if (!RUN_ATTACHMENT) {
-    skip("send-email form with attachment", 'QA_RUN_ATTACHMENT_CHECK is not "true"');
+    skip("send-email form with attachment", 'QA_RUN_ATTACHMENT_CHECK is "false"');
   } else if (!TEST_EMAIL) {
     skip("send-email form with attachment", "QA_TEST_EMAIL is not set");
   } else {
