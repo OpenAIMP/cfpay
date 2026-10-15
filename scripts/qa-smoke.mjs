@@ -20,6 +20,9 @@ const TEST_EMAIL = process.env.QA_TEST_EMAIL || "";
 // off-switch — included unless deliberately disabled (Mubasher, 2026-10-15).
 const RUN_ATTACHMENT =
   String(process.env.QA_RUN_ATTACHMENT_CHECK || "").toLowerCase() !== "false";
+// Same default for the report email (section 8): included unless disabled.
+const RUN_REPORT =
+  String(process.env.QA_RUN_REPORT_CHECK || "").toLowerCase() !== "false";
 
 const results = [];
 let failed = 0;
@@ -219,6 +222,33 @@ async function main() {
       );
     } catch (err) {
       record("send-email form with attachment", false, err.message);
+    }
+  }
+
+  // 8. The QA report email: the tab check WITH screenshots, emailed as the
+  // 4-PNG report - the same email the dashboard's Email QA Report button
+  // sends, and the report of record for this automated run. (Section 7 is
+  // only a form probe; this is the suite's actual report.) Runs by default;
+  // QA_RUN_REPORT_CHECK=false disables it.
+  if (!RUN_REPORT) {
+    skip("QA report email with screenshots", 'QA_RUN_REPORT_CHECK is "false"');
+  } else if (!TEST_EMAIL) {
+    skip("QA report email with screenshots", "QA_TEST_EMAIL is not set");
+  } else {
+    try {
+      const { status, json } = await post("/api/dashboard/qa/email-report", {
+        toEmail: TEST_EMAIL,
+      });
+      record(
+        "QA report email with screenshots",
+        status === 200 && json?.emailed === true,
+        json?.error || `status=${status}`,
+      );
+      for (const t of json?.tabs || []) {
+        console.log(`      ${t.passed ? "ok  " : "BAD "} ${t.name}: ${t.detail}`);
+      }
+    } catch (err) {
+      record("QA report email with screenshots", false, err.message);
     }
   }
 
