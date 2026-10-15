@@ -1124,7 +1124,7 @@ describe("browser teardown cannot fail a QA run", () => {
     // `true` is captureScreenshots: the report wants a PNG per tab.
     const start = qa.indexOf("async qaAndEmailReport(");
     const body = qa.slice(start, qa.indexOf("async testEmailAttachmentUI(", start));
-    expect(body).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined, true)");
+    expect(body).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined, true, runId)");
     // The catch immediately after the tab call must translate the failure.
     const catchAt = body.indexOf("} catch (err) {");
     expect(catchAt).toBeGreaterThan(-1);
@@ -1175,9 +1175,9 @@ describe("a QA report uses one browser session, not two", () => {
 
   it("hands the report's session to both checks instead of opening its own", () => {
     // The two calls that used to each open a session must now receive one.
-    expect(qa).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined, true)");
+    expect(qa).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined, true, runId)");
     expect(qa).toMatch(
-      /runBrowserCheck\(\s*env\.SELF_ORIGIN[\s\S]{0,200}?connection \?\? undefined,?\s*\)/,
+      /runBrowserCheck\(\s*env\.SELF_ORIGIN[\s\S]{0,200}?connection \?\? undefined,\s*runId,?\s*\)/,
     );
   });
 
@@ -1282,5 +1282,45 @@ describe("the Public trade-approval workflow stays wired", () => {
     expect(exec).toContain("PUBLIC_ALLOW_TRADING");
     expect(exec).toContain('"executing"');
     expect(exec).toContain("getPublicToken()");
+  });
+});
+
+describe("the QA live-view panel stays wired (issue #88)", () => {
+  const qa = read("src/qa-agent.ts");
+  const api = read("src/api.ts");
+  const html = read("public/index.html");
+
+  it("emits live events from the checks and serves snapshots", () => {
+    expect(qa).toContain("emitLive");
+    expect(qa).toContain("qaLiveSnapshot");
+    expect(qa).toContain('"qa-live"');
+    expect(qa).toContain("this.broadcast(");
+    // The observer must never fail the run it watches.
+    expect(qa).toContain("never throws");
+  });
+
+  it("threads the run id from the dashboard routes into the checks", () => {
+    expect(api).toContain("qaDashboard(apiKey, runId)");
+    expect(api).toContain("qaDashboardTabs(apiKey, undefined, undefined, runId)");
+    expect(api).toContain("qaAndEmailReport(apiKey, toEmail, runId)");
+    expect(api).toContain("testEmailAttachmentUI(apiKey, toEmail, runId)");
+    expect(api).toContain("qaFullSuite(apiKey, toEmail, runId)");
+  });
+
+  it("captures tab screenshots for a watching run even without a report", () => {
+    expect(qa).toContain("wantShots");
+    expect(qa).toContain("captureScreenshots === true || !!runId");
+  });
+
+  it("renders the panel and connects a socket to the QA agent", () => {
+    expect(html).toContain('id="qaLivePanel"');
+    expect(html).toContain('id="qaLiveSteps"');
+    expect(html).toContain('id="qaLiveImg"');
+    expect(html).toContain("qaLiveBegin");
+    expect(html).toContain("qaLiveApply");
+    expect(html).toContain('agent: "QAAgent"');
+    expect(html).toContain('name: "qa"');
+    expect(html).toContain("qaLiveWatch");
+    expect(html).toContain("qaLiveSnapshot");
   });
 });
