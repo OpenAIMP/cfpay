@@ -57,13 +57,14 @@ export const slackAgentToolSchema = {
   },
   required: ["operation"],
 } as const;
-/** QA capability operations. qa.check directs the Worker to load a caller-chosen URL. */
+/** QA capability operations. qa.check directs the Worker to load a caller-chosen URL,
+ * and qa.ux_audit does the same for a whole target spec (issue #94, step 3). */
 export const qaAgentToolSchema = {
   type: "object",
   properties: {
     operation: {
       type: "string",
-      enum: ["qa.summary", "qa.check", "qa.dashboard"],
+      enum: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit"],
       description: "Which QA operation to perform.",
     },
     url: { type: "string", description: "http(s) URL to load. Required for qa.check." },
@@ -73,6 +74,25 @@ export const qaAgentToolSchema = {
         textContains: { type: "array", items: { type: "string" }, description: "Strings that must appear in the page text." },
       },
       description: "Assertions for qa.check.",
+    },
+    spec: {
+      type: "object",
+      properties: {
+        pages: { type: "array", items: { type: "string" }, description: "Absolute http(s) URLs to audit; all on one origin, max 8. Required for qa.ux_audit." },
+        auth: {
+          type: "object",
+          properties: {
+            mode: { type: "string", enum: ["none", "localStorage", "headers"], description: "How the browser gets into the target app." },
+            localStorage: { type: "object", description: "Keys seeded on the origin before auditing (mode localStorage)." },
+            headers: { type: "object", description: "Headers sent on every request of the session (mode headers)." },
+          },
+          description: "Target-app auth, if the pages need it. Values are the caller's own; they are passed through, never stored.",
+        },
+        settleSelector: { type: "string", description: "Audit each page once this selector exists." },
+        settleTimeoutMs: { type: "integer", description: "Settle timeout per page in ms (clamped)." },
+        rules: { type: "object", description: "Optional rule profile: contrastNormal, contrastLarge, minTargetPx, ignoreSelectors, expectedButtonBg." },
+      },
+      description: "Target spec for qa.ux_audit, the generalized UX audit.",
     },
   },
   required: ["operation"],

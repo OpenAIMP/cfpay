@@ -2397,6 +2397,40 @@ export class QAAgent extends Think<Env> {
         };
       }
 
+      case "qa.ux_audit": {
+        // Issue #94, step 3: the generalized audit as a service operation, so a
+        // host model or an external A2A caller can audit a web app without the
+        // dashboard. The spec is the caller's: target credentials ride in
+        // spec.auth (their own session values), pass through to the browser
+        // session, and are never stored or logged here.
+        const spec = (args.spec ?? null) as UxAuditSpec | null;
+        const specPages = Array.isArray(spec?.pages) ? spec.pages : [];
+        if (!spec || specPages.length === 0) {
+          return {
+            text: "qa.ux_audit needs a spec with at least one page URL.",
+            data: { ok: false, error: "bad_spec" },
+          };
+        }
+        if (!specPages.every((u) => typeof u === "string" && /^https?:\/\//.test(u))) {
+          // Same http(s)-only bound as qa.check, for the same reason.
+          return {
+            text: "qa.ux_audit pages must be http(s) URLs.",
+            data: { ok: false, error: "bad_url" },
+          };
+        }
+        const result = await this.qaUxAuditUrl(spec);
+        if (result.error) {
+          return { text: "UX audit could not run: " + result.error, data: result };
+        }
+        const failedNames = result.checks.filter((c) => !c.passed).map((c) => c.name);
+        return {
+          text: result.ok
+            ? `UX audit passed on ${result.pagesAudited.length} page(s): all checks green.`
+            : `UX audit on ${result.pagesAudited.length} page(s) found failing checks: ${failedNames.join(", ")}.`,
+          data: result,
+        };
+      }
+
       case "qa.dashboard": {
         // Checks this Worker's own dashboard, which is the deployed page a user sees -
         // worth being able to assert remotely rather than only from a browser.
@@ -2413,7 +2447,7 @@ export class QAAgent extends Think<Env> {
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["qa.summary", "qa.check", "qa.dashboard"],
+            supported: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit"],
           },
         };
     }
