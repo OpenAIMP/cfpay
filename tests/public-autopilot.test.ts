@@ -14,6 +14,8 @@ import {
   buildEvidenceDigest,
   parsePlan,
   parseVerification,
+  readRunSession,
+  recordRunToSession,
   runAutopilotPipeline,
   type AutopilotDeps,
   type AutopilotRun,
@@ -210,5 +212,60 @@ describe("runAutopilotPipeline", () => {
     expect(out.autopilot.steps).toHaveLength(1);
     expect(stepQuestions).toHaveLength(1);
     expect(out.autopilot.status).toBe("done");
+  });
+});
+
+describe("Sessions transcript recording", () => {
+  function fakeSessions() {
+    const store = new Map<string, any>();
+    return {
+      session: (_id: string) => ({
+        appendMessage: async (m: any) => {
+          if (!store.has(m.id)) store.set(m.id, m); // the store is idempotent on id
+          return { inserted: true };
+        },
+        getHistory: async () => [...store.values()],
+      }),
+    } as any;
+  }
+  const run = {
+    id: "run-1",
+    goal: "compare semis",
+    status: "done",
+    createdAt: "",
+    updatedAt: "",
+    steps: [
+      { id: "s1", title: "Quotes", instruction: "q", status: "done", answer: "NVDA 190" },
+      { id: "s2", title: "Pending", instruction: "p", status: "pending" },
+    ],
+    evidence: [],
+    verification: { complete: true, confidence: 0.9, gaps: [], summary: "covered" },
+    answer: "NVDA leads.",
+    model: "@cf/test",
+    replans: 0,
+  } as unknown as AutopilotRun;
+
+  it("records goal, finished steps, verdict and answer — and is safe to repeat", async () => {
+    const sessions = fakeSessions();
+    await recordRunToSession(sessions, run);
+    await recordRunToSession(sessions, run); // the save hook fires per transition
+    const messages = await readRunSession(sessions, "run-1");
+    expect(messages.map((m) => m.id)).toEqual(["goal", "step-s1", "verdict", "answer"]);
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].text).toContain("compare semis");
+    expect(messages[1].text).toContain("NVDA 190");
+    expect(messages[2].text).toContain("complete");
+    expect(messages[3].text).toBe("NVDA leads.");
+  });
+
+  it("never throws when the store fails", async () => {
+    const broken = {
+      session: () => ({
+        appendMessage: async () => {
+          throw new Error("store down");
+        },
+      }),
+    } as any;
+    await expect(recordRunToSession(broken, run)).resolves.toBeUndefined();
   });
 });

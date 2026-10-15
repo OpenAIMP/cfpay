@@ -337,6 +337,12 @@ export function createApp() {
     return c.json({ runs: await agent.listAutopilotRuns() });
   });
 
+  // One run's Sessions transcript (agents/sessions), recorded by the pipeline.
+  app.get("/api/public/autopilot-runs/:id/session", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    return c.json({ messages: await agent.getAutopilotRunSession(c.req.param("id")) });
+  });
+
   app.get("/api/public/trades", requireAuth, async (c) => {
     const agent = getAgent(c);
     const proposals = await agent.listTradeProposals();

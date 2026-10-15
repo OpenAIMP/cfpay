@@ -9,14 +9,16 @@
  * This module holds the run-state types and the pure pieces — the planner /
  * verifier prompt contracts, the defensive JSON parsers for their replies,
  * and the evidence digest the executor, verifier and synthesis steps read.
- * The orchestration itself lives on the host agent (src/agent.ts,
- * runAutopilot), which owns the model calls and the existing tool loop.
+ * The orchestration (runAutopilotPipeline, below) is driven by the host
+ * agent (src/agent.ts, runAutopilot), which injects the model call, the
+ * existing tool loop, and persistence.
  *
  * Everything here is deterministic and unit-testable: a model reply that is
  * not the JSON asked for degrades to a named fallback, never to a throw.
  */
 
 import { contextWindowFor, readCompletion } from "./models";
+import type { SessionMessage, Sessions } from "agents/sessions";
 import type { UsageCost } from "./models";
 import type { ToolTrace } from "./types";
 
@@ -385,4 +387,66 @@ export async function runAutopilotPipeline(
   }
   await save();
   return { answer: run.answer, trace, model: modelId, cost: null, autopilot: run };
+}
+
+/** The Sessions namespace one run's transcript lives under. */
+export function autopilotSessionId(runId: string): string {
+  return "autopilot-" + runId;
+}
+
+/**
+ * Mirror a run into the Sessions store (agents/sessions — the capability
+ * Think itself runs on) as a readable transcript: the goal as the user turn,
+ * then each finished step's finding, the verifier's verdict, and the final
+ * answer. Message ids are stable per run part and appendMessage is
+ * idempotent on id, so the pipeline's save-on-every-transition hook can call
+ * this on every save without duplicating rows. Recording is observability,
+ * never a run dependency: failures are logged, never thrown.
+ */
+export async function recordRunToSession(sessions: Sessions, run: AutopilotRun): Promise<void> {
+  try {
+    const session = sessions.session(autopilotSessionId(run.id));
+    const parts = (text: string): SessionMessage["parts"] => [{ type: "text", text }];
+    await session.appendMessage({ id: "goal", role: "user", parts: parts("Goal: " + run.goal) });
+    for (const step of run.steps) {
+      if (!step.answer) continue;
+      await session.appendMessage({
+        id: "step-" + step.id,
+        role: "assistant",
+        parts: parts(step.title + "\n" + step.answer),
+      });
+    }
+    if (run.verification) {
+      const v = run.verification;
+      await session.appendMessage({
+        id: "verdict",
+        role: "assistant",
+        parts: parts(
+          "Verifier: " + (v.complete ? "complete" : "incomplete") +
+            " — confidence " + v.confidence + ". " + v.summary +
+            (v.gaps.length ? " Gaps: " + v.gaps.join("; ") : ""),
+        ),
+      });
+    }
+    if (run.answer) {
+      await session.appendMessage({ id: "answer", role: "assistant", parts: parts(run.answer) });
+    }
+  } catch (err) {
+    console.error("autopilot session recording failed:", err);
+  }
+}
+
+/** Read a run's Sessions transcript back as flat text messages. */
+export async function readRunSession(
+  sessions: Sessions,
+  runId: string,
+): Promise<Array<{ id: string; role: string; text: string }>> {
+  const history = await sessions.session(autopilotSessionId(runId)).getHistory();
+  return history.map((m) => ({
+    id: m.id,
+    role: m.role,
+    text: m.parts
+      .map((part) => (part.type === "text" ? String((part as { text?: unknown }).text ?? "") : ""))
+      .join(""),
+  }));
 }
