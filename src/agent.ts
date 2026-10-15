@@ -44,6 +44,8 @@ import type { McpSession, McpTool } from "./public-mcp";
 import {
   AUTOPILOT_MAX_RUNS_KEPT,
   AUTOPILOT_STEP_TOOL_BUDGET,
+  readRunSession,
+  recordRunToSession,
   runAutopilotPipeline,
 } from "./public-autopilot";
 import type { AutopilotRun } from "./public-autopilot";
@@ -223,6 +225,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
     ...DEFAULT_STATE,
     emails: [],
     payments: [],
+    autopilotRuns: [],
   };
 
   /**
@@ -2265,12 +2268,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * cover the task, and it then avoids the tools.
    */
   private readAutopilotRuns(): AutopilotRun[] {
-    const state = this.ensureState() as any;
-    return Array.isArray(state.autopilotRuns) ? (state.autopilotRuns as AutopilotRun[]) : [];
+    const state = this.ensureState();
+    return Array.isArray(state.autopilotRuns) ? state.autopilotRuns : [];
   }
 
   private async writeAutopilotRun(run: AutopilotRun): Promise<void> {
-    const state = this.ensureState() as any;
+    const state = this.ensureState();
     const list = this.readAutopilotRuns().filter((r) => r.id !== run.id);
     list.unshift(run);
     this.setState({ ...state, autopilotRuns: list.slice(0, AUTOPILOT_MAX_RUNS_KEPT) });
@@ -2279,6 +2282,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
   /** Autopilot runs, newest first — the dashboard's run history reads these. */
   async listAutopilotRuns(): Promise<AutopilotRun[]> {
     return this.readAutopilotRuns();
+  }
+
+  /** A run's Sessions transcript: goal, step findings, verdict, answer. */
+  async getAutopilotRunSession(runId: string) {
+    return readRunSession(this.sessions, runId);
   }
 
   /**
@@ -2311,7 +2319,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
           this.answerInstrumentQuestion(token, question, tools, session, modelId, {
             maxToolCalls: AUTOPILOT_STEP_TOOL_BUDGET,
           }),
-        save: (run) => this.writeAutopilotRun(run),
+        save: async (run) => {
+          await this.writeAutopilotRun(run);
+          await recordRunToSession(this.sessions, run);
+        },
       },
       goal,
       tools.map((t) => t.name),
