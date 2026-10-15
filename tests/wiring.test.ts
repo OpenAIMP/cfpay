@@ -1316,6 +1316,7 @@ describe("the QA live-view panel stays wired (issue #88)", () => {
     expect(html).toContain('id="qaLivePanel"');
     expect(html).toContain('id="qaLiveSteps"');
     expect(html).toContain('id="qaLiveImg"');
+    expect(html).toContain('id="qaLiveThumbs"');
     expect(html).toContain("qaLiveBegin");
     expect(html).toContain("qaLiveApply");
     // The socket's agent segment must be the binding's kebab form: the
