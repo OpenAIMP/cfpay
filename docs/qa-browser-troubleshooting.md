@@ -6,12 +6,13 @@ QAAgent is the autonomous QA agent for the cfpay dashboard (`pay.openaimp.com`).
 
 ## Capabilities
 
-Eight `@callable()` methods, all behind `requireAuth`, exposed as `POST /api/dashboard/qa/*` and as dashboard buttons — plus a ninth, `qaLiveSnapshot`, which is reachable only over the agent WebSocket and serves the live view (below); it has no button and no HTTP route:
+Nine `@callable()` methods, all behind `requireAuth`, exposed as `POST /api/dashboard/qa/*` and as dashboard buttons — plus a tenth, `qaLiveSnapshot`, which is reachable only over the agent WebSocket and serves the live view (below); it has no button and no HTTP route:
 
 | Button | Endpoint | Method | What it proves |
 |---|---|---|---|
 | Run Full Suite | `/qa/full-suite` | `qaFullSuite(apiKey, toEmail?)` | Every check below, in order, as one aggregate PASS/FAIL. The two real-email checks are **skipped** (marked SKIP, excluded from the verdict) unless a recipient is supplied |
 | Run QA Check | `/qa/check` | `qaCheck(url, checks)` | Browser-check any URL with text assertions |
+| UX Audit | `/qa/ux-audit` | `qaUxAudit(apiKey)` | Deterministic design-rule checks on the rendered views (issue #91): WCAG AA contrast from computed styles, 44px target sizes, heading hierarchy, primary-button consistency across views, layout overflow/overlap, image alt text, tab landing patterns. Rules are the `UX_RULES` config in `src/qa-agent.ts` — no model in the verdict path |
 | Check This Dashboard | `/qa/dashboard` | `qaDashboard(apiKey)` | Dashboard loads, key elements present, screenshot captured |
 | Verify Tab Data | `/qa/tabs` | `qaDashboardTabs(apiKey)` | Tab click-through with data verification (see below) |
 | Test Attachment via UI | `/qa/test-attachment` | `testEmailAttachmentUI(apiKey, toEmail)` | End-to-end Send Email form: fill fields, attach file via `DataTransfer`, submit via real button, verify success. Sends a **real email** with attachment. |

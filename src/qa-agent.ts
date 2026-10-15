@@ -61,6 +61,120 @@ export interface QALiveEvent {
 export const DASHBOARD_API_KEY_STORAGE_KEY = "cfmail_api_key";
 
 /**
+ * The design rules the UX audit enforces (issue #91). The guidelines are
+ * data, versioned here, so "conforms to the design guidelines" means
+ * conformance to these written values — and changing a guideline is a
+ * reviewed code change, not a prompt edit.
+ */
+export const UX_RULES = {
+  /** WCAG AA minimum contrast ratio for normal text. */
+  contrastNormal: 4.5,
+  /** WCAG AA minimum contrast ratio for large text (>= 24px, or >= 18.66px bold). */
+  contrastLarge: 3,
+  /** Minimum interactive target dimension in CSS px, in both dimensions. */
+  minTargetPx: 44,
+};
+
+/**
+ * The in-page UX probe for qaUxAudit: one evaluate that measures everything
+ * the audit's rules need from the currently rendered view and returns it as
+ * data. The audit's verdicts are computed from this data in the agent, so
+ * the same page always produces the same findings. Written without template
+ * literals (thresholds arrive via interpolation) and without optional
+ * chaining in hot paths, matching the other in-page probes in this file.
+ */
+function uxProbeExpression(): string {
+  return `(() => {
+    const NORMAL = ${UX_RULES.contrastNormal};
+    const LARGE = ${UX_RULES.contrastLarge};
+    const MINPX = ${UX_RULES.minTargetPx};
+    const vis = (el) => {
+      const r = el.getBoundingClientRect();
+      const st = getComputedStyle(el);
+      return r.width > 0 && r.height > 0 && st.display !== "none" && st.visibility !== "hidden";
+    };
+    const describe = (el) => {
+      const t = (el.getAttribute("aria-label") || el.innerText || el.value || "").trim().replace(/\\s+/g, " ").slice(0, 36);
+      return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (t ? ' "' + t + '"' : "");
+    };
+    const parseRGB = (c) => {
+      const m = /rgba?\\(([^)]+)\\)/.exec(c || "");
+      if (!m) return null;
+      const parts = m[1].split(",").map((x) => parseFloat(x));
+      return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+    };
+    const bgOf = (el) => {
+      let n = el;
+      while (n && n.nodeType === 1) {
+        const b = parseRGB(getComputedStyle(n).backgroundColor);
+        if (b && b.a > 0) return b;
+        n = n.parentElement;
+      }
+      return { r: 255, g: 255, b: 255, a: 1 };
+    };
+    const lum = (c) => {
+      const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+    };
+    const ratioOf = (fg, bg) => {
+      const l1 = lum(fg);
+      const l2 = lum(bg);
+      return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    };
+    let textChecked = 0;
+    const contrastBad = [];
+    for (const el of document.querySelectorAll("body *")) {
+      if (!vis(el)) continue;
+      let own = false;
+      for (const nd of el.childNodes) {
+        if (nd.nodeType === 3 && nd.textContent.trim().length > 0) { own = true; break; }
+      }
+      if (!own) continue;
+      const st = getComputedStyle(el);
+      const size = parseFloat(st.fontSize) || 16;
+      const weight = parseInt(st.fontWeight) || 400;
+      const large = size >= 24 || (size >= 18.66 && weight >= 700);
+      const fg = parseRGB(st.color);
+      if (!fg) continue;
+      textChecked++;
+      const r = ratioOf(fg, bgOf(el));
+      const need = large ? LARGE : NORMAL;
+      if (r < need && contrastBad.length < 24) {
+        contrastBad.push({ el: describe(el), ratio: Math.round(r * 100) / 100, need: need });
+      }
+    }
+    const interactive = Array.from(document.querySelectorAll('a, button, input, select, textarea, [data-tab], [role="button"]')).filter(vis);
+    const targetBad = [];
+    for (const el of interactive) {
+      const r = el.getBoundingClientRect();
+      if ((r.width < MINPX || r.height < MINPX) && targetBad.length < 24) {
+        targetBad.push({ el: describe(el), w: Math.round(r.width), h: Math.round(r.height) });
+      }
+    }
+    const headings = Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6")).filter(vis).map((h) => parseInt(h.tagName.slice(1), 10));
+    const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+    const overlaps = [];
+    const rects = interactive.slice(0, 80).map((el) => ({ d: describe(el), r: el.getBoundingClientRect() }));
+    for (let i = 0; i < rects.length && overlaps.length < 8; i++) {
+      for (let j = i + 1; j < rects.length && overlaps.length < 8; j++) {
+        const a = rects[i].r;
+        const b = rects[j].r;
+        const ix = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+        const iy = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+        const smaller = Math.min(a.width * a.height, b.width * b.height);
+        if (smaller > 0 && (ix * iy) / smaller > 0.25) overlaps.push(rects[i].d + " overlaps " + rects[j].d);
+      }
+    }
+    const imgBad = Array.from(document.querySelectorAll("img")).filter((im) => im.getAttribute("alt") === null).map((im) => (im.getAttribute("src") || "img").slice(-40));
+    const firstBtn = Array.from(document.querySelectorAll(".btn, button")).filter(vis)[0];
+    const btnStyle = firstBtn ? (() => { const st = getComputedStyle(firstBtn); return { bg: st.backgroundColor, color: st.color, fontSize: st.fontSize }; })() : null;
+    const firstH1 = Array.from(document.querySelectorAll("h1")).filter(vis)[0];
+    const h1Style = firstH1 ? (() => { const st = getComputedStyle(firstH1); return { fontFamily: st.fontFamily, fontSize: st.fontSize }; })() : null;
+    return { textChecked: textChecked, contrastBad: contrastBad, targetChecked: interactive.length, targetBad: targetBad, headings: headings, overflowPx: overflowPx, overlaps: overlaps, imgBad: imgBad, btnStyle: btnStyle, h1Style: h1Style };
+  })()`;
+}
+
+/**
  * The slice of the CDP connection this agent uses.
  *
  * `connectBrowser` is declared to return CdpConnection, but the browser handle
@@ -718,6 +832,339 @@ export class QAAgent extends Think<Env> {
 
     const ok = results.length > 0 && results.every((r) => r.passed);
     return { ok, tabs: results };
+  }
+
+  /**
+   * RPC: deterministic UX audit (issue #91). Drives the dashboard like
+   * qaDashboardTabs does — one session, navigate → seed → reload, click
+   * through the data tabs — and at each view runs uxProbeExpression() to
+   * measure the rendered page against UX_RULES: contrast, target size,
+   * heading hierarchy, primary-button consistency across views, layout
+   * integrity, image alt text, and the tabs' landing-state pattern.
+   *
+   * Deterministic by construction: the probe returns measurements and the
+   * verdicts are computed here, so the same page always yields the same
+   * findings. No model is consulted.
+   */
+  @callable()
+  async qaUxAudit(
+    apiKey: string,
+    runId?: string,
+    sharedConnection?: CdpLike,
+  ): Promise<{ ok: boolean; checks: { name: string; passed: boolean; detail: string }[]; error?: string }> {
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return { ok: false, checks: [], error: "Browser binding not configured" };
+    }
+    if (!apiKey) {
+      return { ok: false, checks: [], error: "API key required for UX audit" };
+    }
+    const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    this.emitLive(runId, { kind: "step", label: "Running UX audit" });
+
+    const views: { name: string; tab: string | null; containerId: string; emptyText: string }[] = [
+      { name: "Dashboard home", tab: null, containerId: "", emptyText: "" },
+      { name: "Emails", tab: "emails", containerId: "emailList", emptyText: "No emails yet" },
+      { name: "Payments", tab: "payments", containerId: "paymentList", emptyText: "No payments yet" },
+      { name: "Webhooks", tab: "webhooks", containerId: "webhookList", emptyText: "No webhook events yet" },
+    ];
+
+    const ownsConnection = !sharedConnection;
+    let browser: CdpLike | null = sharedConnection ?? null;
+    const probes: { view: string; data: any }[] = [];
+    const landings: { view: string; kind: string }[] = [];
+
+    try {
+      const cdp: CdpLike = browser ?? (await this.openBrowserSession(env));
+      browser = cdp;
+
+      const { targetId } = (await cdp.send("Target.createTarget", {
+        url: "about:blank",
+      })) as { targetId: string };
+
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+
+        this.emitLive(runId, { kind: "step", label: "Loading dashboard" });
+        await cdp.send("Page.navigate", { url: origin }, { sessionId });
+        await new Promise((r) => setTimeout(r, 3000));
+        await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `localStorage.setItem(${JSON.stringify(
+              DASHBOARD_API_KEY_STORAGE_KEY,
+            )}, ${JSON.stringify(apiKey)})`,
+          },
+          { sessionId },
+        );
+        await cdp.send("Page.reload", {}, { sessionId });
+        await new Promise((r) => setTimeout(r, 4000));
+
+        // Same loud failure as the tab check: auditing the login page would
+        // produce confident, meaningless findings.
+        const authState = (await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `JSON.stringify({
+              loginShown: !!document.getElementById('login') &&
+                getComputedStyle(document.getElementById('login')).display !== 'none',
+              appShown: !!document.getElementById('app') &&
+                getComputedStyle(document.getElementById('app')).display !== 'none'
+            })`,
+            returnByValue: true,
+          },
+          { sessionId },
+        )) as { result?: { value?: string } };
+
+        let loginShown = false;
+        try {
+          const parsed = JSON.parse(authState.result?.value || "{}") as { loginShown?: boolean };
+          loginShown = parsed.loginShown === true;
+        } catch {
+          // Unparseable probe: fall through and let the views report.
+        }
+
+        if (loginShown) {
+          const detail =
+            "Dashboard showed the login page, so no view could be audited. " +
+            "The API key was not accepted (check DASHBOARD_API_KEY).";
+          return { ok: false, checks: [{ name: "Sign-in", passed: false, detail }], error: detail };
+        }
+
+        for (const view of views) {
+          this.emitLive(runId, { kind: "step", label: `Auditing ${view.name}` });
+          try {
+            if (view.tab) {
+              const clicked = (await cdp.send(
+                "Runtime.evaluate",
+                {
+                  expression: `(() => {
+                    const el = document.querySelector('[data-tab=${JSON.stringify(view.tab)}]');
+                    if (!el) return false;
+                    el.click();
+                    return el.classList.contains('active');
+                  })()`,
+                  returnByValue: true,
+                },
+                { sessionId },
+              )) as { result?: { value?: boolean } };
+
+              if (clicked.result?.value !== true) {
+                landings.push({ view: view.name, kind: "tab missing" });
+                continue;
+              }
+
+              const settle = (await cdp.send(
+                "Runtime.evaluate",
+                {
+                  expression: `(async () => {
+                    const id = ${JSON.stringify(view.containerId)};
+                    const emptyText = ${JSON.stringify(view.emptyText)};
+                    const read = () => {
+                      const el = document.getElementById(id);
+                      if (!el) return { found: false };
+                      const text = (el.innerText || '').trim();
+                      return {
+                        found: true,
+                        rows: el.querySelectorAll('.card, .item').length,
+                        isEmpty: text.includes(emptyText),
+                      };
+                    };
+                    for (let i = 0; i < 40; i++) {
+                      const s = read();
+                      if (!s.found) return s;
+                      if (s.rows > 0) return s;
+                      if (s.isEmpty) return s;
+                      await new Promise((r) => setTimeout(r, 250));
+                    }
+                    return read();
+                  })()`,
+                  awaitPromise: true,
+                  returnByValue: true,
+                },
+                { sessionId },
+              )) as { result?: { value?: any } };
+
+              const st = settle.result?.value as
+                | { found?: boolean; rows?: number; isEmpty?: boolean }
+                | undefined;
+              const kind =
+                !st || st.found !== true
+                  ? "container missing"
+                  : st.isEmpty
+                    ? "empty state"
+                    : (st.rows ?? 0) > 0
+                      ? "rows"
+                      : "unrecognized";
+              landings.push({ view: view.name, kind });
+            }
+
+            const ux = (await cdp.send(
+              "Runtime.evaluate",
+              { expression: uxProbeExpression(), returnByValue: true },
+              { sessionId },
+            )) as { result?: { value?: any } };
+            if (ux.result?.value) probes.push({ view: view.name, data: ux.result.value });
+
+            // A picture of the view for the live panel, best-effort.
+            try {
+              const { data } = (await cdp.send(
+                "Page.captureScreenshot",
+                { format: "png" },
+                { sessionId },
+              )) as { data?: string };
+              if (data) {
+                this.emitLive(runId, {
+                  kind: "screenshot",
+                  label: `${view.name} view`,
+                  image: `data:image/png;base64,${data}`,
+                });
+              }
+            } catch {
+              // Evidence for the panel, never the audit itself.
+            }
+          } catch (err) {
+            // One view's probe failing must not abort the audit: record the
+            // landing as unmeasurable and let the aggregation report it.
+            if (view.tab) landings.push({ view: view.name, kind: "probe failed" });
+            console.warn(
+              `[QAAgent] UX audit probe failed for ${view.name}:`,
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
+      } finally {
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        checks: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      if (ownsConnection) closeConnectionQuietly(browser);
+    }
+
+    const findings: { name: string; passed: boolean; detail: string }[] = [];
+    const addFinding = (name: string, passed: boolean, detail: string) => {
+      findings.push({ name, passed, detail });
+      this.emitLive(runId, { kind: "result", label: name, ok: passed, detail });
+    };
+    const summarize = (items: string[]): string =>
+      items.slice(0, 3).join("; ") + (items.length > 3 ? `; +${items.length - 3} more` : "");
+
+    if (probes.length === 0) {
+      addFinding("UX probe", false, "The probe returned no measurements for any view.");
+      return { ok: false, checks: findings, error: "UX probe returned no data" };
+    }
+
+    // Contrast (WCAG AA), from computed styles.
+    const contrastBad = probes.flatMap((p) =>
+      (p.data.contrastBad ?? []).map((b: any) => `${p.view}: ${b.el} at ${b.ratio}:1 (needs ${b.need}:1)`),
+    );
+    const textChecked = probes.reduce((n, p) => n + (p.data.textChecked ?? 0), 0);
+    addFinding(
+      "Contrast (WCAG AA)",
+      contrastBad.length === 0,
+      contrastBad.length === 0
+        ? `${textChecked} text elements across ${probes.length} views meet AA ratios.`
+        : summarize(contrastBad),
+    );
+
+    // Interactive target size.
+    const targetBad = probes.flatMap((p) =>
+      (p.data.targetBad ?? []).map((b: any) => `${p.view}: ${b.el} is ${b.w}x${b.h}px`),
+    );
+    const targetChecked = probes.reduce((n, p) => n + (p.data.targetChecked ?? 0), 0);
+    addFinding(
+      "Target size",
+      targetBad.length === 0,
+      targetBad.length === 0
+        ? `${targetChecked} interactive elements across ${probes.length} views are at least ${UX_RULES.minTargetPx}px in both dimensions.`
+        : summarize(targetBad),
+    );
+
+    // Heading hierarchy per view.
+    const headingIssues: string[] = [];
+    for (const p of probes) {
+      const levels: number[] = p.data.headings ?? [];
+      const h1s = levels.filter((l) => l === 1).length;
+      if (h1s !== 1) headingIssues.push(`${p.view}: ${h1s} visible h1 elements (expected exactly 1)`);
+      for (let i = 1; i < levels.length; i++) {
+        if (levels[i] > levels[i - 1] + 1) {
+          headingIssues.push(`${p.view}: heading level skips h${levels[i - 1]} to h${levels[i]}`);
+        }
+      }
+    }
+    addFinding(
+      "Heading hierarchy",
+      headingIssues.length === 0,
+      headingIssues.length === 0
+        ? `Exactly one h1 and no skipped levels across ${probes.length} views.`
+        : summarize(headingIssues),
+    );
+
+    // Primary-button consistency across views: the same action should look
+    // the same everywhere it appears.
+    const sigOf = (p: any): string | null =>
+      p.data.btnStyle
+        ? `${p.data.btnStyle.bg}|${p.data.btnStyle.color}|${p.data.btnStyle.fontSize}`
+        : null;
+    const sigs = probes
+      .map((p) => ({ view: p.view, sig: sigOf(p) }))
+      .filter((x) => x.sig !== null);
+    const distinctSigs = new Set(sigs.map((x) => x.sig));
+    addFinding(
+      "Style consistency",
+      sigs.length > 0 && distinctSigs.size === 1,
+      sigs.length === 0
+        ? "No primary button was visible in any view to compare."
+        : distinctSigs.size === 1
+          ? `Primary button style is identical across ${sigs.length} views.`
+          : `Primary button style differs across views (${sigs.map((x) => x.view).join(", ")}).`,
+    );
+
+    // Layout integrity: horizontal overflow + overlapping interactive elements.
+    const layoutIssues: string[] = [
+      ...probes
+        .filter((p) => (p.data.overflowPx ?? 0) > 0)
+        .map((p) => `${p.view}: horizontal overflow of ${p.data.overflowPx}px`),
+      ...probes.flatMap((p) => (p.data.overlaps ?? []).map((o: string) => `${p.view}: ${o}`)),
+    ];
+    addFinding(
+      "Layout integrity",
+      layoutIssues.length === 0,
+      layoutIssues.length === 0
+        ? "No horizontal overflow and no overlapping interactive elements in any view."
+        : summarize(layoutIssues),
+    );
+
+    // Image alt text.
+    const imgBad = probes.flatMap((p) =>
+      (p.data.imgBad ?? []).map((src: string) => `${p.view}: img ${src} has no alt attribute`),
+    );
+    addFinding(
+      "Image alt text",
+      imgBad.length === 0,
+      imgBad.length === 0
+        ? "Every rendered image carries an alt attribute."
+        : summarize(imgBad),
+    );
+
+    // Tab landing pattern: every data tab must land on content or its
+    // recognized empty state — the same two outcomes, uniformly.
+    const badLandings = landings.filter((l) => l.kind !== "rows" && l.kind !== "empty state");
+    addFinding(
+      "Tab state pattern",
+      landings.length === 3 && badLandings.length === 0,
+      landings.length === 3 && badLandings.length === 0
+        ? landings.map((l) => `${l.view}: ${l.kind}`).join(", ") +
+            " — every data tab lands on content or its recognized empty state."
+        : summarize(landings.map((l) => `${l.view}: ${l.kind}`)),
+    );
+
+    return { ok: findings.every((f) => f.passed), checks: findings };
   }
 
   /**

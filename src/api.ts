@@ -490,6 +490,10 @@ export function createApp() {
         captureScreenshots?: boolean,
         runId?: string,
       ): Promise<{ ok: boolean; tabs: { name: string; passed: boolean; detail: string }[]; error?: string }>;
+      qaUxAudit(
+        apiKey: string,
+        runId?: string,
+      ): Promise<{ ok: boolean; checks: { name: string; passed: boolean; detail: string }[]; error?: string }>;
       qaAndEmailReport(
         apiKey: string,
         toEmail: string,
@@ -1192,6 +1196,27 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
     const result = await qaAgent.qaDashboardTabs(apiKey, undefined, undefined, runId);
+    return c.json(result);
+  });
+
+  // Deterministic UX audit (issue #91): drives the dashboard like the tab
+  // check and measures the rendered views against UX_RULES. Needs the key
+  // for the same reason the tab check does — it seeds localStorage before
+  // navigating — so session auth alone is not enough.
+  app.post("/api/dashboard/qa/ux-audit", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const presented = c.req.header("X-API-Key") || "";
+    const authHeader = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const apiKey = presented || authHeader || undefined;
+    if (!apiKey) {
+      return c.json(
+        { error: "The UX audit needs an X-API-Key header; session auth is not enough." },
+        400,
+      );
+    }
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaUxAudit(apiKey, runId);
     return c.json(result);
   });
 

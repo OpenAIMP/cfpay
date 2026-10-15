@@ -352,6 +352,7 @@
               <button class="btn" onclick="runQACheck()">Run QA Check</button>
               <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
               <button class="btn" onclick="runQATabs()" style="background:var(--muted);">Verify Tab Data</button>
+              <button class="btn" onclick="runQAUxAudit()" style="background:var(--muted);">UX Audit</button>
               <button class="btn" onclick="runQAAttachment()">Test Attachment via UI</button>
               <button class="btn" onclick="runQAPaymentFlow()" style="background:var(--muted);">Check Payment Guards</button>
               <button class="btn" onclick="runQAEdgeCases()" style="background:var(--muted);">Check Edge Cases</button>
@@ -362,6 +363,7 @@
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Run QA Check</strong> — loads any URL in a headless browser and asserts the given text appears on the page.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check This Dashboard</strong> — smoke test: dashboard loads, key text present, screenshot captured. Does not prove authentication on its own.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Verify Tab Data</strong> — clicks Emails, Payments and Webhooks and verifies each tab loads real data. Fails loudly on the login page.</p>
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">UX Audit</strong> — deterministic design-rule checks on the rendered dashboard: contrast (WCAG AA), click-target size, heading hierarchy, button-style consistency across views, layout overflow/overlap, image alt text, and tab landing patterns. The rules are code, not a model — same page, same findings.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Test Attachment via UI</strong> — drives the real Send Email form, attaches a file and submits. Sends a <em>real email</em>; use a test recipient.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check Payment Guards</strong> — verifies the 402 payment challenge is well-formed and malformed signatures are refused. Moves no money.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check Edge Cases</strong> — wrong API key rejected, unauthenticated access rejected, unknown routes don't false-pass, errors are JSON not HTML.</p>
@@ -653,6 +655,19 @@
         await qaLiveFinish(!!(data && data.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">Tab check failed: ' + escapeHtml(e.message || e) + '</p>';
+        await qaLiveFinish(false);
+      }
+    }
+    async function runQAUxAudit() {
+      const resultEl = document.getElementById('qaResult');
+      resultEl.innerHTML = '<p style="color:var(--muted);">Running UX audit...</p>';
+      const runId = qaLiveBegin('UX Audit');
+      try {
+        const res = await api('/api/dashboard/qa/ux-audit', 'POST', { runId });
+        renderQAChecks(res, resultEl);
+        await qaLiveFinish(!!(res && res.ok));
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">UX audit failed: ' + escapeHtml(e.message || e) + '</p>';
         await qaLiveFinish(false);
       }
     }

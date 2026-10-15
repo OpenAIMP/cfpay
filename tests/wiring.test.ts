@@ -1114,7 +1114,7 @@ describe("browser teardown cannot fail a QA run", () => {
     // Every browser teardown goes through the helper. Counted exactly, so both a
     // new raw close() and a removed release are caught.
     const uses = qa.split("closeConnectionQuietly(").length - 1;
-    expect(uses, "every browser teardown must use the helper").toBe(4);
+    expect(uses, "every browser teardown must use the helper").toBe(5);
   });
 
   it("keeps the report's tab call inside a guard", () => {
@@ -1186,7 +1186,7 @@ describe("a QA report uses one browser session, not two", () => {
     // check would run against a closed connection.
     expect(qa).toContain("const ownsConnection = !sharedConnection");
     const guards = qa.split("if (ownsConnection)").length - 1;
-    expect(guards, "both shared-session methods must guard their close").toBe(2);
+    expect(guards, "every shared-session method must guard its close").toBe(3);
   });
 
   it("releases the report's session on every exit path", () => {
@@ -1327,5 +1327,26 @@ describe("the QA live-view panel stays wired (issue #88)", () => {
     expect(html).toContain('name: "qa"');
     expect(html).toContain("qaLiveWatch");
     expect(html).toContain("qaLiveSnapshot");
+  });
+});
+
+describe("the QA UX audit stays wired (issue #91)", () => {
+  const qa = read("src/qa-agent.ts");
+  const api = read("src/api.ts");
+  const html = read("public/index.html");
+
+  it("measures the rendered page against written rules, deterministically", () => {
+    expect(qa).toContain("qaUxAudit");
+    expect(qa).toContain("UX_RULES");
+    expect(qa).toContain("uxProbeExpression");
+    expect(qa).toContain("contrastNormal: 4.5");
+    expect(qa).toContain("minTargetPx: 44");
+  });
+
+  it("is reachable from its route and its button", () => {
+    expect(api).toContain('"/api/dashboard/qa/ux-audit"');
+    expect(api).toContain("qaUxAudit(apiKey, runId)");
+    expect(html).toContain("runQAUxAudit");
+    expect(html).toContain("UX Audit");
   });
 });
