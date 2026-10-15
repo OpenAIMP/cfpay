@@ -1371,3 +1371,23 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(html).toContain('id="qaUxUrl"');
   });
 });
+
+describe("the UX audit's self-test stays wired (post-deploy smoke)", () => {
+  const smoke = read("scripts/qa-smoke.mjs");
+  const fixture = read("public/qa-fixture.html");
+
+  it("smoke-tests both audit endpoints after every deploy", () => {
+    expect(smoke).toContain('"/api/dashboard/qa/ux-audit"');
+    expect(smoke).toContain('"/api/dashboard/qa/ux-audit-url"');
+    expect(smoke).toContain("qa-fixture.html");
+  });
+
+  it("the fixture plants exactly the violations the smoke expects", () => {
+    expect(fixture).toContain('id="planted-faint"');
+    expect(fixture).toContain('id="planted-tiny"');
+    expect(fixture).toContain('id="planted-skip"');
+    expect(fixture).toContain('id="planted-noalt"');
+    expect(smoke).toContain("planted-faint");
+    expect(smoke).toContain("planted-tiny");
+  });
+});
