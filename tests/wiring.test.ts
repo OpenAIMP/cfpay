@@ -1269,6 +1269,14 @@ describe("the Public trade-approval workflow stays wired", () => {
     expect(html).toContain("decideTrade");
   });
 
+  it("surfaces the live trading state on the models response and status card", () => {
+    expect(api).toContain("tradingEnabled: allowTrading(c.env)");
+    expect(html).toContain('id="publicTradingTitle"');
+    expect(html).toContain('id="publicTradingBody"');
+    expect(html).toContain("renderTradingStatus");
+    expect(html).toContain("Trading enabled");
+  });
+
   it("keeps execution fail-closed behind approval and the master switch", () => {
     const exec = agent.slice(agent.indexOf("async executeTradeProposal"));
     expect(exec).toContain("PUBLIC_ALLOW_TRADING");
