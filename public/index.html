@@ -368,6 +368,16 @@
               <p style="margin-bottom:0;"><strong style="color:var(--text);">Email QA Report</strong> — runs the tab checks on one shared browser session, then emails the report with a screenshot of the dashboard and of each tab attached (4 PNGs). Sends a <em>real email</em>.</p>
             </div>
           </div>
+          <div id="qaLivePanel" style="display:none;margin-top:1rem;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:6px;padding:0.75rem;">
+            <h4 style="margin:0 0 0.5rem;font-size:0.95rem;">Live view <span id="qaLiveStatus" style="color:var(--muted);font-size:0.8rem;font-weight:normal;"></span></h4>
+            <div style="display:grid;grid-template-columns:minmax(220px,1.2fr) 1fr;gap:1rem;align-items:start;">
+              <div>
+                <img id="qaLiveImg" alt="Latest screenshot from the running check" style="display:none;max-width:100%;border:1px solid var(--border);border-radius:4px;" />
+                <p id="qaLiveImgLabel" style="color:var(--muted);font-size:0.8rem;margin:0.25rem 0 0;">Waiting for the first screenshot…</p>
+              </div>
+              <div id="qaLiveSteps" style="font-size:0.85rem;line-height:1.65;max-height:330px;overflow-y:auto;"></div>
+            </div>
+          </div>
           <div id="qaEmailResult" style="margin-top:0.5rem;"></div>
           <div id="qaResult"></div>
         </div>
@@ -470,6 +480,65 @@
       // QA tab needs no preload
     }
     async function init() { loadStats(); checkMetaMask(); await loadPaymentOptions(); }
+    // ---- QA live view (issue #88) --------------------------------------
+    // While a QA run is in flight, QAAgent broadcasts step / verdict /
+    // screenshot events over its agent socket. The module script at the
+    // bottom of this page owns that socket: it forwards events here via
+    // qaLiveApply() and answers qaLiveWatch() / qaLiveFinishPull() with
+    // qaLiveSnapshot() catch-up polls. Everything is keyed by the run id
+    // minted in qaLiveBegin(), so a stale run can never paint this panel.
+    let qaLiveCtx = null;
+    function qaLiveBegin(label) {
+      const id = 'qa-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+      qaLiveCtx = { id };
+      const panel = document.getElementById('qaLivePanel');
+      if (panel) panel.style.display = 'block';
+      const status = document.getElementById('qaLiveStatus');
+      if (status) status.textContent = '— ' + label + ' running…';
+      const steps = document.getElementById('qaLiveSteps');
+      if (steps) steps.innerHTML = '';
+      const img = document.getElementById('qaLiveImg');
+      if (img) { img.style.display = 'none'; img.removeAttribute('src'); }
+      const imgLabel = document.getElementById('qaLiveImgLabel');
+      if (imgLabel) imgLabel.textContent = 'Waiting for the first screenshot…';
+      qaLiveLine('• ' + label + ' started', 'var(--muted)');
+      if (window.qaLiveWatch) window.qaLiveWatch(id);
+      return id;
+    }
+    function qaLiveLine(text, color) {
+      const steps = document.getElementById('qaLiveSteps');
+      if (!steps) return;
+      const line = document.createElement('div');
+      if (color) line.style.color = color;
+      line.textContent = text;
+      steps.appendChild(line);
+      steps.scrollTop = steps.scrollHeight;
+    }
+    // Called by the module script for each event of the watched run.
+    window.qaLiveApply = function (ev) {
+      if (!ev) return;
+      if (ev.kind === 'screenshot') {
+        if (ev.image) {
+          const img = document.getElementById('qaLiveImg');
+          if (img) { img.src = ev.image; img.style.display = 'block'; }
+          const imgLabel = document.getElementById('qaLiveImgLabel');
+          if (imgLabel) imgLabel.textContent = ev.label || 'Screenshot';
+        }
+        qaLiveLine('📷 ' + (ev.label || 'Screenshot'), 'var(--muted)');
+      } else if (ev.kind === 'result') {
+        const tag = ev.skipped ? 'SKIP' : (ev.ok ? 'PASS' : 'FAIL');
+        const color = ev.skipped ? 'var(--muted)' : (ev.ok ? 'green' : 'red');
+        qaLiveLine(tag + ' ' + ev.label + (ev.detail ? ' — ' + ev.detail : ''), color);
+      } else {
+        qaLiveLine('• ' + ev.label + (ev.detail ? ' — ' + ev.detail : ''), '');
+      }
+    };
+    async function qaLiveFinish(ok) {
+      if (window.qaLiveFinishPull) { try { await window.qaLiveFinishPull(); } catch (e) { /* the panel is best-effort */ } }
+      const status = document.getElementById('qaLiveStatus');
+      if (status) status.textContent = ok ? '— finished' : '— finished (see the result below)';
+      qaLiveLine(ok ? 'Run finished.' : 'Run finished — see the result below.', 'var(--muted)');
+    }
     async function runQACheck() {
       const url = document.getElementById('qaUrl').value.trim();
       const checksRaw = document.getElementById('qaChecks').value.trim();
@@ -477,21 +546,27 @@
       if (!url) { resultEl.innerHTML = '<p style="color:red;">Enter a URL</p>'; return; }
       resultEl.innerHTML = '<p style="color:var(--muted);">Running QA check...</p>';
       const checks = checksRaw ? { textContains: checksRaw.split(',').map(s => s.trim()).filter(Boolean) } : undefined;
+      const runId = qaLiveBegin('Run QA Check');
       try {
-        const res = await api('/api/dashboard/qa/check', 'POST', { url, checks });
+        const res = await api('/api/dashboard/qa/check', 'POST', { url, checks, runId });
         renderQAResult(res, resultEl);
+        await qaLiveFinish(!!(res && res.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">QA failed: ' + (e.message || e) + '</p>';
+        await qaLiveFinish(false);
       }
     }
     async function runQADashboard() {
       const resultEl = document.getElementById('qaResult');
       resultEl.innerHTML = '<p style="color:var(--muted);">Checking dashboard...</p>';
+      const runId = qaLiveBegin('Check This Dashboard');
       try {
-        const res = await api('/api/dashboard/qa/dashboard', 'POST');
+        const res = await api('/api/dashboard/qa/dashboard', 'POST', { runId });
         renderQAResult(res, resultEl);
+        await qaLiveFinish(!!(res && res.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">QA failed: ' + (e.message || e) + '</p>';
+        await qaLiveFinish(false);
       }
     }
     async function emailQAReport() {
@@ -499,11 +574,13 @@
       const result = document.getElementById('qaEmailResult');
       if (!toEmail) { result.innerHTML = '<div class="status-msg error">Enter an email address</div>'; return; }
       result.innerHTML = '<div class="loading">Running QA and sending report with screenshots...</div>';
+      const runId = qaLiveBegin('Email QA Report');
       try {
-        const res = await api('/api/dashboard/qa/email-report', 'POST', { toEmail });
+        const res = await api('/api/dashboard/qa/email-report', 'POST', { toEmail, runId });
         if (res.emailed) { result.innerHTML = '<div class="status-msg success">QA report emailed with dashboard screenshot!</div>'; }
         else { result.innerHTML = '<div class="status-msg error">Failed: ' + (res.error || 'Unknown error') + '</div>'; }
-      } catch (e) { result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; }
+        await qaLiveFinish(!!(res && res.emailed));
+      } catch (e) { result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; await qaLiveFinish(false); }
     }
     // Renders the checks[] shape the newer QA methods return, and the tabs[]
     // shape qaDashboardTabs returns.
@@ -540,14 +617,19 @@
     async function runQATabs() {
       const resultEl = document.getElementById('qaResult');
       resultEl.innerHTML = '<p style="color:var(--muted);">Verifying tab data...</p>';
+      const runId = qaLiveBegin('Verify Tab Data');
       try {
         const res = await fetch('/api/dashboard/qa/tabs', {
           method: 'POST',
-          headers: { 'X-API-Key': localStorage.getItem('cfmail_api_key') || '' },
+          headers: { 'X-API-Key': localStorage.getItem('cfmail_api_key') || '', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ runId }),
         });
-        renderQAChecks(await res.json(), resultEl);
+        const data = await res.json();
+        renderQAChecks(data, resultEl);
+        await qaLiveFinish(!!(data && data.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">Tab check failed: ' + escapeHtml(e.message || e) + '</p>';
+        await qaLiveFinish(false);
       }
     }
     async function runQAAttachment() {
@@ -555,42 +637,54 @@
       if (!toEmail) return;
       const resultEl = document.getElementById('qaResult');
       resultEl.innerHTML = '<p style="color:var(--muted);">Driving the Send Email form...</p>';
+      const runId = qaLiveBegin('Test Attachment via UI');
       try {
-        const res = await api('/api/dashboard/qa/test-attachment', 'POST', { toEmail });
+        const res = await api('/api/dashboard/qa/test-attachment', 'POST', { toEmail, runId });
         renderQAChecks({ ok: res.ok, detail: res.detail, error: res.error }, resultEl);
+        await qaLiveFinish(!!(res && res.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">Attachment test failed: ' + escapeHtml(e.message || e) + '</p>';
+        await qaLiveFinish(false);
       }
     }
     async function runQAPaymentFlow() {
       const resultEl = document.getElementById('qaResult');
       resultEl.innerHTML = '<p style="color:var(--muted);">Checking payment guards...</p>';
+      qaLiveBegin('Check Payment Guards');
       try {
         const res = await api('/api/dashboard/qa/payment-flow', 'POST', {});
         renderQAChecks(res, resultEl);
+        await qaLiveFinish(!!(res && res.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">Payment check failed: ' + escapeHtml(e.message || e) + '</p>';
+        await qaLiveFinish(false);
       }
     }
     async function runQAEdgeCases() {
       const resultEl = document.getElementById('qaResult');
       resultEl.innerHTML = '<p style="color:var(--muted);">Checking edge cases...</p>';
+      qaLiveBegin('Check Edge Cases');
       try {
         const res = await api('/api/dashboard/qa/edge-cases', 'POST', {});
         renderQAChecks(res, resultEl);
+        await qaLiveFinish(!!(res && res.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">Edge-case check failed: ' + escapeHtml(e.message || e) + '</p>';
+        await qaLiveFinish(false);
       }
     }
     async function runFullSuite() {
       const resultEl = document.getElementById('qaResult');
       const toEmail = (document.getElementById('qaEmailTo').value || '').trim();
       resultEl.innerHTML = '<p style="color:var(--muted);">Running full QA suite — this takes a few minutes...</p>';
+      const runId = qaLiveBegin('Run Full Suite');
       try {
-        const res = await api('/api/dashboard/qa/full-suite', 'POST', toEmail ? { toEmail } : {});
+        const res = await api('/api/dashboard/qa/full-suite', 'POST', { ...(toEmail ? { toEmail } : {}), runId });
         renderQAChecks(res, resultEl);
+        await qaLiveFinish(!!(res && res.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">Full suite failed: ' + escapeHtml(e.message || e) + '</p>';
+        await qaLiveFinish(false);
       }
     }
     function renderQAResult(res, el) {
@@ -1734,6 +1828,68 @@ async function loadStats() {
     // Make agent available globally for debugging
     window.cfmailAgent = agent;
     return agent;
+  };
+
+  // QA live view (issue #88): a second AgentClient, this one to QAAgent
+  // (instance "qa" — the same name the API routes use). QAAgent broadcasts
+  // each run's step / verdict / screenshot events as raw socket messages;
+  // a 2s qaLiveSnapshot() poll over the same socket is the catch-up and
+  // backstop for anything the broadcast missed. Both paths funnel through
+  // applyQaLive(), which dedupes by event seq and drops other runs' ids.
+  // The classic script owns the panel; this script owns the socket.
+  let qaAgentClient = null;
+  let qaWatch = null; // { runId, seq, timer }
+  function ensureQaAgentClient() {
+    if (qaAgentClient) { qaAgentClient.reconnect(); return qaAgentClient; }
+    // The handshake needs the dashboard key as ?token=; without one the
+    // socket would only 401-loop, and the QA routes require the key anyway.
+    if (!localStorage.getItem("cfmail_api_key")) return null;
+    qaAgentClient = new AgentClient({
+      host: window.location.host,
+      agent: "QAAgent",
+      name: "qa",
+      query: () => ({ token: localStorage.getItem("cfmail_api_key") || "" }),
+      // Not the host agent's state handler: QAAgent state frames are its
+      // own (Think chat state) and must never trigger a tab refresh.
+      onStateUpdate: () => {},
+      onStateUpdateError: () => {},
+    });
+    qaAgentClient.addEventListener("message", (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg && msg.type === "qa-live") applyQaLive(msg.runId, msg.event);
+      } catch (err) { /* not a live-view frame */ }
+    });
+    window.qaAgentClient = qaAgentClient;
+    return qaAgentClient;
+  }
+  function applyQaLive(runId, ev) {
+    if (!qaWatch || !ev || runId !== qaWatch.runId) return;
+    if (typeof ev.seq === "number") {
+      if (ev.seq <= qaWatch.seq) return;
+      qaWatch.seq = ev.seq;
+    }
+    if (window.qaLiveApply) window.qaLiveApply(ev);
+  }
+  async function pullQaSnapshot() {
+    if (!qaWatch || !qaAgentClient) return;
+    try {
+      const snap = await qaAgentClient.call("qaLiveSnapshot", [qaWatch.runId, qaWatch.seq]);
+      if (snap && Array.isArray(snap.events)) {
+        for (const ev of snap.events) applyQaLive(qaWatch.runId, ev);
+      }
+    } catch (err) { /* best-effort: the run's HTTP response is the truth */ }
+  }
+  window.qaLiveWatch = function (runId) {
+    if (!ensureQaAgentClient()) return;
+    if (qaWatch && qaWatch.timer) clearInterval(qaWatch.timer);
+    qaWatch = { runId, seq: 0, timer: null };
+    qaWatch.timer = setInterval(pullQaSnapshot, 2000);
+    pullQaSnapshot();
+  };
+  window.qaLiveFinishPull = async function () {
+    await pullQaSnapshot();
+    if (qaWatch && qaWatch.timer) { clearInterval(qaWatch.timer); qaWatch.timer = null; }
   };
 
   if (localStorage.getItem("cfmail_api_key")) {
