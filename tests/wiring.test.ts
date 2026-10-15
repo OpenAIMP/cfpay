@@ -1418,17 +1418,21 @@ describe("the Public autopilot stays wired (issue #107)", () => {
   const idx = read("public/index.html");
   const ap = read("src/public-autopilot.ts");
 
-  it("the pipeline stages exist on the host agent", () => {
+  it("the host agent injects its pieces into the pipeline", () => {
     expect(agent).toContain("async runAutopilot(");
-    expect(agent).toContain("AUTOPILOT_PLANNER_SYSTEM");
-    expect(agent).toContain("AUTOPILOT_VERIFIER_SYSTEM");
-    expect(agent).toContain("AUTOPILOT_SYNTHESIS_SYSTEM");
-    expect(agent).toContain("parseVerification(verifyText)");
-  });
-
-  it("the executor reuses the reactive loop with a per-step budget", () => {
+    expect(agent).toContain("runAutopilotPipeline(");
     expect(agent).toContain("maxToolCalls: AUTOPILOT_STEP_TOOL_BUDGET");
     expect(agent).toContain("options?.maxToolCalls ?? 12");
+  });
+
+  it("the pipeline stages live in the contracts module", () => {
+    expect(ap).toContain("export async function runAutopilotPipeline(");
+    expect(ap).toContain("AUTOPILOT_PLANNER_SYSTEM");
+    expect(ap).toContain("AUTOPILOT_VERIFIER_SYSTEM");
+    expect(ap).toContain("AUTOPILOT_SYNTHESIS_SYSTEM");
+    expect(ap).toContain("parseVerification(verifyText)");
+    expect(ap).toContain("export const AUTOPILOT_MAX_STEPS = 6");
+    expect(ap).toContain("export function parseVerification(");
   });
 
   it("runs persist in agent state and list through the API", () => {
@@ -1447,10 +1451,5 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain('id="publicAutopilot"');
     expect(idx).toContain("renderAutopilotRun(res.autopilot)");
     expect(idx).toContain("autopilot: useAutopilot");
-  });
-
-  it("the contracts module exports the pipeline bounds", () => {
-    expect(ap).toContain("export const AUTOPILOT_MAX_STEPS = 6");
-    expect(ap).toContain("export function parseVerification(");
   });
 });
