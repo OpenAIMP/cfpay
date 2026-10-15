@@ -55,7 +55,7 @@ Every QA button also opens a **Live view** panel under the buttons, so a run can
 
 - **Steps** — plain-language narration as the check moves ("Loading dashboard", "Checking Emails tab", …).
 - **Verdicts** — each tab and each suite section reports PASS, FAIL or SKIP the moment it lands.
-- **Latest screenshot** — the captures described above, shown as they are taken.
+- **Screenshots** — every capture joins a filmstrip under the large view; the large view follows the newest capture until a thumbnail is clicked to hold one.
 
 How it works: the dashboard mints a run id per click and sends it in the request body; the API routes thread it into the QAAgent methods. Inside the checks, `emitLive()` records each event into a bounded per-run buffer (300 events, newest 4 runs, in memory only) and broadcasts it over the QAAgent WebSocket as a `{type: "qa-live"}` frame. The panel holds a second `AgentClient` socket — to QAAgent, instance `qa`, the same name the API routes use — receives the broadcasts, and polls `qaLiveSnapshot(runId, sinceSeq)` every 2s over the same socket as a catch-up/backstop; both paths dedupe by event sequence number and ignore other runs' ids. The panel's lifecycle follows the button's HTTP request: when the response lands, it makes one final snapshot pull and marks the run finished. `emitLive` is an observer only — it no-ops without a run id and can never throw into a check, so the live view cannot fail a run. The payment-guards and edge-cases buttons show only start/finish lines in the panel: they are fast HTTP assertions with no browser session to watch (inside the Full Suite their sub-checks narrate normally).
 
