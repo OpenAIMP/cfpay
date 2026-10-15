@@ -30,6 +30,25 @@ export interface QACheckResult {
 }
 
 /**
+ * One live-view event for a QA run (issue #88). While a dashboard-initiated
+ * run is in flight, the agent broadcasts these over its WebSocket so the QA
+ * tab's side panel can show the run working: step narration, per-check
+ * verdicts, and the screenshots the checks already capture. Events are keyed
+ * by a caller-minted run id, so a watcher only ever sees its own run.
+ */
+export interface QALiveEvent {
+  seq: number;
+  ts: string;
+  kind: "step" | "screenshot" | "result";
+  label: string;
+  detail?: string;
+  ok?: boolean;
+  skipped?: boolean;
+  /** data: URI; screenshot events only. */
+  image?: string;
+}
+
+/**
  * The localStorage key the dashboard reads its API key from.
  *
  * This must match `public/index.html`, which reads `cfmail_api_key` in five
@@ -99,6 +118,14 @@ export class QAAgent extends Think<Env> {
   /** Last run, for the A2A summary. Not persisted: it is a convenience, not a record. */
   private lastRun: QACheckResult | null = null;
   private lastRunAt = "";
+
+  /**
+   * Live-view run buffers (issue #88), in memory only: a run's watcher and
+   * the run itself live in this same instance, and if the instance restarts
+   * the run is gone anyway. Bounded per run and across runs so a forgotten
+   * watcher cannot grow this without limit.
+   */
+  private liveRuns = new Map<string, { seq: number; events: QALiveEvent[]; startedAt: number }>();
 
   /* ---------------------------- Think surface ---------------------------- */
 
@@ -205,6 +232,7 @@ export class QAAgent extends Think<Env> {
     textContains?: string[],
     apiKey?: string,
     sharedConnection?: CdpLike,
+    liveRunId?: string,
   ): Promise<QACheckResult> {
     const env = this.env as Env;
     if (!env.BROWSER) {
@@ -233,6 +261,8 @@ export class QAAgent extends Think<Env> {
       try {
         const sessionId = await cdp.attachToTarget(targetId);
 
+        this.emitLive(liveRunId, { kind: "step", label: "Loading page", detail: url });
+
         // Navigate FIRST. localStorage is origin-scoped: seeding it on the
         // about:blank target (opaque origin) before navigating meant the
         // dashboard never saw the key and always showed the login page.
@@ -254,6 +284,7 @@ export class QAAgent extends Think<Env> {
             { sessionId },
           );
           await cdp.send("Page.reload", {}, { sessionId });
+          this.emitLive(liveRunId, { kind: "step", label: "Signed in with the dashboard key" });
         }
 
         // Wait for page load
@@ -281,6 +312,7 @@ export class QAAgent extends Think<Env> {
           { sessionId },
         )) as { data: string };
         const screenshot = `data:image/png;base64,${screenshotData}`;
+        this.emitLive(liveRunId, { kind: "screenshot", label: "Page screenshot", image: screenshot });
 
         const checks =
           textContains?.map((needle) => ({
@@ -306,31 +338,99 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
+   * Record and broadcast one live-view event (issue #88). No-ops without a
+   * run id, and never throws: the live view is an observer, and an observer
+   * failure must not fail the check it is watching.
+   */
+  private emitLive(
+    runId: string | undefined,
+    ev: { kind: QALiveEvent["kind"]; label: string; detail?: string; ok?: boolean; skipped?: boolean; image?: string },
+  ): void {
+    if (!runId) return;
+    try {
+      let run = this.liveRuns.get(runId);
+      if (!run) {
+        run = { seq: 0, events: [], startedAt: Date.now() };
+        this.liveRuns.set(runId, run);
+        // Keep only the newest few runs; the panel watches one at a time.
+        while (this.liveRuns.size > 4) {
+          const oldest = this.liveRuns.keys().next().value;
+          if (oldest === undefined || oldest === runId) break;
+          this.liveRuns.delete(oldest);
+        }
+      }
+      const event: QALiveEvent = { ...ev, seq: ++run.seq, ts: new Date().toISOString() };
+      run.events.push(event);
+      if (run.events.length > 300) run.events.splice(0, run.events.length - 300);
+      this.broadcast(JSON.stringify({ type: "qa-live", runId, event }));
+    } catch {
+      // Deliberately swallowed: see the doc comment above.
+    }
+  }
+
+  /**
+   * RPC (over the agent socket): the live events for a run after `sinceSeq`.
+   * The panel polls this as a catch-up/backstop to the broadcast stream, so
+   * a watcher that connected late — or whose socket hiccuped — still sees
+   * the whole run in order.
+   */
+  @callable()
+  async qaLiveSnapshot(
+    runId: string,
+    sinceSeq = 0,
+  ): Promise<{ known: boolean; events: QALiveEvent[]; latestSeq: number }> {
+    const run = this.liveRuns.get(runId);
+    if (!run) return { known: false, events: [], latestSeq: sinceSeq };
+    return {
+      known: true,
+      events: run.events.filter((e) => e.seq > sinceSeq),
+      latestSeq: run.seq,
+    };
+  }
+
+  /**
    * RPC: run a QA check against a URL.
    */
   @callable()
   async qaCheck(
     url: string,
-    checks?: { textContains?: string[]; apiKey?: string },
+    checks?: { textContains?: string[]; apiKey?: string; runId?: string },
   ): Promise<QACheckResult> {
-    const result = await this.runBrowserCheck(url, checks?.textContains, checks?.apiKey);
+    const runId = checks?.runId;
+    this.emitLive(runId, { kind: "step", label: "Running QA check", detail: url });
+    const result = await this.runBrowserCheck(url, checks?.textContains, checks?.apiKey, undefined, runId);
     this.lastRun = result;
     this.lastRunAt = new Date().toISOString();
+    this.emitLive(runId, {
+      kind: "result",
+      label: result.ok ? "QA check passed" : "QA check failed",
+      ok: result.ok,
+      detail: result.error ?? `${result.textLength} chars extracted`,
+    });
     return result;
   }
 
   /** RPC: check the dashboard itself. */
   @callable()
-  async qaDashboard(apiKey?: string): Promise<QACheckResult> {
+  async qaDashboard(apiKey?: string, runId?: string): Promise<QACheckResult> {
     const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    this.emitLive(runId, { kind: "step", label: "Checking this dashboard" });
     // Check for authenticated dashboard content (not just login page)
     const result = await this.runBrowserCheck(
       origin,
       ["PaymentAgent", "Dashboard", "Payments", "Emails"],
       apiKey,
+      undefined,
+      runId,
     );
     this.lastRun = result;
     this.lastRunAt = new Date().toISOString();
+    this.emitLive(runId, {
+      kind: "result",
+      label: result.ok ? "Dashboard check passed" : "Dashboard check failed",
+      ok: result.ok,
+      detail: result.error ?? `${result.textLength} chars extracted`,
+    });
     return result;
   }
 
@@ -357,6 +457,7 @@ export class QAAgent extends Think<Env> {
     apiKey: string,
     sharedConnection?: CdpLike,
     captureScreenshots?: boolean,
+    runId?: string,
   ): Promise<{ ok: boolean; tabs: { name: string; passed: boolean; detail: string; screenshot?: string }[]; error?: string }> {
     const env = this.env as Env;
     if (!env.BROWSER) {
@@ -376,10 +477,27 @@ export class QAAgent extends Think<Env> {
       { name: "Webhooks", tab: "webhooks", containerId: "webhookList", emptyText: "No webhook events yet" },
     ];
 
+    // Live view (issue #88): when a dashboard run is watching, capture the
+    // per-tab screenshots the panel displays even when the caller did not
+    // ask for them for a report.
+    const wantShots = captureScreenshots === true || !!runId;
+    this.emitLive(runId, { kind: "step", label: "Verifying tab data" });
+
     // Only opens a session when one was not supplied. This is what keeps a QA
     // report to a single session instead of two.
     const ownsConnection = !sharedConnection;
     const results: { name: string; passed: boolean; detail: string; screenshot?: string }[] = [];
+    // Every verdict also goes to the live panel when a run is watching, so
+    // the watcher sees each tab's result as it lands rather than at the end.
+    const pushResult = (r: { name: string; passed: boolean; detail: string; screenshot?: string }) => {
+      results.push(r);
+      this.emitLive(runId, {
+        kind: "result",
+        label: `${r.name}: ${r.passed ? "PASS" : "FAIL"}`,
+        ok: r.passed,
+        detail: r.detail,
+      });
+    };
     let browser: CdpLike | null = sharedConnection ?? null;
 
     try {
@@ -392,6 +510,8 @@ export class QAAgent extends Think<Env> {
 
       try {
         const sessionId = await cdp.attachToTarget(targetId);
+
+        this.emitLive(runId, { kind: "step", label: "Loading dashboard" });
 
         // Navigate FIRST. localStorage is origin-scoped: seeding it on the
         // about:blank target (opaque origin) before navigating meant the
@@ -445,13 +565,16 @@ export class QAAgent extends Think<Env> {
             "Dashboard showed the login page, so no tab could be verified. " +
             "The API key was not accepted (check DASHBOARD_API_KEY).";
           for (const tab of tabsToTest) {
-            results.push({ name: tab.name, passed: false, detail });
+            pushResult({ name: tab.name, passed: false, detail });
           }
           return { ok: false, tabs: results, error: detail };
         }
 
+        this.emitLive(runId, { kind: "step", label: "Signed in — starting tab checks" });
+
         for (const tab of tabsToTest) {
           try {
+            this.emitLive(runId, { kind: "step", label: `Checking ${tab.name} tab` });
             // Click the tab. Assert the click landed: a renamed or removed tab
             // must not be reported as a data failure.
             const clicked = (await cdp.send(
@@ -469,7 +592,7 @@ export class QAAgent extends Think<Env> {
             )) as { result?: { value?: boolean } };
 
             if (clicked.result?.value !== true) {
-              results.push({
+              pushResult({
                 name: tab.name,
                 passed: false,
                 detail: `Tab '[data-tab="${tab.tab}"]' is missing or did not become active.`,
@@ -518,19 +641,19 @@ export class QAAgent extends Think<Env> {
               | undefined;
 
             if (!state || state.found !== true) {
-              results.push({
+              pushResult({
                 name: tab.name,
                 passed: false,
                 detail: `Container '#${tab.containerId}' was not in the DOM.`,
               });
             } else if (state.isEmpty) {
-              results.push({
+              pushResult({
                 name: tab.name,
                 passed: false,
                 detail: `Rendered its empty state ("${tab.emptyText}"); no data to verify.`,
               });
             } else if ((state.rows ?? 0) === 0) {
-              results.push({
+              pushResult({
                 name: tab.name,
                 passed: false,
                 detail: state.stillLoading
@@ -538,7 +661,7 @@ export class QAAgent extends Think<Env> {
                   : `Container '#${tab.containerId}' rendered no rows.`,
               });
             } else {
-              results.push({
+              pushResult({
                 name: tab.name,
                 passed: true,
                 detail: `Rendered ${state.rows} row(s) from '#${tab.containerId}'.`,
@@ -548,7 +671,7 @@ export class QAAgent extends Think<Env> {
             // Optional: keep a picture of the tab as it rendered, for the
             // emailed report. Best-effort — a failed capture never fails the
             // check itself.
-            if (captureScreenshots) {
+            if (wantShots) {
               try {
                 const { data } = (await cdp.send(
                   "Page.captureScreenshot",
@@ -556,13 +679,20 @@ export class QAAgent extends Think<Env> {
                   { sessionId },
                 )) as { data?: string };
                 const last = results[results.length - 1];
-                if (data && last) last.screenshot = data;
+                if (data && last) {
+                  last.screenshot = data;
+                  this.emitLive(runId, {
+                    kind: "screenshot",
+                    label: `${tab.name} tab`,
+                    image: `data:image/png;base64,${data}`,
+                  });
+                }
               } catch {
                 // Screenshot is evidence, not the assertion; ignore failures.
               }
             }
           } catch (err) {
-            results.push({
+            pushResult({
               name: tab.name,
               passed: false,
               detail: err instanceof Error ? err.message : String(err),
@@ -599,6 +729,7 @@ export class QAAgent extends Think<Env> {
   async qaAndEmailReport(
     apiKey: string,
     toEmail: string,
+    runId?: string,
   ): Promise<{ ok: boolean; emailed: boolean; tabs: any[]; error?: string }> {
     // ONE session for the whole report: the tab check and the screenshot both
     // need a browser, and opening one each is what exhausted the Browser
@@ -606,6 +737,7 @@ export class QAAgent extends Think<Env> {
     // WebSocket", which reads like a configuration fault but is really
     // exhaustion - so the count is reduced rather than the symptom retried.
     const env = this.env as Env;
+    this.emitLive(runId, { kind: "step", label: "Building QA report with screenshots" });
     let connection: CdpLike | null = null;
     let tabResult: {
       ok: boolean;
@@ -617,7 +749,7 @@ export class QAAgent extends Think<Env> {
       if (env.BROWSER && apiKey) {
         connection = await this.openBrowserSession(env);
       }
-      tabResult = await this.qaDashboardTabs(apiKey, connection ?? undefined, true);
+      tabResult = await this.qaDashboardTabs(apiKey, connection ?? undefined, true, runId);
     } catch (err) {
       // Released here as well as in the finally below: this early return would
       // otherwise leak the session it opened, which is the exhaustion this
@@ -671,6 +803,7 @@ export class QAAgent extends Think<Env> {
         ["PaymentAgent", "Dashboard", "Payments", "Emails"],
         apiKey,
         connection ?? undefined,
+        runId,
       );
       const attachments: { filename: string; type: string; content: string }[] = [];
       const dateStr = new Date().toISOString().slice(0, 10);
@@ -695,6 +828,7 @@ export class QAAgent extends Think<Env> {
           });
         }
       }
+      this.emitLive(runId, { kind: "step", label: "Emailing the report", detail: toEmail });
       const sendResult = await emailAgent.sendThroughAgent({
         to: toEmail,
         subject: `QA Report: Dashboard ${tabResult.ok ? "PASS" : "FAIL"} - ${new Date().toISOString().slice(0, 10)}`,
@@ -705,6 +839,12 @@ export class QAAgent extends Think<Env> {
       // result reported emailed:true for a rate-limited or rejected send - the
       // dashboard showed success for a report that never left.
       if (!sendResult?.ok) {
+        this.emitLive(runId, {
+          kind: "result",
+          label: "Report not sent",
+          ok: false,
+          detail: sendResult?.error || "The email agent refused the send.",
+        });
         return {
           ok: tabResult.ok,
           emailed: false,
@@ -712,6 +852,7 @@ export class QAAgent extends Think<Env> {
           error: sendResult?.error || "The email agent refused the send.",
         };
       }
+      this.emitLive(runId, { kind: "result", label: "Report emailed", ok: true, detail: toEmail });
       return { ok: tabResult.ok, emailed: true, tabs: tabResult.tabs };
     } catch (err) {
       return {
@@ -741,6 +882,7 @@ export class QAAgent extends Think<Env> {
   async qaFullSuite(
     apiKey: string,
     toEmail?: string,
+    runId?: string,
   ): Promise<{
     ok: boolean;
     checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[];
@@ -753,24 +895,34 @@ export class QAAgent extends Think<Env> {
       r: { ok: boolean; detail?: string; error?: string },
     ) => {
       checks.push({ name, passed: r.ok, detail: r.error || r.detail || "" });
+      this.emitLive(runId, {
+        kind: "result",
+        label: name,
+        ok: r.ok,
+        detail: r.error || r.detail || "",
+      });
     };
+    this.emitLive(runId, { kind: "step", label: "Running the full QA suite" });
 
     try {
       // 1. Dashboard smoke test.
-      const dash = await this.qaDashboard(apiKey);
+      const dash = await this.qaDashboard(apiKey, runId);
       record("Check This Dashboard", {
         ok: dash.ok,
         detail: `${dash.textLength} chars extracted`,
         error: dash.error,
       });
 
-      // 2. Tab click-through with data verification.
-      const tabs = await this.qaDashboardTabs(apiKey);
+      // 2. Tab click-through with data verification. The tab check narrates
+      // itself to the live panel; the suite adds only the aggregate failure
+      // line for the case where no tab ran at all.
+      const tabs = await this.qaDashboardTabs(apiKey, undefined, undefined, runId);
       for (const t of tabs.tabs) {
         checks.push({ name: `Tab: ${t.name}`, passed: t.passed, detail: t.detail });
       }
       if (tabs.error && tabs.tabs.length === 0) {
         checks.push({ name: "Verify Tab Data", passed: false, detail: tabs.error });
+        this.emitLive(runId, { kind: "result", label: "Verify Tab Data", ok: false, detail: tabs.error });
       }
 
       // 3. Payment guards (no browser session needed; HTTP-level checks).
@@ -779,6 +931,7 @@ export class QAAgent extends Think<Env> {
       if (pay.checks.length > 0) {
         for (const c of pay.checks) {
           checks.push({ name: `Payment: ${c.name}`, passed: c.passed, detail: c.detail });
+          this.emitLive(runId, { kind: "result", label: `Payment: ${c.name}`, ok: c.passed, detail: c.detail });
         }
       } else {
         record("Check Payment Guards", {
@@ -793,6 +946,7 @@ export class QAAgent extends Think<Env> {
       if (edge.checks.length > 0) {
         for (const c of edge.checks) {
           checks.push({ name: `Edge: ${c.name}`, passed: c.passed, detail: c.detail });
+          this.emitLive(runId, { kind: "result", label: `Edge: ${c.name}`, ok: c.passed, detail: c.detail });
         }
       } else {
         record("Check Edge Cases", {
@@ -805,13 +959,13 @@ export class QAAgent extends Think<Env> {
       // 5 & 6. Real-email checks: skipped without an explicit recipient.
       let emailed = false;
       if (toEmail) {
-        const att = await this.testEmailAttachmentUI(apiKey, toEmail);
+        const att = await this.testEmailAttachmentUI(apiKey, toEmail, runId);
         record("Test Attachment via UI", {
           ok: att.ok,
           detail: att.detail,
           error: att.error,
         });
-        const rep = await this.qaAndEmailReport(apiKey, toEmail);
+        const rep = await this.qaAndEmailReport(apiKey, toEmail, runId);
         emailed = rep.emailed;
         record("Email QA Report", {
           ok: rep.emailed,
@@ -825,15 +979,35 @@ export class QAAgent extends Think<Env> {
           skipped: true,
           detail: "Skipped: no recipient address provided (sends a real email).",
         });
+        this.emitLive(runId, {
+          kind: "result",
+          label: "Test Attachment via UI",
+          ok: true,
+          skipped: true,
+          detail: "Skipped: no recipient address provided (sends a real email).",
+        });
         checks.push({
           name: "Email QA Report",
           passed: true,
           skipped: true,
           detail: "Skipped: no recipient address provided (sends a real email).",
         });
+        this.emitLive(runId, {
+          kind: "result",
+          label: "Email QA Report",
+          ok: true,
+          skipped: true,
+          detail: "Skipped: no recipient address provided (sends a real email).",
+        });
       }
 
-      return { ok: checks.filter((c) => !c.skipped).every((c) => c.passed), checks, emailed };
+      const suiteOk = checks.filter((c) => !c.skipped).every((c) => c.passed);
+      this.emitLive(runId, {
+        kind: "result",
+        label: suiteOk ? "Full suite passed" : "Full suite failed",
+        ok: suiteOk,
+      });
+      return { ok: suiteOk, checks, emailed };
     } catch (err) {
       return {
         ok: false,
@@ -863,6 +1037,7 @@ export class QAAgent extends Think<Env> {
   async testEmailAttachmentUI(
     apiKey: string,
     toEmail: string,
+    runId?: string,
   ): Promise<{ ok: boolean; detail: string; error?: string }> {
     const env = this.env as Env;
     if (!env.BROWSER) {
@@ -876,6 +1051,7 @@ export class QAAgent extends Think<Env> {
     }
 
     const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    this.emitLive(runId, { kind: "step", label: "Driving the Send Email form", detail: toEmail });
     // Standalone check, so it owns its session - but the session is opened
     // through the helper so a limit refusal is explained instead of surfacing as
     // a raw "did not return a WebSocket".
@@ -935,6 +1111,12 @@ export class QAAgent extends Think<Env> {
         )) as { result?: { value?: string } };
 
         if (formReady.result?.value !== "ready") {
+          this.emitLive(runId, {
+            kind: "result",
+            label: "Send Email form not usable",
+            ok: false,
+            detail: String(formReady.result?.value),
+          });
           return {
             ok: false,
             detail: `Send Email form did not become usable: ${formReady.result?.value}`,
@@ -973,10 +1155,19 @@ export class QAAgent extends Think<Env> {
           { sessionId },
         )) as { result?: { value?: string } };
 
+        this.emitLive(runId, { kind: "step", label: "Form loaded" });
+
         const filledValue = filled.result?.value || "";
         if (!filledValue.startsWith("filled:1")) {
+          this.emitLive(runId, {
+            kind: "result",
+            label: "Could not attach a file to the form",
+            ok: false,
+            detail: filledValue,
+          });
           return { ok: false, detail: `Could not attach a file to the form (${filledValue})` };
         }
+        this.emitLive(runId, { kind: "step", label: "Form filled; qa-probe.txt attached" });
 
         // Submit through the page's own handler, so this exercises the real path.
         await cdp.send(
@@ -984,6 +1175,7 @@ export class QAAgent extends Think<Env> {
           { expression: `document.querySelector('button[onclick="sendEmail()"]').click()` },
           { sessionId },
         );
+        this.emitLive(runId, { kind: "step", label: "Submitted; waiting for the send to confirm" });
 
         // Poll for a terminal state instead of sleeping a fixed amount.
         const outcome = (await cdp.send(
@@ -1008,13 +1200,43 @@ export class QAAgent extends Think<Env> {
           { sessionId },
         )) as { result?: { value?: { state?: string; text?: string } } };
 
+        // One picture of the form as it settled, for the live panel.
+        try {
+          const { data } = (await cdp.send(
+            "Page.captureScreenshot",
+            { format: "png" },
+            { sessionId },
+          )) as { data?: string };
+          if (data) {
+            this.emitLive(runId, {
+              kind: "screenshot",
+              label: "Send Email form",
+              image: `data:image/png;base64,${data}`,
+            });
+          }
+        } catch {
+          // Best-effort evidence for the panel; never fails the check.
+        }
+
         const state = outcome.result?.value || {};
         if (state.state === "sent") {
+          this.emitLive(runId, {
+            kind: "result",
+            label: "Attachment test passed",
+            ok: true,
+            detail: String(state.text).slice(0, 200),
+          });
           return {
             ok: true,
             detail: `Form submitted with 1 attachment; UI confirmed: ${String(state.text).slice(0, 200)}`,
           };
         }
+        this.emitLive(runId, {
+          kind: "result",
+          label: "Attachment test failed",
+          ok: false,
+          detail: `Send did not confirm (${state.state})`,
+        });
         return {
           ok: false,
           detail: `Send did not confirm (${state.state}): ${String(state.text || "").slice(0, 300)}`,
