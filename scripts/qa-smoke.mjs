@@ -134,7 +134,71 @@ async function main() {
     record("dashboard tabs render real data", false, err.message);
   }
 
-  // 5. The attachment check SENDS REAL MAIL, so it is opt-in and off by default.
+  // 5. UX audit of the dashboard itself (issue #91). Asserts the audit RUNS
+  //    and returns structured findings. The dashboard's own findings may
+  //    legitimately fail rules — that is the audit working — so the verdict
+  //    itself is reported, not gated.
+  try {
+    const { status, json } = await post("/api/dashboard/qa/ux-audit", {});
+    const findings = Array.isArray(json?.checks) ? json.checks : [];
+    record(
+      "UX audit runs against the dashboard",
+      status === 200 && findings.length > 0,
+      json?.error || `${findings.length} findings, status=${status}`,
+    );
+    for (const f of findings) {
+      console.log(`      ${f.passed ? "ok  " : "BAD "} ${f.name} (${f.detail})`);
+    }
+  } catch (err) {
+    record("UX audit runs against the dashboard", false, err.message);
+  }
+
+  // 6. UX audit correctness (issue #94): the fixture page plants exactly
+  //    four violations (public/qa-fixture.html). The generalized audit must
+  //    catch those — and only those. This is the audit checking its own
+  //    eyesight; a miss here means the probe or the rules regressed, even
+  //    if every endpoint still answers.
+  try {
+    const fixtureUrl = `${BASE_URL}/qa-fixture.html`;
+    const { status, json } = await post("/api/dashboard/qa/ux-audit-url", {
+      spec: { pages: [fixtureUrl] },
+    });
+    const byName = new Map((json?.checks || []).map((c) => [c.name, c]));
+    const expectFinding = (name, passed, detailPart) => {
+      const f = byName.get(name);
+      return (
+        !!f &&
+        f.passed === passed &&
+        (!detailPart || (f.detail || "").includes(detailPart))
+      );
+    };
+    const expectations = [
+      ["Coverage", true, "1/1 pages measured"],
+      ["Contrast (WCAG AA)", false, "planted-faint"],
+      ["Target size", false, "planted-tiny"],
+      ["Heading hierarchy", false, "skips h1 to h3"],
+      ["Style consistency", true, null],
+      ["Layout integrity", true, null],
+      ["Image alt text", false, null],
+    ];
+    const misses = expectations.filter(
+      ([n, p, d]) => !expectFinding(n, p, d),
+    );
+    record(
+      "UX audit catches the fixture's planted violations",
+      status === 200 && misses.length === 0,
+      misses.length
+        ? `missed: ${misses.map(([n]) => n).join(", ")} (status=${status})`
+        : "all 4 planted violations caught, compliant controls clean",
+    );
+    for (const c of json?.checks || []) {
+      console.log(`      ${c.passed ? "ok  " : "BAD "} ${c.name} (${c.detail})`);
+    }
+  } catch (err) {
+    record("UX audit catches the fixture's planted violations", false, err.message);
+  }
+
+  // 7. The attachment check SENDS REAL MAIL, so it is opt-in and off by default.
   if (!RUN_ATTACHMENT) {
     skip("send-email form with attachment", 'QA_RUN_ATTACHMENT_CHECK is not "true"');
   } else if (!TEST_EMAIL) {
