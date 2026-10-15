@@ -374,6 +374,7 @@
               <div>
                 <img id="qaLiveImg" alt="Latest screenshot from the running check" style="display:none;max-width:100%;border:1px solid var(--border);border-radius:4px;" />
                 <p id="qaLiveImgLabel" style="color:var(--muted);font-size:0.8rem;margin:0.25rem 0 0;">Waiting for the first screenshot…</p>
+                <div id="qaLiveThumbs" style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.4rem;"></div>
               </div>
               <div id="qaLiveSteps" style="font-size:0.85rem;line-height:1.65;max-height:330px;overflow-y:auto;"></div>
             </div>
@@ -490,7 +491,7 @@
     let qaLiveCtx = null;
     function qaLiveBegin(label) {
       const id = 'qa-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-      qaLiveCtx = { id };
+      qaLiveCtx = { id, pinned: false };
       const panel = document.getElementById('qaLivePanel');
       if (panel) panel.style.display = 'block';
       const status = document.getElementById('qaLiveStatus');
@@ -501,6 +502,8 @@
       if (img) { img.style.display = 'none'; img.removeAttribute('src'); }
       const imgLabel = document.getElementById('qaLiveImgLabel');
       if (imgLabel) imgLabel.textContent = 'Waiting for the first screenshot…';
+      const strip = document.getElementById('qaLiveThumbs');
+      if (strip) strip.innerHTML = '';
       qaLiveLine('• ' + label + ' started', 'var(--muted)');
       if (window.qaLiveWatch) window.qaLiveWatch(id);
       return id;
@@ -514,15 +517,36 @@
       steps.appendChild(line);
       steps.scrollTop = steps.scrollHeight;
     }
+    function qaLiveShowShot(src, label) {
+      const img = document.getElementById('qaLiveImg');
+      if (img) { img.src = src; img.style.display = 'block'; }
+      const imgLabel = document.getElementById('qaLiveImgLabel');
+      if (imgLabel) imgLabel.textContent = label || 'Screenshot';
+    }
     // Called by the module script for each event of the watched run.
     window.qaLiveApply = function (ev) {
       if (!ev) return;
       if (ev.kind === 'screenshot') {
         if (ev.image) {
-          const img = document.getElementById('qaLiveImg');
-          if (img) { img.src = ev.image; img.style.display = 'block'; }
-          const imgLabel = document.getElementById('qaLiveImgLabel');
-          if (imgLabel) imgLabel.textContent = ev.label || 'Screenshot';
+          // Every capture joins the filmstrip below the large view, so no
+          // screenshot is lost when the next one lands. The large view
+          // follows the newest capture until the user clicks a thumbnail
+          // to hold one; a new run resets both.
+          const strip = document.getElementById('qaLiveThumbs');
+          if (strip) {
+            const thumb = document.createElement('img');
+            thumb.src = ev.image;
+            thumb.title = ev.label || 'Screenshot';
+            thumb.alt = ev.label || 'Screenshot';
+            thumb.style.cssText = 'width:84px;border:1px solid var(--border);border-radius:3px;cursor:pointer;';
+            thumb.onclick = () => {
+              if (qaLiveCtx) qaLiveCtx.pinned = true;
+              qaLiveShowShot(ev.image, ev.label);
+            };
+            strip.appendChild(thumb);
+            while (strip.children.length > 12) strip.removeChild(strip.firstChild);
+          }
+          if (!qaLiveCtx || !qaLiveCtx.pinned) qaLiveShowShot(ev.image, ev.label);
         }
         qaLiveLine('📷 ' + (ev.label || 'Screenshot'), 'var(--muted)');
       } else if (ev.kind === 'result') {
