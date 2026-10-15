@@ -147,6 +147,31 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 3. Onboard `cfmail.openaimp.com` for [Email Sending](https://dash.cloudflare.com/?to=/:account/email-service/sending)
 4. Create routing rule: `agent@cfmail.openaimp.com` → Send to Worker → `cfmail-agent`
 
+## Post-deploy QA (automated testing)
+
+Every push to `main` deploys the Worker and then runs `scripts/qa-smoke.mjs` against live production (the **Post-deploy QA** job in `.github/workflows/deploy.yml`). A green deploy only proves the upload worked; this job proves the app works. The exit code is the contract — any FAIL fails the job, and a check that cannot run reports SKIP with the reason, never a silent pass.
+
+What it checks:
+
+1. `/health` responds.
+2. Dashboard edge cases behave.
+3. Payment guards: the x402 challenge is well-formed (no money moves).
+4. Tab data: Emails / Payments / Webhooks render real rows or their recognized empty states.
+5. UX audit (dashboard): the deterministic accessibility/UX audit runs end to end. Its findings are reported, not gated — the dashboard legitimately has findings.
+6. UX audit (fixture self-test): the same audit pointed at `public/qa-fixture.html`, a page with exactly four planted violations, must return the exact expected findings. This is the audit testing itself; a miss fails the job.
+7. Attachment check: drives the real Send Email form and sends a real email with an attachment to `QA_TEST_EMAIL`. It runs by default; set `QA_RUN_ATTACHMENT_CHECK=false` to disable it explicitly.
+
+Configuration: the job declares `environment: PROD`, so it uses the PROD environment's secrets — `DASHBOARD_API_KEY` and `QA_TEST_EMAIL` (the inbox that receives the attachment test email) live there, not as repository secrets.
+
+Run it manually:
+
+- **GitHub:** Actions → a *Deploy CFmail Agent* run → Re-run (failed) jobs replays Post-deploy QA against current production.
+- **Locally:** `BASE_URL=https://pay.openaimp.com DASHBOARD_API_KEY=<key> QA_TEST_EMAIL=<recipient> node scripts/qa-smoke.mjs`
+
+Reading a run: Actions → the Deploy run → **Post-deploy QA** → *Run QA checks against production* — per-check `[PASS]` / `[FAIL]` / `[SKIP]` lines plus a summary (e.g. `7/7 checks passed`). The QA tab's **Audit URL** button uses the same audit interactively and defaults to the fixture page, so one click there is the same self-test by hand.
+
+> Note: two deploys landing back-to-back run two suites at once; on the Free plan's browser limits they can starve each other and false-fail. Re-run the job solo before treating a red run as a regression.
+
 ## API Endpoints
 
 | Endpoint | Method | Auth | Description |
