@@ -9,9 +9,13 @@
 import { describe, it, expect } from "vitest";
 import {
   AUTOPILOT_MAX_STEPS,
+  AUTOPILOT_PLANNER_SYSTEM,
+  AUTOPILOT_VERIFIER_SYSTEM,
   buildEvidenceDigest,
   parsePlan,
   parseVerification,
+  runAutopilotPipeline,
+  type AutopilotDeps,
   type AutopilotRun,
 } from "../src/public-autopilot";
 
@@ -115,5 +119,96 @@ describe("buildEvidenceDigest", () => {
       evidence: [],
     } as unknown as AutopilotRun;
     expect(buildEvidenceDigest(big, 1000).length).toBeLessThanOrEqual(1100);
+  });
+});
+
+describe("runAutopilotPipeline", () => {
+  const PLAN =
+    '{"steps":[{"title":"Quotes","instruction":"Quote NVDA and AMD"},{"title":"Chains","instruction":"Pull the NVDA chain"}]}';
+  const FOLLOWUP = '{"steps":[{"title":"AVGO chain","instruction":"Pull the AVGO chain"}]}';
+
+  function fakeDeps(verdicts: string[], runStepImpl?: AutopilotDeps["runStep"]) {
+    const saved: AutopilotRun[] = [];
+    const stepQuestions: string[] = [];
+    let verdictIdx = 0;
+    const deps: AutopilotDeps = {
+      aiRun: async (_modelId, messages) => {
+        const system = String(messages[0].content);
+        const user = String(messages[1].content);
+        if (system === AUTOPILOT_PLANNER_SYSTEM) {
+          return { response: user.includes("left these gaps") ? FOLLOWUP : PLAN };
+        }
+        if (system === AUTOPILOT_VERIFIER_SYSTEM) {
+          return { response: verdicts[Math.min(verdictIdx++, verdicts.length - 1)] };
+        }
+        return { response: "The final answer." };
+      },
+      runStep:
+        runStepImpl ??
+        (async (question) => {
+          stepQuestions.push(question);
+          return {
+            answer: "finding for: " + question.slice(0, 30),
+            trace: [{ name: "get_quotes", args: {}, ok: true, result: "{}", summary: "ok" } as any],
+          };
+        }),
+      save: async (run) => {
+        saved.push(JSON.parse(JSON.stringify(run)));
+      },
+    };
+    return { deps, saved, stepQuestions };
+  }
+
+  it("runs plan -> steps -> verify -> synthesis and persists the run", async () => {
+    const { deps, saved, stepQuestions } = fakeDeps(['{"complete":true,"confidence":0.9,"gaps":[],"summary":"covered"}']);
+    const out = await runAutopilotPipeline(deps, "compare NVDA and AMD", ["get_quotes"], "@cf/test");
+    expect(out.answer).toBe("The final answer.");
+    expect(out.autopilot.status).toBe("done");
+    expect(out.autopilot.steps.map((s) => s.status)).toEqual(["done", "done"]);
+    expect(out.autopilot.evidence).toHaveLength(2);
+    expect(out.autopilot.verification?.complete).toBe(true);
+    expect(out.autopilot.replans).toBe(0);
+    expect(stepQuestions).toHaveLength(2);
+    expect(saved.length).toBeGreaterThan(3);
+    expect(saved[saved.length - 1].status).toBe("done");
+  });
+
+  it("replans once from the verifier's gaps, then completes", async () => {
+    const { deps, stepQuestions } = fakeDeps([
+      '{"complete":false,"confidence":0.4,"gaps":["No AVGO chain"],"summary":"one leg missing"}',
+      '{"complete":true,"confidence":0.8,"gaps":[],"summary":"covered now"}',
+    ]);
+    const out = await runAutopilotPipeline(deps, "compare three semis", ["get_quotes"], "@cf/test");
+    expect(out.autopilot.replans).toBe(1);
+    expect(out.autopilot.steps).toHaveLength(3);
+    expect(stepQuestions).toHaveLength(3);
+    expect(out.autopilot.verification?.complete).toBe(true);
+  });
+
+  it("marks a throwing step failed and still finishes the run", async () => {
+    const { deps } = fakeDeps(
+      ['{"complete":false,"confidence":0.2,"gaps":["step failed"],"summary":"partial"}'],
+      async () => {
+        throw new Error("tool backend down");
+      },
+    );
+    const out = await runAutopilotPipeline(deps, "goal", ["get_quotes"], "@cf/test");
+    expect(out.autopilot.steps.every((s) => s.status === "failed")).toBe(true);
+    expect(out.autopilot.status).toBe("done");
+    expect(out.answer.length).toBeGreaterThan(0);
+  });
+
+  it("survives a garbage planner reply with the single fallback step", async () => {
+    const { deps, stepQuestions } = fakeDeps(['{"complete":true,"confidence":1,"gaps":[],"summary":"ok"}']);
+    deps.aiRun = async (_m, messages) =>
+      String(messages[0].content) === AUTOPILOT_PLANNER_SYSTEM
+        ? { response: "no json here" }
+        : String(messages[0].content) === AUTOPILOT_VERIFIER_SYSTEM
+          ? { response: '{"complete":true,"confidence":1,"gaps":[],"summary":"ok"}' }
+          : { response: "answer" };
+    const out = await runAutopilotPipeline(deps, "the goal itself", ["get_quotes"], "@cf/test");
+    expect(out.autopilot.steps).toHaveLength(1);
+    expect(stepQuestions).toHaveLength(1);
+    expect(out.autopilot.status).toBe("done");
   });
 });
