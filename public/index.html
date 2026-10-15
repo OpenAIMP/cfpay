@@ -279,6 +279,10 @@
             <input type="text" id="publicInput" placeholder="e.g. Which looks best for a bullish view on semiconductors?" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
             <button class="btn" onclick="sendPublic()">Ask</button>
           </div>
+          <label style="display:flex;gap:0.45rem;align-items:flex-start;margin-top:0.6rem;font-size:0.8rem;color:var(--muted);cursor:pointer;">
+            <input type="checkbox" id="publicAutopilot" style="margin-top:0.15rem;" />
+            <span><strong style="color:var(--text);">Autopilot</strong> &mdash; plan the goal into steps, execute each one, and verify the evidence before answering. Slower and uses more AI calls; best for multi-part comparisons.</span>
+          </label>
           <div id="publicTools" style="margin-top:0.75rem;color:var(--muted);font-size:0.75rem;"></div>
           <div style="margin-top:0.75rem;">
             <button class="btn" id="publicCapsBtn" style="background:var(--bg);color:var(--text);border:1px solid var(--border);" onclick="togglePublicCaps()">Model &amp; MCP capabilities</button>
@@ -1707,6 +1711,30 @@ async function loadStats() {
         + rows + '</div>';
     }
 
+    // The autopilot run card: the persisted Goal -> Planner -> Queue ->
+    // Executor -> Verifier state, rendered from the run the response carries.
+    function renderAutopilotRun(run) {
+      if (!run || !Array.isArray(run.steps)) return '';
+      const icon = { done: '\u2713', failed: '\u2717', running: '\u2026', pending: '\u2022' };
+      const steps = run.steps.map(st => {
+        const ans = st.answer ? '<div style="color:var(--muted);font-size:0.75rem;margin:0.15rem 0 0 1.1rem;">' + escapeHtml(String(st.answer).slice(0, 240)) + '</div>' : '';
+        return '<div style="margin-top:0.25rem;font-size:0.8rem;">' + (icon[st.status] || '\u2022') + ' ' + escapeHtml(st.title) + ' <span style="color:var(--muted);">(' + escapeHtml(st.status) + ')</span>' + ans + '</div>';
+      }).join('');
+      let verdict = '';
+      if (run.verification) {
+        const v = run.verification;
+        const pct = Math.round((Number(v.confidence) || 0) * 100);
+        verdict = '<div style="margin-top:0.5rem;font-size:0.8rem;">Verifier: ' + (v.complete ? '\u2713 complete' : 'incomplete') + ' \u2014 confidence ' + pct + '%'
+          + (v.summary ? '<div style="color:var(--muted);font-size:0.75rem;">' + escapeHtml(v.summary) + '</div>' : '')
+          + (Array.isArray(v.gaps) && v.gaps.length ? '<div style="color:var(--muted);font-size:0.75rem;">Gaps: ' + v.gaps.map(g => escapeHtml(g)).join('; ') + '</div>' : '')
+          + '</div>';
+      }
+      const evCount = Array.isArray(run.evidence) ? run.evidence.length : 0;
+      return '<details open style="margin-top:0.4rem;border:1px solid var(--border);border-radius:6px;padding:0.5rem;">'
+        + '<summary style="cursor:pointer;font-size:0.78rem;">\uD83E\uDDED Autopilot run \u2014 ' + escapeHtml(run.status) + ' \u00b7 ' + run.steps.length + ' steps \u00b7 ' + evCount + ' evidence</summary>'
+        + '<div style="margin-top:0.4rem;">' + steps + verdict + '</div></details>';
+    }
+
     // `preset` lets a question-library button send a prepared prompt without
     // going through the text box.
     async function sendPublic(preset) {
@@ -1715,11 +1743,13 @@ async function loadStats() {
       const msg = (typeof preset === 'string' ? preset : input.value).trim();
       if (!msg) return;
       input.value = '';
+      const autopilotEl = document.getElementById('publicAutopilot');
+      const useAutopilot = !!(autopilotEl && autopilotEl.checked);
       container.innerHTML += '<div class="chat-msg user">' + escapeHtml(msg) + '</div>';
-      container.innerHTML += '<div class="chat-msg assistant" id="publicThinking">Thinking...</div>';
+      container.innerHTML += '<div class="chat-msg assistant" id="publicThinking">' + (useAutopilot ? 'Autopilot running \u2014 planning, executing and verifying (this can take a minute)...' : 'Thinking...') + '</div>';
       container.scrollTop = container.scrollHeight;
       try {
-        const res = await api('/api/public/chat', 'POST', { message: msg });
+        const res = await api('/api/public/chat', 'POST', { message: msg, autopilot: useAutopilot });
         const t = document.getElementById('publicThinking');
         if (t) t.remove();
         if (res.error) {
@@ -1742,7 +1772,12 @@ async function loadStats() {
             if (fr === 'round_limit') meaning = ' (stopped: too many tool calls)';
             else if (fr === 'stop' && trace.length === 0) meaning = ' (the model answered without calling tools)';
             else if (fr === 'length') meaning = ' (the reply was cut off at the token limit)';
+            else if (fr === 'autopilot') meaning = ' (planned, executed and verified)';
             document.getElementById('publicTools').textContent += '  |  finish: ' + fr + meaning;
+          }
+          if (res.autopilot) {
+            container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
+              + renderAutopilotRun(res.autopilot) + '</div>';
           }
           // Inline the trace with the answer so a claim can be traced to a result.
           container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
