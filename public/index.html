@@ -308,8 +308,8 @@
         </div>
 
         <div class="card" style="border-left:3px solid #b45309;">
-          <h3 style="font-size:1rem;margin-bottom:0.5rem;">Read-only by default</h3>
-          <p style="color:var(--muted);font-size:0.875rem;line-height:1.7;margin:0;">
+          <h3 id="publicTradingTitle" style="font-size:1rem;margin-bottom:0.5rem;">Read-only by default</h3>
+          <p id="publicTradingBody" style="color:var(--muted);font-size:0.875rem;line-height:1.7;margin:0;">
             Public.com's server also exposes order placement, and their
             documentation warns that a trade placed through an MCP client is a
             <strong style="color:var(--text);">real order using real money</strong>.
@@ -1269,6 +1269,23 @@ async function loadStats() {
       note.innerHTML = html;
     }
 
+    // The status card under the Ask box is static HTML written for the
+    // disabled state; when the deployment has trading on, flip its heading
+    // and copy so the enabled state is visible before any proposal exists.
+    function renderTradingStatus(enabled) {
+      if (!enabled) return;
+      const title = document.getElementById('publicTradingTitle');
+      const body = document.getElementById('publicTradingBody');
+      if (!title || !body) return;
+      title.textContent = 'Trading enabled \u2014 approval required';
+      body.innerHTML = 'Trading is <strong style="color:var(--text);">enabled</strong> on this deployment '
+        + '(the Worker secret <code>PUBLIC_ALLOW_TRADING</code> is set to <code>true</code>). '
+        + 'An order-placing call from the model still does not run directly: it becomes a proposal '
+        + 'in the Trade approvals card above, and only your approval executes it \u2014 a '
+        + '<strong style="color:var(--text);">real order using real money</strong>. '
+        + 'Reads &mdash; balances, quotes, option chains, holdings &mdash; work either way.';
+    }
+
     async function loadPublicModels() {
       const sel = document.getElementById('publicModel');
       if (!sel) return;
@@ -1281,6 +1298,7 @@ async function loadStats() {
           + escapeHtml(m.label || m.id) + (m.id === res.defaultModel ? ' (default)' : '') + '</option>'
         ).join('');
         renderModelDetail();
+        renderTradingStatus(!!res.tradingEnabled);
       } catch (err) {
         sel.innerHTML = '<option value="">(could not load models)</option>';
         const note = document.getElementById('publicModelNote');
