@@ -1846,7 +1846,13 @@ async function loadStats() {
     if (!localStorage.getItem("cfmail_api_key")) return null;
     qaAgentClient = new AgentClient({
       host: window.location.host,
-      agent: "QAAgent",
+      // "qa-agent", NOT the class name "QAAgent": the client kebab-cases
+      // the agent option per capital letter ("QAAgent" -> "q-a-agent"),
+      // while the server builds its route map from the DO binding name
+      // ("QA_AGENT" -> "qa-agent"). The two never meet, the handshake is
+      // refused, and the panel silently shows nothing. Passing the
+      // binding's kebab form survives the client's conversion unchanged.
+      agent: "qa-agent",
       name: "qa",
       query: () => ({ token: localStorage.getItem("cfmail_api_key") || "" }),
       // Not the host agent's state handler: QAAgent state frames are its

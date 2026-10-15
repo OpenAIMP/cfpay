@@ -6,17 +6,18 @@ QAAgent is the autonomous QA agent for the cfpay dashboard (`pay.openaimp.com`).
 
 ## Capabilities
 
-Seven `@callable()` methods, all behind `requireAuth`, exposed as `POST /api/dashboard/qa/*` and as dashboard buttons:
+Eight `@callable()` methods, all behind `requireAuth`, exposed as `POST /api/dashboard/qa/*` and as dashboard buttons — plus a ninth, `qaLiveSnapshot`, which is reachable only over the agent WebSocket and serves the live view (below); it has no button and no HTTP route:
 
 | Button | Endpoint | Method | What it proves |
 |---|---|---|---|
+| Run Full Suite | `/qa/full-suite` | `qaFullSuite(apiKey, toEmail?)` | Every check below, in order, as one aggregate PASS/FAIL. The two real-email checks are **skipped** (marked SKIP, excluded from the verdict) unless a recipient is supplied |
 | Run QA Check | `/qa/check` | `qaCheck(url, checks)` | Browser-check any URL with text assertions |
 | Check This Dashboard | `/qa/dashboard` | `qaDashboard(apiKey)` | Dashboard loads, key elements present, screenshot captured |
 | Verify Tab Data | `/qa/tabs` | `qaDashboardTabs(apiKey)` | Tab click-through with data verification (see below) |
 | Test Attachment via UI | `/qa/test-attachment` | `testEmailAttachmentUI(apiKey, toEmail)` | End-to-end Send Email form: fill fields, attach file via `DataTransfer`, submit via real button, verify success. Sends a **real email** with attachment. |
-| Check Payment Guards | `/qa/payment-flow` | `qaPaymentFlow(apiKey)` | Payment *gate* holds: 402 challenge is well-formed, malformed signatures refused. **No money moves** — no crypto, no card. |
-| Check Edge Cases | `/qa/edge-cases` | `qaEdgeCases(apiKey)` | Unauthenticated reads rejected, wrong API key rejected, unknown routes don't report success, errors are JSON not HTML |
-| Email QA Report | `/qa/email-report` | `qaAndEmailReport(apiKey, toEmail)` | Runs tab checks + dashboard screenshot on one shared browser session, emails the report with PNG attached. Sends a **real email**. |
+| Check Payment Guards | `/qa/payment-flow` | `qaPaymentFlow()` | Payment *gate* holds: 402 challenge is well-formed, malformed signatures refused. **No money moves** — no crypto, no card. |
+| Check Edge Cases | `/qa/edge-cases` | `qaEdgeCases()` | Unauthenticated reads rejected, wrong API key rejected, unknown routes don't report success, errors are JSON not HTML |
+| Email QA Report | `/qa/email-report` | `qaAndEmailReport(apiKey, toEmail)` | Runs tab checks + dashboard screenshot on one shared browser session, emails the report with **4 PNGs** attached (dashboard + one per tab). Sends a **real email**. |
 
 ### Tab coverage
 
@@ -46,13 +47,25 @@ Each entry maps a tab button ID → the data container it populates → the expe
 
 ### Screenshots
 
-`qaAndEmailReport` attaches **one** screenshot: the dashboard homepage (`qa-dashboard-YYYY-MM-DD.png`), captured on the same shared browser session as the tab checks. The tab checks verify data but capture no per-tab screenshots. (Open issue: capture per-tab screenshots after each click lands.)
+`qaDashboardTabs` captures a PNG of each tab as it renders, whenever it is asked to (`captureScreenshots`) or whenever a live-view run is watching. `qaAndEmailReport` attaches **four** PNGs — the dashboard homepage (`qa-dashboard-YYYY-MM-DD.png`) plus one per tab (`qa-emails-…`, `qa-payments-…`, `qa-webhooks-…`) — all captured on the one shared browser session, within EmailAgent's caps (5 attachments, 2 MB each, 3 MB total). The same captures feed the live view panel.
+
+### Live view (issue #88)
+
+Every QA button also opens a **Live view** panel under the buttons, so a run can be watched instead of only awaited:
+
+- **Steps** — plain-language narration as the check moves ("Loading dashboard", "Checking Emails tab", …).
+- **Verdicts** — each tab and each suite section reports PASS, FAIL or SKIP the moment it lands.
+- **Latest screenshot** — the captures described above, shown as they are taken.
+
+How it works: the dashboard mints a run id per click and sends it in the request body; the API routes thread it into the QAAgent methods. Inside the checks, `emitLive()` records each event into a bounded per-run buffer (300 events, newest 4 runs, in memory only) and broadcasts it over the QAAgent WebSocket as a `{type: "qa-live"}` frame. The panel holds a second `AgentClient` socket — to QAAgent, instance `qa`, the same name the API routes use — receives the broadcasts, and polls `qaLiveSnapshot(runId, sinceSeq)` every 2s over the same socket as a catch-up/backstop; both paths dedupe by event sequence number and ignore other runs' ids. The panel's lifecycle follows the button's HTTP request: when the response lands, it makes one final snapshot pull and marks the run finished. `emitLive` is an observer only — it no-ops without a run id and can never throw into a check, so the live view cannot fail a run. The payment-guards and edge-cases buttons show only start/finish lines in the panel: they are fast HTTP assertions with no browser session to watch (inside the Full Suite their sub-checks narrate normally).
+
+**Troubleshooting — the panel shows only "started" / "Run finished" and a permanent "Waiting for the first screenshot…":** the panel rendered but no event ever arrived, meaning the QA socket never connected. The known cause is an agent-name routing trap in the Agents SDK: the client kebab-cases its `agent` option per capital letter, so the class name `"QAAgent"` becomes the path segment `q-a-agent`, while `routeAgentRequest` builds its route map from the DO **binding** name (`QA_AGENT` → `qa-agent`). No route matches, the handshake is refused, and PartySocket retries silently. The host agent is unaffected — `CfmailAgent` converts identically on both sides. The dashboard therefore passes `agent: "qa-agent"` (the binding's kebab form, which the client's conversion leaves unchanged), and a wiring test pins it.
 
 ## Limitations
 
 ### Deterministic, not LLM-driven
 
-QAAgent extends Think but `getTools()` returns `{}`. The model has no tools, makes no decisions, and drives nothing. All QA methods are `@callable()` RPC endpoints triggered by dashboard buttons — not by prompts. You cannot chat with QAAgent and ask it to "check the dashboard"; there is no prompt-driven path.
+QAAgent extends Think, but no QA method consults the model: every check is a deterministic `@callable()` RPC triggered by a dashboard button — not by a prompt. (`getTools()` does expose an email tool, and browser tools when the LOADER binding exists, for host-agent dispatch; the checks themselves never use them.) You cannot chat with QAAgent and ask it to "check the dashboard"; there is no prompt-driven path.
 
 This is arguably correct for regression testing: deterministic scripts give you the same assertions every time. An LLM deciding what to click introduces non-determinism where you need it least. The missing piece is **orchestration and interpretation** — the model deciding which checks to run, analyzing failures, and explaining results — not replacing the deterministic checks themselves.
 
@@ -63,10 +76,6 @@ This is arguably correct for regression testing: deterministic scripts give you 
 ### No real payment testing
 
 `qaPaymentFlow` tests that the payment gate rejects bad requests. It does not submit a real crypto or card payment. Testing real payment processing requires explicit authorization (no spend is currently authorized).
-
-### Single screenshot per report
-
-Only the dashboard homepage is screenshotted. Tab-level visual evidence is not captured.
 
 ## Platform constraints
 
@@ -110,7 +119,6 @@ What works now and should stay:
 
 What to add (no plan upgrade needed):
 - Expose QA methods via `getTools()` so the Think model can **orchestrate** them (decide which checks to run, interpret results) — the checks stay deterministic, the model handles composition and explanation
-- Per-tab screenshots in the email report (open issue)
 - Webhook ingestion test (synthetic webhook → verify it appears)
 - Auto-QA on deploy (workflow change via GitHub UI — the integration can't touch `.github/workflows/*`)
 

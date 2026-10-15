@@ -1318,7 +1318,11 @@ describe("the QA live-view panel stays wired (issue #88)", () => {
     expect(html).toContain('id="qaLiveImg"');
     expect(html).toContain("qaLiveBegin");
     expect(html).toContain("qaLiveApply");
-    expect(html).toContain('agent: "QAAgent"');
+    // The socket's agent segment must be the binding's kebab form: the
+    // SDK client converts "QAAgent" to "q-a-agent" while the server maps
+    // the QA_AGENT binding to "qa-agent", and the two never route.
+    expect(html).toContain('agent: "qa-agent"');
+    expect(html).not.toContain('agent: "QAAgent"');
     expect(html).toContain('name: "qa"');
     expect(html).toContain("qaLiveWatch");
     expect(html).toContain("qaLiveSnapshot");
