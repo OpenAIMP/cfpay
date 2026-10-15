@@ -1114,7 +1114,7 @@ describe("browser teardown cannot fail a QA run", () => {
     // Every browser teardown goes through the helper. Counted exactly, so both a
     // new raw close() and a removed release are caught.
     const uses = qa.split("closeConnectionQuietly(").length - 1;
-    expect(uses, "every browser teardown must use the helper").toBe(5);
+    expect(uses, "every browser teardown must use the helper").toBe(6);
   });
 
   it("keeps the report's tab call inside a guard", () => {
@@ -1348,5 +1348,26 @@ describe("the QA UX audit stays wired (issue #91)", () => {
     expect(api).toContain("qaUxAudit(apiKey, runId)");
     expect(html).toContain("runQAUxAudit");
     expect(html).toContain("UX Audit");
+  });
+});
+
+describe("the generalized UX audit stays wired (issue #94)", () => {
+  const qa = read("src/qa-agent.ts");
+  const api = read("src/api.ts");
+  const html = read("public/index.html");
+
+  it("drives any single-origin target from a spec, with rule profiles", () => {
+    expect(qa).toContain("qaUxAuditUrl");
+    expect(qa).toContain("UxAuditSpec");
+    expect(qa).toContain("summarizeUxProbes");
+    expect(qa).toContain("ignoreSelectors");
+    expect(qa).toContain("expectedButtonBg");
+  });
+
+  it("is reachable from its route and the dashboard URL input", () => {
+    expect(api).toContain('"/api/dashboard/qa/ux-audit-url"');
+    expect(api).toContain("qaUxAuditUrl(spec, runId)");
+    expect(html).toContain("runQAUxUrl");
+    expect(html).toContain('id="qaUxUrl"');
   });
 });
