@@ -173,6 +173,32 @@ Reading a run: Actions → the Deploy run → **Post-deploy QA** → *Run QA che
 
 > Note: two deploys landing back-to-back run two suites at once; on the Free plan's browser limits they can starve each other and false-fail. Re-run the job solo before treating a red run as a regression.
 
+#### Testing secure (authenticated) URLs
+
+The QA tab's **Audit URL** box audits public pages only. For a page behind auth, call `POST /api/dashboard/qa/ux-audit-url` (the call itself is authenticated with the dashboard `X-API-Key`) and carry the *target* app's auth inside the spec — one of two modes:
+
+- **`headers`** — an auth header or session cookie is sent on every request of the browser session; fits token- or cookie-protected apps.
+- **`localStorage`** — keys are seeded on the origin before navigation; fits SPAs that keep a token in localStorage (cfpay's own dashboard pattern, `cfmail_api_key`).
+
+```json
+{
+  "spec": {
+    "pages": ["https://app.example.com/dashboard"],
+    "auth": { "mode": "headers", "headers": { "Authorization": "Bearer <target-token>" } },
+    "settleSelector": "#app"
+  }
+}
+```
+
+```bash
+curl -X POST https://pay.openaimp.com/api/dashboard/qa/ux-audit-url \
+  -H "X-API-Key: <DASHBOARD_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d @spec.json
+```
+
+All pages must share the first page's origin (max 8). Interactive login flows — form fill, OAuth redirects, MFA, CAPTCHA — are not supported yet. For automated coverage of a secure target, store its credential as a PROD environment secret and have `scripts/qa-smoke.mjs` build the spec from the environment at runtime; credentials never go in the repo.
+
 ## API Endpoints
 
 | Endpoint | Method | Auth | Description |
