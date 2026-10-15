@@ -377,6 +377,22 @@ describe("QAAgent is a full peer, and the chat rename holds", () => {
     expect(snap, "must not return the screenshot in the summary").not.toContain("screenshot");
   });
 
+  it("exposes the generalized UX audit as an A2A / agentTool operation", () => {
+    // Issue #94, step 3: qa.ux_audit must be named in the tool schema a host
+    // model sees, handled by the agent's A2A dispatch, and stated on the card -
+    // all three, or one of the reachability paths silently lacks the service.
+    const schemas = readCode("src/agent-tool-schemas.ts");
+    expect(schemas).toContain('"qa.ux_audit"');
+    expect(schemas).toContain("spec:");
+    const start = qa.indexOf('case "qa.ux_audit"');
+    expect(start, "dispatch must handle qa.ux_audit").toBeGreaterThan(-1);
+    const block = qa.slice(start, start + 1400);
+    expect(block).toContain("qaUxAuditUrl");
+    expect(block).toContain("bad_spec");
+    expect(qa).toContain('"qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit"');
+    expect(a2a).toContain("qa.ux_audit");
+  });
+
   it("refuses a non-http(s) URL rather than guessing", () => {
     const start = qa.indexOf('case "qa.check"');
     const block = qa.slice(start, start + 700);
