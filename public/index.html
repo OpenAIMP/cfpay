@@ -353,6 +353,10 @@
               <button class="btn" onclick="runQADashboard()" style="background:var(--muted);">Check This Dashboard</button>
               <button class="btn" onclick="runQATabs()" style="background:var(--muted);">Verify Tab Data</button>
               <button class="btn" onclick="runQAUxAudit()" style="background:var(--muted);">UX Audit</button>
+              <div style="display:flex;gap:0.4rem;">
+                <input id="qaUxUrl" type="url" placeholder="https://example.com/" style="flex:1;min-width:0;">
+                <button class="btn" onclick="runQAUxUrl()" style="background:var(--muted);">Audit URL</button>
+              </div>
               <button class="btn" onclick="runQAAttachment()">Test Attachment via UI</button>
               <button class="btn" onclick="runQAPaymentFlow()" style="background:var(--muted);">Check Payment Guards</button>
               <button class="btn" onclick="runQAEdgeCases()" style="background:var(--muted);">Check Edge Cases</button>
@@ -364,6 +368,7 @@
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check This Dashboard</strong> — smoke test: dashboard loads, key text present, screenshot captured. Does not prove authentication on its own.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Verify Tab Data</strong> — clicks Emails, Payments and Webhooks and verifies each tab loads real data. Fails loudly on the login page.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">UX Audit</strong> — deterministic design-rule checks on the rendered dashboard: contrast (WCAG AA), click-target size, heading hierarchy, button-style consistency across views, layout overflow/overlap, image alt text, and tab landing patterns. The rules are code, not a model — same page, same findings.</p>
+              <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Audit URL</strong> — the same checks pointed at any public web page: paste a URL and the audit measures that page instead. Authenticated apps and multi-page targets go through the API spec (issue #94).</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Test Attachment via UI</strong> — drives the real Send Email form, attaches a file and submits. Sends a <em>real email</em>; use a test recipient.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check Payment Guards</strong> — verifies the 402 payment challenge is well-formed and malformed signatures are refused. Moves no money.</p>
               <p style="margin-bottom:0.6rem;"><strong style="color:var(--text);">Check Edge Cases</strong> — wrong API key rejected, unauthenticated access rejected, unknown routes don't false-pass, errors are JSON not HTML.</p>
@@ -665,6 +670,29 @@
       try {
         const res = await api('/api/dashboard/qa/ux-audit', 'POST', { runId });
         renderQAChecks(res, resultEl);
+        await qaLiveFinish(!!(res && res.ok));
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:red;">UX audit failed: ' + escapeHtml(e.message || e) + '</p>';
+        await qaLiveFinish(false);
+      }
+    }
+    async function runQAUxUrl() {
+      const input = document.getElementById('qaUxUrl');
+      const url = (input && input.value || '').trim();
+      const resultEl = document.getElementById('qaResult');
+      if (!url) {
+        resultEl.innerHTML = '<p style="color:red;">Enter a URL to audit.</p>';
+        return;
+      }
+      resultEl.innerHTML = '<p style="color:var(--muted);">Running UX audit...</p>';
+      const runId = qaLiveBegin('UX Audit — ' + url);
+      try {
+        const res = await api('/api/dashboard/qa/ux-audit-url', 'POST', { spec: { pages: [url] }, runId });
+        if (res && res.error && !(res.checks && res.checks.length)) {
+          resultEl.innerHTML = '<p style="color:red;">' + escapeHtml(res.error) + '</p>';
+        } else {
+          renderQAChecks(res, resultEl);
+        }
         await qaLiveFinish(!!(res && res.ok));
       } catch (e) {
         resultEl.innerHTML = '<p style="color:red;">UX audit failed: ' + escapeHtml(e.message || e) + '</p>';
