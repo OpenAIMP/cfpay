@@ -330,6 +330,13 @@ export function createApp() {
   // any authenticated dashboard user; deciding is the approval action itself,
   // so it goes through the agent, which delivers the decision to the waiting
   // workflow. Execution happens in the workflow, never in these routes.
+  // Autopilot run history (issue #107): the persisted Goal -> Planner ->
+  // Queue -> Executor -> Verifier state, newest first.
+  app.get("/api/public/autopilot-runs", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    return c.json({ runs: await agent.listAutopilotRuns() });
+  });
+
   app.get("/api/public/trades", requireAuth, async (c) => {
     const agent = getAgent(c);
     const proposals = await agent.listTradeProposals();
@@ -402,7 +409,7 @@ export function createApp() {
   });
 
   app.post("/api/public/chat", requireAuth, async (c) => {
-    const body = await c.req.json<{ message?: string }>();
+    const body = await c.req.json<{ message?: string; autopilot?: boolean }>();
     const message = (body.message || "").trim();
     if (!message) return c.json({ error: "message is required" }, 400);
 
@@ -415,6 +422,10 @@ export function createApp() {
       const tools = await listTools(token, session);
       if (tools.length === 0) return c.json({ error: "Public.com returned no tools for this account." }, 502);
       const storedModel = await agent.getPublicModel();
+      if (body.autopilot) {
+        const result = await agent.runAutopilot(token, message, tools, session, storedModel);
+        return c.json({ ...result, finishReason: "autopilot" });
+      }
       const { answer, trace, model, cost, finishReason } = await agent.answerInstrumentQuestion(
         token,
         message,
