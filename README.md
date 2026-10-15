@@ -199,6 +199,35 @@ curl -X POST https://pay.openaimp.com/api/dashboard/qa/ux-audit-url \
 
 All pages must share the first page's origin (max 8). Interactive login flows — form fill, OAuth redirects, MFA, CAPTCHA — are not supported yet. For automated coverage of a secure target, store its credential as a PROD environment secret and have `scripts/qa-smoke.mjs` build the spec from the environment at runtime; credentials never go in the repo.
 
+#### Testing the agentTool / A2A exposure
+
+The generalized audit is also a service operation, **`qa.ux_audit`**, reachable by other agents two ways. Test them in this order:
+
+1. **Discovery (no auth):** `GET https://pay.openaimp.com/a2a/qa/agent-card.json` — the card's description and Browser QA skill name `qa.ux_audit`.
+2. **A2A dispatch (deterministic):** send a JSON-RPC `message/send` to `/a2a/qa` with the A2A bearer and a data part carrying the operation and a spec:
+
+```bash
+curl -X POST https://pay.openaimp.com/a2a/qa \
+  -H "Authorization: Bearer <A2A_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"data","data":{"operation":"qa.ux_audit","spec":{"pages":["https://pay.openaimp.com/qa-fixture.html"]}}}]}}}'
+```
+
+Against the fixture the reply text reads *"UX audit on 1 page(s) found failing checks: Contrast (WCAG AA), Target size, Heading hierarchy, Image alt text."*, with the full findings in the data artifact. Negative checks in the same shape: an unknown operation returns the supported list (now ending in `qa.ux_audit`); `qa.ux_audit` without a spec is refused as `bad_spec`; a non-http(s) page is refused as `bad_url`. This path uses no AI.
+
+3. **Host agentTool dispatch (model-mediated):** ask the dashboard's host agent — *"Run a UX audit of https://pay.openaimp.com/qa-fixture.html and tell me which checks fail."* It should dispatch the QA tool with `qa.ux_audit` and summarize the same four failures. Wording varies (a model makes the call) and the turn spends Workers AI neurons, so treat step 2 as the verdict and this as the experience.
+
+#### Testing the live frame stream
+
+Run any watched check from the QA tab — **Verify Tab Data** is the longest — and watch the Live view panel:
+
+- The large view updates about once a second between the named screenshots, captioned **"Live — streaming"** (before, it sat frozen on each still until the next landed).
+- The filmstrip gains thumbnails **only** at the named screenshot beats; streamed frames never add thumbnails or step lines.
+- Clicking a thumbnail pins the large view: frames stop overriding it while the run continues.
+- The run still finishes with the normal result block. The same streaming applies to **UX Audit** and **Audit URL** runs; unwatched runs (Post-deploy QA included) stream nothing and pay nothing.
+
+The stream is capture polling (about 1 fps), not `Page.startScreencast` — the Agents SDK's CDP client discards protocol events, so screencast frames cannot reach the agent through the connection the checks use. True screencast is tracked in issue #102.
+
 ## API Endpoints
 
 | Endpoint | Method | Auth | Description |
