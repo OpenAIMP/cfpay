@@ -16,6 +16,10 @@
  * not the JSON asked for degrades to a named fallback, never to a throw.
  */
 
+import { contextWindowFor, readCompletion } from "./models";
+import type { UsageCost } from "./models";
+import type { ToolTrace } from "./types";
+
 export interface AutopilotStep {
   id: string;
   title: string;
@@ -188,4 +192,197 @@ export function buildEvidenceDigest(
   return digest.length > maxChars
     ? digest.slice(0, maxChars) + "\n[... evidence digest shortened]"
     : digest;
+}
+
+/** The agent-owned pieces the pipeline orchestrates (injected by the host). */
+export interface AutopilotDeps {
+  /** One raw Workers AI call; resolves with the provider response envelope. */
+  aiRun: (
+    modelId: string,
+    messages: Array<Record<string, unknown>>,
+    maxTokens: number,
+  ) => Promise<unknown>;
+  /** The reactive tool loop, scoped to one step's question. */
+  runStep: (question: string) => Promise<{ answer: string; trace: ToolTrace[] }>;
+  /** Persist the run state after every transition. */
+  save: (run: AutopilotRun) => Promise<void>;
+}
+
+/**
+ * One no-tools model call for the planner / verifier / synthesis stages.
+ * Same context discipline as the chat loop: budget the output against the
+ * model's window, and on the provider's over-length rejection recompute
+ * from its own figures and retry once.
+ */
+async function aiTextCall(
+  deps: AutopilotDeps,
+  modelId: string,
+  system: string,
+  user: string,
+  maxOut = 1024,
+): Promise<string> {
+  const messages: Array<Record<string, unknown>> = [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+  const contextWindow = contextWindowFor(modelId);
+  let maxTokens = maxOut;
+  if (contextWindow) {
+    const estimatedInput = Math.ceil(JSON.stringify(messages).length / 3.5);
+    maxTokens = Math.max(256, Math.min(maxOut, contextWindow - estimatedInput - 512));
+  }
+  try {
+    const response = await deps.aiRun(modelId, messages, maxTokens);
+    return readCompletion(response).text;
+  } catch (err) {
+    const m = /maximum context length is (\d+) tokens[\s\S]*?at least (\d+) input tokens/.exec(
+      String(err),
+    );
+    if (!m) throw err;
+    const retryTokens = Number(m[1]) - Number(m[2]) - 512;
+    if (retryTokens < 128) throw err;
+    const response = await deps.aiRun(modelId, messages, Math.min(maxOut, retryTokens));
+    return readCompletion(response).text;
+  }
+}
+
+/**
+ * The pipeline: Goal → Planner → Task Queue → Executor → Verifier, with at
+ * most one replan aimed at the verifier's named gaps, and a synthesis written
+ * from the verified evidence. The run is saved after every transition, so the
+ * persisted state always shows where a run got to.
+ */
+export async function runAutopilotPipeline(
+  deps: AutopilotDeps,
+  goal: string,
+  toolNames: string[],
+  modelId: string,
+): Promise<{
+  answer: string;
+  trace: ToolTrace[];
+  model: string;
+  cost: UsageCost | null;
+  autopilot: AutopilotRun;
+}> {
+  const run: AutopilotRun = {
+    id: crypto.randomUUID(),
+    goal,
+    status: "planning",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    steps: [],
+    evidence: [],
+    verification: null,
+    answer: "",
+    model: modelId,
+    replans: 0,
+  };
+  const trace: ToolTrace[] = [];
+  const save = async () => {
+    run.updatedAt = new Date().toISOString();
+    await deps.save(run);
+  };
+  await save();
+  try {
+    // PLANNER — one no-tools call; a malformed plan degrades to one step.
+    const planText = await aiTextCall(
+      deps,
+      modelId,
+      AUTOPILOT_PLANNER_SYSTEM,
+      "Goal: " + goal + "\n\nAvailable tools: " + toolNames.join(", "),
+      1024,
+    );
+    run.steps = parsePlan(planText, goal);
+    run.status = "running";
+    await save();
+
+    // TASK QUEUE + EXECUTOR, then VERIFIER — with at most one replan.
+    for (let round = 0; round < 2; round++) {
+      for (const step of run.steps.filter((s) => s.status === "pending")) {
+        step.status = "running";
+        await save();
+        const stepQuestion =
+          "Goal: " + goal +
+          "\n\nYour assigned step: " + step.instruction +
+          "\n\nEvidence gathered so far:\n" + (buildEvidenceDigest(run) || "(none yet)") +
+          "\n\nComplete this step only, gathering the data it names. Answer concisely with the facts you found.";
+        try {
+          const res = await deps.runStep(stepQuestion);
+          step.answer = res.answer;
+          step.status = "done";
+          trace.push(...res.trace);
+          for (const t of res.trace) {
+            run.evidence.push({
+              stepId: step.id,
+              tool: t.name,
+              ok: t.ok,
+              summary: String(t.summary || t.result || "").slice(0, 200),
+            });
+          }
+        } catch (err) {
+          step.status = "failed";
+          step.answer = "Step failed: " + String(err);
+        }
+        await save();
+      }
+
+      // VERIFIER — judges the evidence against the goal, never the effort.
+      run.status = "verifying";
+      await save();
+      const verifyText = await aiTextCall(
+        deps,
+        modelId,
+        AUTOPILOT_VERIFIER_SYSTEM,
+        "Goal: " + goal + "\n\nEvidence:\n" + buildEvidenceDigest(run, 8000),
+        768,
+      ).catch(() => "");
+      run.verification = parseVerification(verifyText);
+      await save();
+      if (run.verification.complete || round === 1) break;
+
+      // REPLAN — at most AUTOPILOT_MAX_FOLLOWUPS steps aimed at the gaps.
+      run.replans = 1;
+      const gaps = run.verification.gaps.join("; ") || run.verification.summary;
+      const followText = await aiTextCall(
+        deps,
+        modelId,
+        AUTOPILOT_PLANNER_SYSTEM,
+        "Goal: " + goal +
+          "\n\nA first research pass left these gaps: " + gaps +
+          "\n\nPlan at most " + AUTOPILOT_MAX_FOLLOWUPS + " follow-up steps that close exactly those gaps.",
+        768,
+      ).catch(() => "");
+      const followUps = parsePlan(followText, goal)
+        .filter((s) => s.instruction !== goal.slice(0, 400))
+        .slice(0, AUTOPILOT_MAX_FOLLOWUPS);
+      if (followUps.length === 0) break;
+      run.steps.push(...followUps);
+      run.status = "running";
+      await save();
+    }
+
+    // SYNTHESIS — the answer is written from the verified evidence only.
+    const synthesis = await aiTextCall(
+      deps,
+      modelId,
+      AUTOPILOT_SYNTHESIS_SYSTEM,
+      "Goal: " + goal +
+        "\n\nVerified evidence:\n" + buildEvidenceDigest(run, 9000) +
+        "\n\nVerifier summary: " + (run.verification?.summary || "(none)") +
+        "\n\nWrite the final answer to the goal.",
+      1600,
+    ).catch(() => "");
+    run.answer =
+      synthesis.trim() ||
+      run.steps
+        .filter((s) => s.answer)
+        .map((s) => s.title + ": " + s.answer)
+        .join("\n\n");
+    run.status = "done";
+  } catch (err) {
+    run.status = "failed";
+    run.answer = "Autopilot failed: " + String(err);
+  }
+  await save();
+  return { answer: run.answer, trace, model: modelId, cost: null, autopilot: run };
 }
