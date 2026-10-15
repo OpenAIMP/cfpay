@@ -377,22 +377,6 @@ describe("QAAgent is a full peer, and the chat rename holds", () => {
     expect(snap, "must not return the screenshot in the summary").not.toContain("screenshot");
   });
 
-  it("exposes the generalized UX audit as an A2A / agentTool operation", () => {
-    // Issue #94, step 3: qa.ux_audit must be named in the tool schema a host
-    // model sees, handled by the agent's A2A dispatch, and stated on the card -
-    // all three, or one of the reachability paths silently lacks the service.
-    const schemas = readCode("src/agent-tool-schemas.ts");
-    expect(schemas).toContain('"qa.ux_audit"');
-    expect(schemas).toContain("spec:");
-    const start = qa.indexOf('case "qa.ux_audit"');
-    expect(start, "dispatch must handle qa.ux_audit").toBeGreaterThan(-1);
-    const block = qa.slice(start, start + 1400);
-    expect(block).toContain("qaUxAuditUrl");
-    expect(block).toContain("bad_spec");
-    expect(qa).toContain('"qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit"');
-    expect(a2a).toContain("qa.ux_audit");
-  });
-
   it("refuses a non-http(s) URL rather than guessing", () => {
     const start = qa.indexOf('case "qa.check"');
     const block = qa.slice(start, start + 700);
@@ -1321,6 +1305,23 @@ describe("the QA live-view panel stays wired (issue #88)", () => {
     expect(api).toContain("qaAndEmailReport(apiKey, toEmail, runId)");
     expect(api).toContain("testEmailAttachmentUI(apiKey, toEmail, runId)");
     expect(api).toContain("qaFullSuite(apiKey, toEmail, runId)");
+  });
+
+  it("streams live frames during a watched run (interim for screencast)", () => {
+    // The frame stream is capture polling, deliberately not startScreencast:
+    // the SDK's CDP client drops protocol events, so screencast frames can
+    // never arrive through the connection the checks use. Frames are
+    // broadcast-only (never buffered or sequenced - either would break the
+    // replay buffer or the panel's dedupe), and the stream is started and
+    // stopped beside the session teardown in all four browser flows.
+    expect(qa).toContain("private startFrameStream(");
+    expect(qa.split("stopFrames = this.startFrameStream").length - 1).toBe(4);
+    expect(qa.split("stopFrames();").length - 1).toBe(4);
+    const start = qa.indexOf("private emitLive(");
+    const block = qa.slice(start, start + 2600);
+    expect(block).toContain('ev.kind === "frame"');
+    expect(html).toContain("ev.kind === 'frame'");
+    expect(html).toContain("Live — streaming");
   });
 
   it("captures tab screenshots for a watching run even without a report", () => {

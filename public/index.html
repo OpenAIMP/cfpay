@@ -533,6 +533,14 @@
     // Called by the module script for each event of the watched run.
     window.qaLiveApply = function (ev) {
       if (!ev) return;
+      if (ev.kind === 'frame') {
+        // Streamed frames (about one a second while a watched run holds a
+        // browser session) drive the large view only: they are not beats,
+        // so they never join the filmstrip or write step lines, and a
+        // pinned thumbnail still holds the view, as with screenshots.
+        if (ev.image && (!qaLiveCtx || !qaLiveCtx.pinned)) qaLiveShowShot(ev.image, 'Live — streaming');
+        return;
+      }
       if (ev.kind === 'screenshot') {
         if (ev.image) {
           // Every capture joins the filmstrip below the large view, so no
