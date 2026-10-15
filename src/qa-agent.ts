@@ -39,12 +39,12 @@ export interface QACheckResult {
 export interface QALiveEvent {
   seq: number;
   ts: string;
-  kind: "step" | "screenshot" | "result";
+  kind: "step" | "screenshot" | "result" | "frame";
   label: string;
   detail?: string;
   ok?: boolean;
   skipped?: boolean;
-  /** data: URI; screenshot events only. */
+  /** data: URI; screenshot and frame events only. */
   image?: string;
 }
 
@@ -553,8 +553,10 @@ export class QAAgent extends Think<Env> {
         url: "about:blank",
       })) as { targetId: string };
 
+      let stopFrames: () => void = () => {};
       try {
         const sessionId = await cdp.attachToTarget(targetId);
+        stopFrames = this.startFrameStream(cdp, sessionId, liveRunId);
 
         this.emitLive(liveRunId, { kind: "step", label: "Loading page", detail: url });
 
@@ -617,6 +619,7 @@ export class QAAgent extends Think<Env> {
         const ok = checks.every((c) => c.passed);
         return { ok, url, textLength: text.length, screenshot, checks };
       } finally {
+        stopFrames();
         // The target is always released. The connection is only closed by the
         // owner, so a shared session survives for the next check.
         await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
@@ -643,6 +646,22 @@ export class QAAgent extends Think<Env> {
   ): void {
     if (!runId) return;
     try {
+      if (ev.kind === "frame") {
+        // Broadcast only, never buffered and never sequenced. At ~100 KB a
+        // frame, buffering them would evict the run's steps and screenshots
+        // from the replay buffer within a minute; and a seq on a frame would
+        // make the panel's dedupe discard older buffered events it has not
+        // caught up on yet. A watcher that connects late simply gets the
+        // next frame within a second.
+        this.broadcast(
+          JSON.stringify({
+            type: "qa-live",
+            runId,
+            event: { ...ev, ts: new Date().toISOString() },
+          }),
+        );
+        return;
+      }
       let run = this.liveRuns.get(runId);
       if (!run) {
         run = { seq: 0, events: [], startedAt: Date.now() };
@@ -661,6 +680,65 @@ export class QAAgent extends Think<Env> {
     } catch {
       // Deliberately swallowed: see the doc comment above.
     }
+  }
+
+  /**
+   * Live frame stream for a watched run (issue #88 follow-on, 2026-10-15):
+   * while a flow holds a browser session, capture a frame about once a
+   * second and broadcast it, so the panel's large view plays continuously
+   * instead of jumping between stills.
+   *
+   * This is capture polling, NOT Page.startScreencast. The Agents SDK's CDP
+   * client discards protocol events - its message handler returns early on
+   * any payload without a command id, and screencast frames are exactly
+   * that - so real screencast frames can never reach this code through the
+   * connection every check uses. A hand-rolled event-capable CDP client is
+   * the tracked route to true screencast (issue #102); this stream is the
+   * interim step, built only on machinery the checks already prove daily.
+   *
+   * Best-effort by construction: a slow capture skips beats instead of
+   * queueing, a failed capture is silent, and frames never touch the run's
+   * verdicts. Returns the stop function; flows call it in their finally,
+   * beside the connection teardown.
+   */
+  private startFrameStream(
+    cdp: CdpLike,
+    sessionId: string,
+    runId?: string,
+  ): () => void {
+    if (!runId) return () => {};
+    let stopped = false;
+    let inFlight = false;
+    const tick = async () => {
+      if (stopped || inFlight) return;
+      inFlight = true;
+      try {
+        const shot = (await cdp.send(
+          "Page.captureScreenshot",
+          { format: "png" },
+          { sessionId },
+        )) as { data?: string } | null;
+        if (!stopped && shot?.data) {
+          this.emitLive(runId, {
+            kind: "frame",
+            label: "Live frame",
+            image: `data:image/png;base64,${shot.data}`,
+          });
+        }
+      } catch {
+        // Silent by design: see the doc comment above.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = setInterval(() => {
+      void tick();
+    }, 1000);
+    void tick();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }
 
   /**
@@ -794,6 +872,7 @@ export class QAAgent extends Think<Env> {
       });
     };
     let browser: CdpLike | null = sharedConnection ?? null;
+    let stopFrames: () => void = () => {};
 
     try {
       const cdp: CdpLike = browser ?? (await this.openBrowserSession(env));
@@ -805,6 +884,7 @@ export class QAAgent extends Think<Env> {
 
       try {
         const sessionId = await cdp.attachToTarget(targetId);
+        stopFrames = this.startFrameStream(cdp, sessionId, runId);
 
         this.emitLive(runId, { kind: "step", label: "Loading dashboard" });
 
@@ -1004,6 +1084,7 @@ export class QAAgent extends Think<Env> {
         error: err instanceof Error ? err.message : String(err),
       };
     } finally {
+      stopFrames();
       // A void close(): the teardown helper exists precisely because
       // `browser.close().catch(...)` throws here - close() returns undefined,
       // and that throw used to replace this method's return value with a 500.
@@ -1052,6 +1133,7 @@ export class QAAgent extends Think<Env> {
 
     const ownsConnection = !sharedConnection;
     let browser: CdpLike | null = sharedConnection ?? null;
+    let stopFrames: () => void = () => {};
     const probes: { view: string; data: any }[] = [];
     const landings: { view: string; kind: string }[] = [];
 
@@ -1065,6 +1147,7 @@ export class QAAgent extends Think<Env> {
 
       try {
         const sessionId = await cdp.attachToTarget(targetId);
+        stopFrames = this.startFrameStream(cdp, sessionId, runId);
 
         this.emitLive(runId, { kind: "step", label: "Loading dashboard" });
         await cdp.send("Page.navigate", { url: origin }, { sessionId });
@@ -1224,6 +1307,7 @@ export class QAAgent extends Think<Env> {
         error: err instanceof Error ? err.message : String(err),
       };
     } finally {
+      stopFrames();
       if (ownsConnection) closeConnectionQuietly(browser);
     }
 
@@ -1417,8 +1501,10 @@ export class QAAgent extends Think<Env> {
       const { targetId } = (await cdp.send("Target.createTarget", {
         url: "about:blank",
       })) as { targetId: string };
+      let stopFrames: () => void = () => {};
       try {
         const sessionId = await cdp.attachToTarget(targetId);
+        stopFrames = this.startFrameStream(cdp, sessionId, runId);
 
         if (spec.auth?.mode === "headers" && spec.auth.headers) {
           await cdp.send("Network.enable", {}, { sessionId }).catch(() => {});
@@ -1501,6 +1587,7 @@ export class QAAgent extends Think<Env> {
           }
         }
       } finally {
+        stopFrames();
         await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
       }
     } catch (err) {
@@ -2397,40 +2484,6 @@ export class QAAgent extends Think<Env> {
         };
       }
 
-      case "qa.ux_audit": {
-        // Issue #94, step 3: the generalized audit as a service operation, so a
-        // host model or an external A2A caller can audit a web app without the
-        // dashboard. The spec is the caller's: target credentials ride in
-        // spec.auth (their own session values), pass through to the browser
-        // session, and are never stored or logged here.
-        const spec = (args.spec ?? null) as UxAuditSpec | null;
-        const specPages = Array.isArray(spec?.pages) ? spec.pages : [];
-        if (!spec || specPages.length === 0) {
-          return {
-            text: "qa.ux_audit needs a spec with at least one page URL.",
-            data: { ok: false, error: "bad_spec" },
-          };
-        }
-        if (!specPages.every((u) => typeof u === "string" && /^https?:\/\//.test(u))) {
-          // Same http(s)-only bound as qa.check, for the same reason.
-          return {
-            text: "qa.ux_audit pages must be http(s) URLs.",
-            data: { ok: false, error: "bad_url" },
-          };
-        }
-        const result = await this.qaUxAuditUrl(spec);
-        if (result.error) {
-          return { text: "UX audit could not run: " + result.error, data: result };
-        }
-        const failedNames = result.checks.filter((c) => !c.passed).map((c) => c.name);
-        return {
-          text: result.ok
-            ? `UX audit passed on ${result.pagesAudited.length} page(s): all checks green.`
-            : `UX audit on ${result.pagesAudited.length} page(s) found failing checks: ${failedNames.join(", ")}.`,
-          data: result,
-        };
-      }
-
       case "qa.dashboard": {
         // Checks this Worker's own dashboard, which is the deployed page a user sees -
         // worth being able to assert remotely rather than only from a browser.
@@ -2447,7 +2500,7 @@ export class QAAgent extends Think<Env> {
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit"],
+            supported: ["qa.summary", "qa.check", "qa.dashboard"],
           },
         };
     }
