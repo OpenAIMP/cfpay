@@ -353,6 +353,8 @@ export function createApp() {
   });
 
   // The catalogue the picker renders. Read-only, no credentials involved.
+  // tradingEnabled rides along so the dashboard can show the deployment's
+  // live trading state on the status card instead of static copy.
   app.get("/api/public/models", requireAuth, async (c) => {
     const agent = getAgent(c);
     const stored = await agent.getPublicModel();
@@ -361,6 +363,7 @@ export function createApp() {
       defaultModel: defaultModelId(),
       selected: resolveModelId(stored),
       isDefault: !stored,
+      tradingEnabled: allowTrading(c.env),
     });
   });
 
