@@ -143,6 +143,7 @@ Note: even on a paid plan, keep the deterministic `@callable()` checks for regre
 5. **Close what you open.** Every `connectBrowser` must have a matching `Target.closeTarget` + `browser.close()` in a `finally` block. Verify this on every new QA method.
 6. **Typecheck before pushing.** `npx tsc --noEmit` must pass. The 2026-10-12 `qa-agent.ts` corruption (PR #65) was caused by string-inserting a method mid-signature — never use string manipulation to add methods; write whole files or use proper edits.
 7. **The GitHub UI is the source of truth for CI status.** API-based CI readings proved unreliable on 2026-10-12; verify in the Actions tab.
+8. **The audit tests itself.** Post-deploy QA (`scripts/qa-smoke.mjs`) runs both audit endpoints after every deploy — the dashboard audit for liveness, and the generalized audit against `public/qa-fixture.html`, a page with exactly four planted violations the audit must catch (and compliant controls it must not flag). If the smoke's authenticated checks report SKIP, the job never received `DASHBOARD_API_KEY` — the deploy job runs under the `PROD` GitHub environment and the smoke job does not, so an environment-scoped secret never reaches it.
 
 ## Diagnosing the `/api/dashboard/qa/email-report` 500 (2026-10-12)
 

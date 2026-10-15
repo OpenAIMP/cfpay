@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>QA UX fixture — planted violations</title>
+<!--
+  Test fixture for the QAAgent UX audit (issues #91/#94). DO NOT "FIX" THE
+  VIOLATIONS ON THIS PAGE — they are the test.
+
+  scripts/qa-smoke.mjs audits this page after every deploy and asserts the
+  audit catches exactly the four planted violations, and nothing else:
+
+    1. #planted-faint  — text at #787878 on white (4.42:1) must FAIL Contrast.
+    2. #planted-tiny   — a 20x20 button must FAIL Target size.
+    3. #planted-skip   — an h3 directly after the h1 must FAIL Heading hierarchy.
+    4. #planted-noalt  — an img with no alt attribute must FAIL Image alt text.
+
+  Everything else on the page is a compliant control: exactly one h1, black
+  body text (21:1), a 160x48 black button (also the style-consistency
+  sample), and an img WITH alt text. If a control starts failing, the audit
+  — not this page — is what changed.
+-->
+</head>
+<body style="background:#ffffff;color:#000000;font-family:sans-serif;margin:16px;">
+  <div style="max-width:640px;">
+    <h1 id="fixture-title">QA UX fixture</h1>
+
+    <p>Compliant body text: black on white, a 21:1 contrast ratio.</p>
+
+    <p id="planted-faint" style="color:#787878;">Planted faint text — 4.42:1, below the AA minimum for normal text.</p>
+
+    <p>
+      <button class="btn" style="background:#000000;color:#ffffff;width:160px;height:48px;">Compliant button</button>
+    </p>
+
+    <p>
+      <button id="planted-tiny" style="background:#000000;color:#ffffff;width:20px;height:20px;padding:0;border:0;">x</button>
+    </p>
+
+    <h3 id="planted-skip">Planted skipped heading</h3>
+
+    <p>
+      <img id="planted-noalt" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="40" height="40">
+      <img alt="Compliant placeholder image" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="40" height="40">
+    </p>
+  </div>
+</body>
+</html>
