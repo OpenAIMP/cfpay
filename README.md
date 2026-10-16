@@ -228,6 +228,19 @@ Run any watched check from the QA tab — **Verify Tab Data** is the longest —
 
 The stream is capture polling (about 1 fps), not `Page.startScreencast` — the Agents SDK's CDP client discards protocol events, so screencast frames cannot reach the agent through the connection the checks use. True screencast is tracked in issue #102.
 
+#### Testing the Public.com autopilot
+
+The Public tab's **Autopilot** toggle runs a question as a goal instead of a single reactive chat turn: a planner decomposes it into steps (max 6), each step executes with its own tool budget and writes a finding into the run's evidence, a verifier judges the evidence against the goal (complete / incomplete, a confidence score, and the gaps by name), and at most one replan (max 3 follow-up steps aimed at the gaps) runs before the answer is synthesized from the verified evidence. Runs persist in agent state (newest 20), and each run also records a transcript into the agent's Sessions store under `autopilot-<runId>`. Order-placing calls inside steps still become approval-gated trade proposals — autopilot never executes a trade. It costs several times the Workers AI calls of a plain question, so use it for multi-part goals, not lookups.
+
+Test it in production:
+
+1. **Run one.** Public tab → tick **Autopilot** → ask a multi-part question, e.g. *"Compare NVDA and AMD for a bullish view on semiconductors — which has the better setup?"* — the question shape that used to exhaust the reactive loop's tool-call cap. GPT-OSS 20B keeps the neuron cost down. The run card should finish with every step checked off, a verifier verdict with confidence, and an answer built from the step findings. With Autopilot off, the same question takes the reactive path, unchanged.
+2. **List the runs.** `GET https://pay.openaimp.com/api/public/autopilot-runs` with the dashboard `X-API-Key` header returns the persisted runs; the newest is the one from step 1. Its presence is the state check — the run survived in the typed `autopilotRuns` state.
+3. **Read the session transcript.** `GET https://pay.openaimp.com/api/public/autopilot-runs/<id>/session` (same header) returns the run's Sessions transcript: the goal, one message per completed step carrying its finding, the verifier verdict, and the final answer — matching the run card. Call it twice: the two lists must be identical. Recording re-runs on every state save during the run, and stable message ids keep the appends idempotent, so duplicated messages mean a bug. Runs created before the platform-alignment deploy (PR #109, 2026-10-15) have no transcript.
+4. **Check tracing.** Cloudflare dashboard → Workers & Pages → `cfmail-agent` → Observability → Traces shows agent activity from step 1 (allow a minute). Message and tool payloads are intentionally not recorded — they can contain email bodies and financial data.
+
+Reading failures: **401** — missing or wrong API key. **404** on the session URL — wrong run id, or a pre-alignment run. **AiError 4006 / 3043** mid-run — Workers AI quota / transient errors; the run dies at whichever AI call it was making, so retry. **HTTP 502, "Internal error in Durable Object storage caused object to be reset"** — the agent's Durable Object was reset by a storage-layer error mid-run (first observed 2026-10-15, on the step-1 test question above). Retry the run; if it recurs, treat it as a defect in the run's state/session writes, not a Workers AI problem.
+
 ## API Endpoints
 
 | Endpoint | Method | Auth | Description |
