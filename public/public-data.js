@@ -15,6 +15,29 @@
 // FIRST via escapeHtml; afterwards only the constant tags below are
 // emitted, so no raw HTML, link or image from model output can reach
 // the page. Links are deliberately not rendered.
+// Classification chips for a question group's header (tier / outlook /
+// premium, added to the library 2026-10-16): shown on the collapsed group
+// line itself, so the classification is visible without expanding the
+// group. Inline styles + theme variables only — no stylesheet changes.
+function questionGroupChips(g) {
+  if (!g) return '';
+  const arrows = { bullish: '\u25B2', bearish: '\u25BC', neutral: '\u25C6', directional: '\u21C5' };
+  const chip = (text, color) =>
+    '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.45rem;border:1px solid ' +
+    (color || 'var(--border)') + ';border-radius:999px;font-size:0.66rem;color:' + (color || 'var(--muted)') +
+    ';vertical-align:middle;white-space:nowrap;">' + escapeHtml(text) + '</span>';
+  let out = '';
+  if (g.outlook) out += chip((arrows[g.outlook] ? arrows[g.outlook] + ' ' : '') + g.outlook);
+  if (g.premium) {
+    out += chip(
+      'premium ' + g.premium,
+      g.premium === 'selling' ? 'var(--green)' : g.premium === 'buying' ? 'var(--blue)' : undefined,
+    );
+  }
+  if (g.tier) out += chip(g.tier);
+  return out;
+}
+
 function renderMarkdownSafe(text) {
   const inline = (s) => s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
   const lines = escapeHtml(text == null ? '' : String(text)).split('\n');

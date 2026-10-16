@@ -1533,6 +1533,13 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("pubData.push(");
   });
 
+  it("question group headers carry classification chips", () => {
+    // The chips helper lives in the asset; the inline summary line calls
+    // it, so the classification shows on the collapsed group header.
+    expect(pdata).toContain("function questionGroupChips(");
+    expect(idx).toContain("questionGroupChips(g)");
+  });
+
   it("the chat route branches on the autopilot flag", () => {
     expect(api).toContain("body.autopilot");
     expect(api).toContain("agent.runAutopilot(");
