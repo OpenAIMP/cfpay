@@ -9,32 +9,68 @@
     "'price a bull call spread on SMH at the 30-delta strikes' produces tool calls.",
     "",
     "Context and price are placeholders: the UI substitutes them from the two",
-    "selectors so the same question works against any symbol or account."
+    "selectors so the same question works against any symbol or account.",
+    "",
+    "Classification (added 2026-10-16): every group carries tier, outlook and",
+    "premium so a trader can see at a glance how a strategy is meant to make",
+    "money. tier: basic | intermediate | advanced | expert. outlook: bullish |",
+    "bearish | neutral | directional (profits from a large move either way).",
+    "premium: selling (net credit, harvests theta) | buying (net debit) |",
+    "mixed. A question may override outlook/premium where its group spans",
+    "profiles. The group intro states the classification in words."
   ],
   "contexts": [
-    { "id": "semis", "label": "Semiconductors", "symbol": "SMH", "note": "sector ETF, liquid options" },
-    { "id": "broad", "label": "S&P 500", "symbol": "SPY", "note": "most liquid options market" },
-    { "id": "nasdaq", "label": "Nasdaq 100", "symbol": "QQQ", "note": "mega-cap tech tilt" },
-    { "id": "energy", "label": "Energy", "symbol": "XLE", "note": "cyclical, dividend-heavy" },
-    { "id": "gold", "label": "Gold miners", "symbol": "GDX", "note": "volatile, event-driven" }
+    {
+      "id": "semis",
+      "label": "Semiconductors",
+      "symbol": "SMH",
+      "note": "sector ETF, liquid options"
+    },
+    {
+      "id": "broad",
+      "label": "S&P 500",
+      "symbol": "SPY",
+      "note": "most liquid options market"
+    },
+    {
+      "id": "nasdaq",
+      "label": "Nasdaq 100",
+      "symbol": "QQQ",
+      "note": "mega-cap tech tilt"
+    },
+    {
+      "id": "energy",
+      "label": "Energy",
+      "symbol": "XLE",
+      "note": "cyclical, dividend-heavy"
+    },
+    {
+      "id": "gold",
+      "label": "Gold miners",
+      "symbol": "GDX",
+      "note": "volatile, event-driven"
+    }
   ],
   "groups": [
     {
       "id": "compare",
       "label": "Head-to-head comparisons",
-      "intro": "Two instruments, one view — the agent pulls both sides' data and has to pick. The first entry is the tab's default question and the standing autopilot smoke test.",
+      "intro": "Two instruments, one view — the agent pulls both sides' data and has to pick. The first entry is the tab's default question and the standing autopilot smoke test. Classification: basic · directional · premium mixed.",
       "questions": [
         {
           "id": "semi-compare",
           "label": "NVDA vs AMD — bullish semiconductor setup",
           "question": "Compare NVDA and AMD for a bullish view on semiconductors — which has the better setup?"
         }
-      ]
+      ],
+      "tier": "basic",
+      "outlook": "directional",
+      "premium": "mixed"
     },
     {
       "id": "covered",
       "label": "Covered & cash-secured",
-      "intro": "Income trades against stock or cash you already hold.",
+      "intro": "Income trades against stock or cash you already hold. Classification: basic · bullish · premium selling.",
       "questions": [
         {
           "id": "cc-30d",
@@ -51,12 +87,15 @@
           "label": "Covered strangle on a held position",
           "question": "For my {symbol} holding, price a covered strangle: a call above and a put below the current price at the nearest expiries, sized so the put is cash-secured. Quote both legs and the combination. Tell me the total premium, the range I stay profitable in, and the real risk if it gaps below the put strike."
         }
-      ]
+      ],
+      "tier": "basic",
+      "outlook": "bullish",
+      "premium": "selling"
     },
     {
       "id": "vertical",
       "label": "Vertical spreads",
-      "intro": "Defined risk, one direction, two legs.",
+      "intro": "Defined risk, one direction, two legs. Classification: basic · directional · premium buying.",
       "questions": [
         {
           "id": "bull-call",
@@ -73,17 +112,21 @@
           "label": "Same view at three strike widths",
           "question": "For the same bullish view on {symbol}, price three bull call spreads at different widths - about 2%, 5% and 10% of spot - all the same expiry. Use get_option_chain and get_strategy_quote for each. Compare return on risk and probability of profit implied by the deltas, and say which width is most efficient and why."
         }
-      ]
+      ],
+      "tier": "basic",
+      "outlook": "directional",
+      "premium": "buying"
     },
     {
       "id": "credit",
       "label": "Credit spreads & iron condors",
-      "intro": "Collect premium, defined risk, want the range to hold.",
+      "intro": "Collect premium, defined risk, want the range to hold. Classification: intermediate · neutral · premium selling.",
       "questions": [
         {
           "id": "put-credit",
           "label": "Put credit spread at 30 delta",
-          "question": "Price a put credit spread on {symbol}: sell roughly the 30-delta put and buy one 5% lower, expiry about 35 days out. Use get_option_expirations, get_option_chain, get_option_greeks and get_strategy_quote. Give credit received, max loss, breakeven, and the capital at risk. State the annualised return on risk and what has to happen for it to be a loss."
+          "question": "Price a put credit spread on {symbol}: sell roughly the 30-delta put and buy one 5% lower, expiry about 35 days out. Use get_option_expirations, get_option_chain, get_option_greeks and get_strategy_quote. Give credit received, max loss, breakeven, and the capital at risk. State the annualised return on risk and what has to happen for it to be a loss.",
+          "outlook": "bullish"
         },
         {
           "id": "iron-condor",
@@ -94,13 +137,22 @@
           "id": "condor-skew",
           "label": "Is the skew worth trading?",
           "question": "On {symbol}, compare the implied volatility of puts and calls at the same distance from spot and the same expiry using get_option_chain and get_option_greeks. Tell me which side is richer, by how much, and whether that makes a credit spread on one side materially better than the mirrored spread on the other. Show the numbers you compared."
+        },
+        {
+          "id": "bear-call",
+          "label": "Bear call spread — bearish credit",
+          "outlook": "bearish",
+          "question": "Build a bear call spread on {symbol} for a bearish view: sell the call near 0.30 delta, buy a higher call to define the risk, 30-45 days out. Get the chain and greeks and price the combination with get_strategy_quote. Give the credit, spread width, max loss and breakeven, then compare it with a bull put spread expressing the same view from the other side of spot — which does the current skew pay more for?"
         }
-      ]
+      ],
+      "tier": "intermediate",
+      "outlook": "neutral",
+      "premium": "selling"
     },
     {
       "id": "volatility",
       "label": "Volatility & earnings",
-      "intro": "Trades where the view is on movement, not direction.",
+      "intro": "Trades where the view is on movement, not direction. Classification: intermediate · directional · premium buying.",
       "questions": [
         {
           "id": "straddle",
@@ -117,12 +169,15 @@
           "label": "Positioning into an event",
           "question": "For {symbol}, identify the next expiry that spans an earnings date if get_option_expirations shows one prominently priced, and compare front-expiry implied movement with the following expiry. Quote both with get_strategy_quote and tell me whether the event looks over- or under-priced, and which structure that favours."
         }
-      ]
+      ],
+      "tier": "intermediate",
+      "outlook": "directional",
+      "premium": "buying"
     },
     {
       "id": "combos",
       "label": "Strategy combinations",
-      "intro": "Layered structures for a view that has more than one part.",
+      "intro": "Layered structures for a view that has more than one part. Classification: intermediate · bullish · premium mixed.",
       "questions": [
         {
           "id": "diagonal",
@@ -132,7 +187,8 @@
         {
           "id": "calendar",
           "label": "Calendar spread into an event",
-          "question": "Price a calendar spread on {symbol}: sell the near-dated at-the-money option and buy the same strike in the next expiry out. Quote both and the combination with get_strategy_quote. Explain where this makes money - the term structure and time decay - and what the risk is if the underlying moves sharply."
+          "question": "Price a calendar spread on {symbol}: sell the near-dated at-the-money option and buy the same strike in the next expiry out. Quote both and the combination with get_strategy_quote. Explain where this makes money - the term structure and time decay - and what the risk is if the underlying moves sharply.",
+          "outlook": "neutral"
         },
         {
           "id": "collar",
@@ -149,12 +205,15 @@
           "label": "Rank the structures for one view",
           "question": "For a moderately bullish view on {symbol} over the next 60 days, price and rank these on the same expiry where possible: long call, bull call spread, bull put spread, covered call, and a risk reversal. Use get_quotes, get_option_chain, get_option_greeks and get_strategy_quote for each. Present them in one table with cost, max profit, max loss, breakeven and the move required, then say which you would choose and the specific reason."
         }
-      ]
+      ],
+      "tier": "intermediate",
+      "outlook": "bullish",
+      "premium": "mixed"
     },
     {
       "id": "patterns",
       "label": "Patterns & screening",
-      "intro": "Let the data pick the candidates instead of naming them up front.",
+      "intro": "Let the data pick the candidates instead of naming them up front. Classification: basic · directional · premium mixed.",
       "questions": [
         {
           "id": "screen-holdings",
@@ -175,6 +234,388 @@
           "id": "screen-overwrite",
           "label": "Where is the skew richest?",
           "question": "Across the positions in my account, compare the implied volatility of calls versus puts on the nearest sensible expiry using get_option_chain and get_option_greeks. Identify which instrument has the richest calls relative to puts, since that is where an overwrite is best paid, and price that specific covered call."
+        }
+      ],
+      "tier": "basic",
+      "outlook": "directional",
+      "premium": "mixed"
+    },
+    {
+      "id": "longs",
+      "label": "Long options & protection",
+      "intro": "Single-leg premium buying and insurance: pay for convexity, cap the loss at the premium. Classification: basic · directional · premium buying.",
+      "tier": "basic",
+      "outlook": "directional",
+      "premium": "buying",
+      "questions": [
+        {
+          "id": "long-call",
+          "label": "Long call — outright bullish",
+          "question": "Price a long call on {symbol} for an outright bullish view: the call near 0.40 delta, 45-60 days out. Give the premium, breakeven, max loss, delta and daily theta, and the implied move the price demands. Then compare it honestly with buying the underlying outright — capital committed, total risk, and how long the move can take before time decay eats the thesis.",
+          "outlook": "bullish"
+        },
+        {
+          "id": "long-put",
+          "label": "Long put — outright bearish",
+          "question": "Price a long put on {symbol} for an outright bearish view: the put near 0.40 delta in absolute terms, 45-60 days out. Give the premium, breakeven, max loss, delta and daily theta. State what the same money buys as a bear put spread instead, and which one the current put skew argues for.",
+          "outlook": "bearish"
+        },
+        {
+          "id": "protective-put",
+          "label": "Protective put — insurance on a holding",
+          "question": "I hold {symbol} and want insurance, not a exit. Price a protective put about 60-90 days out near 0.25 delta in absolute terms: the strike floor it guarantees, the premium as an annualized percentage of the position, and what it does to the position's upside. Then price a collar that funds the put by selling an upside call, and say exactly what upside the free version costs.",
+          "outlook": "bullish"
+        }
+      ]
+    },
+    {
+      "id": "time",
+      "label": "Calendar & diagonal spreads",
+      "intro": "Debit entries that harvest time decay: long the slower option, short the faster one. Classification: intermediate · neutral · premium mixed.",
+      "tier": "intermediate",
+      "outlook": "neutral",
+      "premium": "mixed",
+      "questions": [
+        {
+          "id": "calendar-call",
+          "label": "Calendar call spread",
+          "question": "Build a calendar call spread on {symbol}: sell the near-term call near 0.30 delta, buy the same strike one to two months further out. Price both legs and the debit with get_strategy_quote. Give the profit zone at the front expiry, the theta and vega profile, and the implied-volatility term structure the trade needs — what happens to it if {symbol} runs away from the strike early?"
+        },
+        {
+          "id": "calendar-put",
+          "label": "Calendar put spread",
+          "question": "Build a calendar put spread on {symbol}: sell the near-term put near 0.30 delta in absolute terms, buy the same strike one to two months further out. Give the debit, the profit zone at the front expiry, and how it behaves on a slow grind down versus a sudden drop. Compare its vega exposure with the calendar call at the same strikes.",
+          "outlook": "bearish"
+        },
+        {
+          "id": "diagonal-call",
+          "label": "Diagonal call — poor man’s covered call",
+          "question": "Build a diagonal call spread on {symbol}: buy a longer-dated call near 0.60 delta, sell a nearer-term higher call near 0.30 delta. Give the net debit, both breakevens, the weekly theta it collects, and the assignment risk on the short leg. Compare it with a straight covered call on shares — capital required, income rate, and what each does on a sharp rally.",
+          "outlook": "bullish"
+        },
+        {
+          "id": "diagonal-put",
+          "label": "Diagonal put spread",
+          "question": "Build a diagonal put spread on {symbol} for a bearish lean: buy a longer-dated put near 0.60 delta in absolute terms, sell a nearer-term lower put near 0.30. Give the net debit, breakevens, theta profile and max loss. Say how it differs in behaviour from a bear put spread held to expiry, and when the diagonal is the better hedge.",
+          "outlook": "bearish"
+        }
+      ]
+    },
+    {
+      "id": "butterflies",
+      "label": "Butterflies",
+      "intro": "Pin plays around a target strike: long butterflies pay a debit for a narrow profit zone, short butterflies and the iron fly collect credit. Classification: intermediate · neutral · premium mixed.",
+      "tier": "intermediate",
+      "outlook": "neutral",
+      "premium": "mixed",
+      "questions": [
+        {
+          "id": "long-call-butterfly",
+          "label": "Long call butterfly",
+          "question": "Build a long call butterfly on {symbol}: buy one call, sell two at a higher strike, buy one higher still, strikes equidistant, 30-45 days out, body near the money. Price it with get_strategy_quote: debit, max profit and exactly where it occurs, both breakevens, max loss. Explain the pin risk in the final week and when you would close it early rather than hold for the pin."
+        },
+        {
+          "id": "long-put-butterfly",
+          "label": "Long put butterfly",
+          "question": "Build the same butterfly on {symbol} with puts instead of calls: buy one put, sell two at a lower strike, buy one lower still, equidistant, 30-45 days. Compare its debit, breakevens and fill quality with the call version at the same strikes — put skew usually makes one of them cheaper; say which, and why."
+        },
+        {
+          "id": "short-call-butterfly",
+          "label": "Short call butterfly",
+          "question": "Build a short call butterfly on {symbol}: sell the outer calls, buy two at the body strike, equidistant strikes, 30-45 days, for a credit. Give the credit, the max loss and where it sits, and both breakevens. This is a bet the pin FAILS — state what move makes it pay versus simply expiring worthless, and compare it with an iron butterfly at the same strikes.",
+          "premium": "selling"
+        },
+        {
+          "id": "short-put-butterfly",
+          "label": "Short put butterfly",
+          "question": "Build a short put butterfly on {symbol} with puts: sell the outer puts, buy two at the body, equidistant, 30-45 days, for a credit. Give the credit, max loss and breakevens, and compare the pricing with the short call butterfly at the same strikes — which side does the skew reward here?",
+          "premium": "selling"
+        },
+        {
+          "id": "iron-butterfly",
+          "label": "Iron butterfly — short body, bought wings",
+          "question": "Build an iron butterfly on {symbol}: sell the at-the-money straddle, buy wings equidistant on both sides, 30-45 days. Give the credit, max loss, and the breakeven band. Then compare it with the iron condor already in this library at the same wing distance: how much more credit does the fly pay for how much narrower a winning zone?",
+          "premium": "selling"
+        },
+        {
+          "id": "inverse-iron-butterfly",
+          "label": "Inverse iron butterfly — long the move",
+          "question": "Build an inverse iron butterfly on {symbol}: buy the at-the-money straddle, sell wings equidistant on both sides to part-fund it, 30-45 days. Give the net debit, max loss (and where it occurs), and the moves needed to profit. Compare it with a straight long straddle — how much premium do the sold wings actually save, and what profit do they cap?",
+          "premium": "buying",
+          "outlook": "directional"
+        }
+      ]
+    },
+    {
+      "id": "condors",
+      "label": "Condors",
+      "intro": "Four-leg range trades: long condors pay for a wide landing zone, short condors collect credit for defending one. Classification: intermediate · neutral · premium mixed.",
+      "tier": "intermediate",
+      "outlook": "neutral",
+      "premium": "mixed",
+      "questions": [
+        {
+          "id": "long-call-condor",
+          "label": "Long call condor",
+          "question": "Build a long call condor on {symbol}: buy a call, sell a higher call, sell a higher call still, buy the highest — equidistant, 30-45 days, inner strikes straddling spot. Price the debit, the max-profit plateau between the middle strikes, both breakevens and max loss. Compare it with a long call butterfly at the same outer strikes: what does the wider plateau cost?",
+          "premium": "buying"
+        },
+        {
+          "id": "long-put-condor",
+          "label": "Long put condor",
+          "question": "Build a long put condor on {symbol} with puts: buy a put, sell a lower put, sell a lower put still, buy the lowest — equidistant, inner strikes straddling spot, 30-45 days. Compare its debit and plateau with the call version and say which the skew makes cheaper on this chain.",
+          "premium": "buying"
+        },
+        {
+          "id": "short-call-condor",
+          "label": "Short call condor",
+          "question": "Build a short call condor on {symbol}: sell the inner calls, buy the outer calls, all above spot, 30-45 days, for a credit. Give the credit, max loss, and the zone {symbol} must stay under. Compare it with the call side of an iron condor — same economics, so what actually differs in margin and management?",
+          "premium": "selling"
+        },
+        {
+          "id": "short-put-condor",
+          "label": "Short put condor",
+          "question": "Build a short put condor on {symbol}: sell the inner puts, buy the outer puts, all below spot, 30-45 days, for a credit. Give the credit, max loss and floor. Compare it with the put side of an iron condor at the same strikes and say which you would rather manage into a falling market.",
+          "premium": "selling"
+        },
+        {
+          "id": "inverse-iron-condor",
+          "label": "Inverse iron condor — debit, wants out of the range",
+          "question": "Build an inverse iron condor on {symbol}: buy an out-of-the-money call spread above spot and an out-of-the-money put spread below it, both debit, 30-45 days. Give the total debit, max loss, and the moves beyond the spreads that profit. Compare it with a long strangle — cost, breakevens, and which one a volatility expansion rewards more.",
+          "premium": "buying",
+          "outlook": "directional"
+        }
+      ]
+    },
+    {
+      "id": "short-premium",
+      "label": "Short premium · undefined risk",
+      "intro": "Naked selling: high win rate, open-ended loss. Every question here also prices the defined-risk version, because the honest comparison is the point. Classification: advanced · neutral · premium selling.",
+      "tier": "advanced",
+      "outlook": "neutral",
+      "premium": "selling",
+      "questions": [
+        {
+          "id": "short-put-naked",
+          "label": "Short put — naked",
+          "question": "Price a naked short put on {symbol}: sell the put near 0.20 delta in absolute terms, 30-45 days out. Give the credit, breakeven, the margin or cash the position ties up, and the assignment plan if {symbol} falls through the strike. Then price the same view as a bull put spread and state exactly how much credit the defined-risk version gives up for capping the loss.",
+          "outlook": "bullish"
+        },
+        {
+          "id": "short-call-naked",
+          "label": "Short call — naked, unlimited risk",
+          "question": "Price a naked short call on {symbol}: sell the call near 0.20 delta, 30-45 days out. State plainly that the loss is unlimited, then give the credit, breakeven and the margin required. Price the bear call spread version of the same view and quantify what the cap costs in credit. Under what volatility conditions, if any, does the naked version's extra credit compensate for the tail?",
+          "outlook": "bearish"
+        },
+        {
+          "id": "short-straddle",
+          "label": "Short straddle",
+          "question": "Price a short straddle on {symbol}: sell the at-the-money call and put, 30-45 days out. Give the total credit, the breakeven band, and the market's implied move over the same window from the chain — is the credit more or less than the expected move? Then price an iron butterfly over the same body and state what the wings cost in credit and buy in safety."
+        },
+        {
+          "id": "short-strangle",
+          "label": "Short strangle",
+          "question": "Price a short strangle on {symbol}: sell the call and put near 0.16 delta each, 30-45 days out. Give the total credit, the breakeven band, and the probability-of-profit the deltas imply. Compare it with the short straddle at the same expiry: how much credit does the wider band surrender, and how much tail risk does it actually remove? Then price the iron condor version with bought wings."
+        },
+        {
+          "id": "covered-short-straddle",
+          "label": "Covered short straddle",
+          "question": "Price a covered short straddle on {symbol}: hold the underlying (or its share equivalent) and sell the at-the-money call and put against it, 30-45 days. Give both credits, the effective new cost basis, and the total downside exposure — be explicit that the sold put adds a second helping of downside, it does not hedge the first. For what holding and what view does this income rate justify that?",
+          "outlook": "bullish"
+        },
+        {
+          "id": "covered-short-strangle",
+          "label": "Covered short strangle",
+          "question": "Price a covered short strangle on {symbol}: hold the underlying, sell an out-of-the-money call and an out-of-the-money put near 0.20 delta each, 30-45 days. Give the combined credit, the improved cost basis if the put assigns, the price at which you are forced to sell the shares, and the total share exposure after a put assignment. Compare the income with a plain covered call.",
+          "outlook": "bullish"
+        }
+      ]
+    },
+    {
+      "id": "ladders",
+      "label": "Ladders",
+      "intro": "A vertical spread plus one extra sold leg further out: the extra credit widens the profit zone and leaves a tail of risk beyond the far strike. Classification: advanced · directional · premium mixed.",
+      "tier": "advanced",
+      "outlook": "directional",
+      "premium": "mixed",
+      "questions": [
+        {
+          "id": "bull-call-ladder",
+          "label": "Bull call ladder",
+          "question": "Build the standard bull call ladder on {symbol} from the chain: buy a call near the money, sell a higher call, sell one higher still, 30-45 days. Price every leg and the combination. Give the payoff at expiry in each zone — below the lowest strike, between each pair, and above the top strike, where the extra short call leaves risk. Compare it with a plain bull call spread: what does the third leg buy, and what does it cost?",
+          "outlook": "bullish"
+        },
+        {
+          "id": "bear-call-ladder",
+          "label": "Bear call ladder",
+          "question": "Build the standard bear call ladder on {symbol}: sell a call near the money, buy a higher call, buy one higher still, 30-45 days. Price every leg and the combination, and give the payoff at expiry zone by zone. This structure profits from a fall but keeps a live zone above spot — state exactly where its max loss sits and how it differs from a bear call spread.",
+          "outlook": "bearish"
+        },
+        {
+          "id": "bull-put-ladder",
+          "label": "Bull put ladder",
+          "question": "Build the standard bull put ladder on {symbol} with puts: sell a put near the money, buy a lower put, buy one lower still, 30-45 days. Price every leg and the combination; give the payoff at expiry in each zone and identify where the extra bought leg changes the risk versus a bull put spread. When does the ladder's downside shape beat the simple spread?",
+          "outlook": "bullish"
+        },
+        {
+          "id": "bear-put-ladder",
+          "label": "Bear put ladder",
+          "question": "Build the standard bear put ladder on {symbol}: buy a put near the money, sell a lower put, sell one lower still, 30-45 days. Price every leg and the combination; give the expiry payoff zone by zone, including the tail below the lowest strike where the extra short put leaves risk. Compare it with a bear put spread for the same view.",
+          "outlook": "bearish"
+        }
+      ]
+    },
+    {
+      "id": "lizards",
+      "label": "Jade lizards",
+      "intro": "A short put funded further by a call credit spread, sized so the upside cannot lose: sell premium on both sides, risk only to the downside (or its mirror). Classification: advanced · bullish · premium selling.",
+      "tier": "advanced",
+      "outlook": "bullish",
+      "premium": "selling",
+      "questions": [
+        {
+          "id": "jade-lizard",
+          "label": "Jade lizard — no upside risk by construction",
+          "question": "Build a jade lizard on {symbol}: sell an out-of-the-money put near 0.25 delta in absolute terms, and sell a call credit spread above spot (short call near 0.25 delta, long call higher), 30-45 days. Verify the construction rule on the live numbers: total credit must exceed the call spread's width, or the trade DOES have upside risk. Give the credit, downside breakeven, max loss, and compare it with the plain short put — what does the call spread add, and what does it take away?"
+        },
+        {
+          "id": "reverse-jade-lizard",
+          "label": "Reverse jade lizard",
+          "question": "Build a reverse jade lizard on {symbol}: sell an out-of-the-money call near 0.25 delta, and sell a put credit spread below spot (short put near 0.25 delta in absolute terms, long put lower), 30-45 days. Verify the mirror rule: total credit must exceed the put spread's width so there is no DOWNSIDE risk by construction. Give the credit, upside breakeven and the real exposure above it, and compare with a plain short call.",
+          "outlook": "bearish"
+        }
+      ]
+    },
+    {
+      "id": "ratios",
+      "label": "Ratio spreads & broken wings",
+      "intro": "Unequal leg counts: ratio structures reshape the payoff and can leave a naked tail; backspreads pay for convexity; broken wings remove one side's risk entirely. Classification: expert · directional · premium mixed.",
+      "tier": "expert",
+      "outlook": "directional",
+      "premium": "mixed",
+      "questions": [
+        {
+          "id": "call-ratio-spread",
+          "label": "Call ratio spread (1x2)",
+          "question": "Build a call ratio spread on {symbol}: buy one call near the money, sell two calls at a higher strike, 30-45 days, ideally for a small credit or debit. Give the net, the profit peak at the short strike, both breakevens, and state plainly the risk above the shorts — one call is naked up there. What move makes this beat a bull call spread, and what move punishes it?",
+          "outlook": "bullish"
+        },
+        {
+          "id": "put-ratio-spread",
+          "label": "Put ratio spread (1x2)",
+          "question": "Build a put ratio spread on {symbol}: buy one put near the money, sell two puts at a lower strike, 30-45 days. Give the net credit or debit, the profit peak at the short strike, both breakevens, and the open risk below the shorts where one put is naked. Compare it with a bear put spread for the same bearish view.",
+          "outlook": "bearish"
+        },
+        {
+          "id": "call-ratio-backspread",
+          "label": "Call ratio backspread",
+          "question": "Build a call ratio backspread on {symbol}: sell one call near the money, buy two calls at a higher strike, 30-45 days, for a small debit or credit. Give the payoff shape honestly: the valley of max loss between the strikes, the unlimited profit above, and the implied-volatility conditions this needs — a backspread starves without a real move. Compare it with a long call at the same total risk.",
+          "outlook": "bullish",
+          "premium": "buying"
+        },
+        {
+          "id": "put-ratio-backspread",
+          "label": "Put ratio backspread",
+          "question": "Build a put ratio backspread on {symbol}: sell one put near the money, buy two puts at a lower strike, 30-45 days. Give the net, the valley of max loss, and the payoff in a genuine crash versus a slow drift down — this structure feeds on the crash and starves on the drift. Compare it with a long put and a bear put spread at the same premium outlay.",
+          "outlook": "bearish",
+          "premium": "buying"
+        },
+        {
+          "id": "call-broken-wing",
+          "label": "Call broken-wing butterfly",
+          "question": "Build a call broken-wing butterfly on {symbol}: buy one call, sell two at a higher strike, buy one call further out than equidistant — the skipped width is the broken wing. Show whether the live chain lets it be placed for a credit, identify which side carries NO risk by construction, and give max profit, max loss and breakevens. Compare it with the symmetric long call butterfly.",
+          "outlook": "bullish"
+        },
+        {
+          "id": "put-broken-wing",
+          "label": "Put broken-wing butterfly",
+          "question": "Build a put broken-wing butterfly on {symbol}: buy one put, sell two at a lower strike, buy one put further below than equidistant. Show the net credit or debit from the live chain, which side is risk-free by construction, max profit, max loss and breakevens. This is the classic defined-risk income structure — compare its credit and floor with a bull put spread.",
+          "outlook": "bearish"
+        },
+        {
+          "id": "inverse-call-broken-wing",
+          "label": "Inverse call broken-wing",
+          "question": "Build the inverse of the call broken-wing butterfly on {symbol}: sell one call, buy two at a higher strike, sell one call further out than equidistant. Give the net debit or credit, where the risk concentrates, and both breakevens. Explain what view this expresses that the regular broken wing does not, and compare its payoff with a call ratio backspread.",
+          "outlook": "bullish"
+        },
+        {
+          "id": "inverse-put-broken-wing",
+          "label": "Inverse put broken-wing",
+          "question": "Build the inverse of the put broken-wing butterfly on {symbol}: sell one put, buy two at a lower strike, sell one put further below than equidistant. Give the net, the risk zone, and breakevens from the live chain. State the view it expresses and compare it with a put ratio backspread at the same strikes.",
+          "outlook": "bearish"
+        }
+      ]
+    },
+    {
+      "id": "synthetics",
+      "label": "Synthetics, combos & exotics",
+      "intro": "Structures that replicate other instruments or tilt a straddle: synthetic futures and puts, risk-reversal combos, strips, straps, guts and the double diagonal. Classification: expert · directional · premium mixed.",
+      "tier": "expert",
+      "outlook": "directional",
+      "premium": "mixed",
+      "questions": [
+        {
+          "id": "long-synthetic-future",
+          "label": "Long synthetic future",
+          "question": "Build a long synthetic future on {symbol}: buy the at-the-money call and sell the at-the-money put, same strike and expiry, 45-60 days. Give the net debit or credit, the effective entry price versus spot, and the margin or capital it ties up compared with buying the underlying outright. Name what the synthetic does NOT give you — dividends, and what early assignment on the short put means.",
+          "outlook": "bullish"
+        },
+        {
+          "id": "short-synthetic-future",
+          "label": "Short synthetic future",
+          "question": "Build a short synthetic future on {symbol}: sell the at-the-money call and buy the at-the-money put, same strike and expiry, 45-60 days. Give the net, the effective short entry versus spot, and the capital comparison with shorting the underlying. State the early-assignment and hard-to-borrow advantages, if any, honestly.",
+          "outlook": "bearish"
+        },
+        {
+          "id": "synthetic-put",
+          "label": "Synthetic put — beating the skew",
+          "question": "Price a synthetic long put on {symbol}: a long call near the money paired with a short position in the underlying itself, 45-60 day horizon. Compare its all-in cost with the straight long put at the same strike and a similar expiry from the chain. Put skew often makes the synthetic route cheaper than buying the put outright — quantify the difference on this chain, then name the frictions (borrow cost, assignment risk, the extra leg) that eat the saving, and say which route you would actually take.",
+          "outlook": "bearish",
+          "premium": "buying"
+        },
+        {
+          "id": "long-combo",
+          "label": "Long combo — risk reversal",
+          "question": "Build a long combo on {symbol}: sell an out-of-the-money put near 0.25 delta in absolute terms, buy an out-of-the-money call near 0.25 delta, same expiry, 45-60 days. Show whether the live chain prices it at zero cost, a credit, or a debit — and state plainly what the 'free' upside costs: full downside participation below the put strike, as if long the underlying into a fall. Compare it with paying up for the long call alone.",
+          "outlook": "bullish"
+        },
+        {
+          "id": "short-combo",
+          "label": "Short combo — bearish risk reversal",
+          "question": "Build a short combo on {symbol}: sell an out-of-the-money call near 0.25 delta, buy an out-of-the-money put near 0.25 delta in absolute terms, same expiry, 45-60 days. Give the net credit or debit from the live chain, the effective payoff profile, and the upside exposure above the short call — it is a synthetic short with a real tail. Compare it with a bear put spread at the same strikes.",
+          "outlook": "bearish"
+        },
+        {
+          "id": "strip",
+          "label": "Strip — straddle with a bearish tilt",
+          "question": "Build a strip on {symbol}: buy one at-the-money call and two at-the-money puts, same expiry, 30-45 days. Give the total debit, both breakevens, and the payoff asymmetry — how much more it makes on a 10% fall than a 10% rise. Compare it with a plain straddle: what does the extra put cost, and what forecast justifies it?",
+          "premium": "buying",
+          "outlook": "bearish"
+        },
+        {
+          "id": "strap",
+          "label": "Strap — straddle with a bullish tilt",
+          "question": "Build a strap on {symbol}: buy two at-the-money calls and one at-the-money put, same expiry, 30-45 days. Give the total debit, both breakevens, and the asymmetry versus a strip and a straddle at the same expiry. What forecast — direction plus magnitude — makes the strap the best of the three?",
+          "premium": "buying",
+          "outlook": "bullish"
+        },
+        {
+          "id": "guts",
+          "label": "Long guts — in-the-money strangle",
+          "question": "Build a long guts position on {symbol}: buy an in-the-money call and an in-the-money put (strikes crossed inside spot), same expiry, 30-45 days. Give the total debit and both breakevens, then compare them with a long straddle at the same expiry: the guts costs more and breaks even sooner — quantify both sides of that trade and say when it is worth it.",
+          "premium": "buying"
+        },
+        {
+          "id": "short-guts",
+          "label": "Short guts — maximum credit, real risk",
+          "question": "Price a short guts position on {symbol}: sell an in-the-money call and an in-the-money put, same expiry, 30-45 days. Give the large credit, the breakeven band, and the margin the position demands. Compare it honestly with a short strangle: how much extra credit does selling in-the-money pay, and how much closer does it put the breakevens to spot?",
+          "premium": "selling"
+        },
+        {
+          "id": "double-diagonal",
+          "label": "Double diagonal",
+          "question": "Build a double diagonal on {symbol}: sell a near-term out-of-the-money call and put, buy longer-dated options further out on both sides, strikes staggered diagonally. Price all four legs and the net debit. Give the theta it harvests, the vega it is long, and the tent-shaped profit zone at the front expiry. Compare it with a double calendar at the same strikes — what does the diagonal offset buy and cost?",
+          "outlook": "neutral"
         }
       ]
     }
