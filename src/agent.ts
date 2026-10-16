@@ -42,8 +42,9 @@ import {
 import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
 import {
-  AUTOPILOT_MAX_RUNS_KEPT,
   AUTOPILOT_STEP_TOOL_BUDGET,
+  AutopilotRunStore,
+  mergeAutopilotRuns,
   readRunSession,
   recordRunToSession,
   runAutopilotPipeline,
@@ -2269,14 +2270,13 @@ Do not claim to have completed a payment unless you have received confirmation.`
    */
   private readAutopilotRuns(): AutopilotRun[] {
     const state = this.ensureState();
-    return Array.isArray(state.autopilotRuns) ? state.autopilotRuns : [];
+    const legacy = Array.isArray(state.autopilotRuns) ? state.autopilotRuns : [];
+    return mergeAutopilotRuns(new AutopilotRunStore(this.ctx.storage.sql).list(), legacy);
   }
 
   private async writeAutopilotRun(run: AutopilotRun): Promise<void> {
-    const state = this.ensureState();
-    const list = this.readAutopilotRuns().filter((r) => r.id !== run.id);
-    list.unshift(run);
-    this.setState({ ...state, autopilotRuns: list.slice(0, AUTOPILOT_MAX_RUNS_KEPT) });
+    // Per-run table row, not a setState of the whole agent state (issue #110).
+    new AutopilotRunStore(this.ctx.storage.sql).save(run);
   }
 
   /** Autopilot runs, newest first — the dashboard's run history reads these. */
