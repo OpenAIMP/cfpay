@@ -199,6 +199,48 @@ curl -X POST https://pay.openaimp.com/api/dashboard/qa/ux-audit-url \
 
 All pages must share the first page's origin (max 8). Interactive login flows — form fill, OAuth redirects, MFA, CAPTCHA — are not supported yet. For automated coverage of a secure target, store its credential as a PROD environment secret and have `scripts/qa-smoke.mjs` build the spec from the environment at runtime; credentials never go in the repo.
 
+#### Testing the agentTool / A2A exposure
+
+The generalized audit is also a service operation, **`qa.ux_audit`**, reachable by other agents two ways. Test them in this order:
+
+1. **Discovery (no auth):** `GET https://pay.openaimp.com/a2a/qa/agent-card.json` — the card's description and Browser QA skill name `qa.ux_audit`.
+2. **A2A dispatch (deterministic):** send a JSON-RPC `message/send` to `/a2a/qa` with the A2A bearer and a data part carrying the operation and a spec:
+
+```bash
+curl -X POST https://pay.openaimp.com/a2a/qa \
+  -H "Authorization: Bearer <A2A_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"data","data":{"operation":"qa.ux_audit","spec":{"pages":["https://pay.openaimp.com/qa-fixture.html"]}}}]}}}'
+```
+
+Against the fixture the reply text reads *"UX audit on 1 page(s) found failing checks: Contrast (WCAG AA), Target size, Heading hierarchy, Image alt text."*, with the full findings in the data artifact. Negative checks in the same shape: an unknown operation returns the supported list (now ending in `qa.ux_audit`); `qa.ux_audit` without a spec is refused as `bad_spec`; a non-http(s) page is refused as `bad_url`. This path uses no AI.
+
+3. **Host agentTool dispatch (model-mediated):** ask the dashboard's host agent — *"Run a UX audit of https://pay.openaimp.com/qa-fixture.html and tell me which checks fail."* It should dispatch the QA tool with `qa.ux_audit` and summarize the same four failures. Wording varies (a model makes the call) and the turn spends Workers AI neurons, so treat step 2 as the verdict and this as the experience.
+
+#### Testing the live frame stream
+
+Run any watched check from the QA tab — **Verify Tab Data** is the longest — and watch the Live view panel:
+
+- The large view updates about once a second between the named screenshots, captioned **"Live — streaming"** (before, it sat frozen on each still until the next landed).
+- The filmstrip gains thumbnails **only** at the named screenshot beats; streamed frames never add thumbnails or step lines.
+- Clicking a thumbnail pins the large view: frames stop overriding it while the run continues.
+- The run still finishes with the normal result block. The same streaming applies to **UX Audit** and **Audit URL** runs; unwatched runs (Post-deploy QA included) stream nothing and pay nothing.
+
+The stream is capture polling (about 1 fps), not `Page.startScreencast` — the Agents SDK's CDP client discards protocol events, so screencast frames cannot reach the agent through the connection the checks use. True screencast is tracked in issue #102.
+
+#### Testing the Public.com autopilot
+
+The Public tab's **Autopilot** toggle runs a question as a goal instead of a single reactive chat turn: a planner decomposes it into steps (max 6), each step executes with its own tool budget and writes a finding into the run's evidence, a verifier judges the evidence against the goal (complete / incomplete, a confidence score, and the gaps by name), and at most one replan (max 3 follow-up steps aimed at the gaps) runs before the answer is synthesized from the verified evidence. Runs persist in agent state (newest 20), and each run also records a transcript into the agent's Sessions store under `autopilot-<runId>`. Order-placing calls inside steps still become approval-gated trade proposals — autopilot never executes a trade. It costs several times the Workers AI calls of a plain question, so use it for multi-part goals, not lookups.
+
+Test it in production:
+
+1. **Run one.** Public tab → tick **Autopilot** → ask a multi-part question, e.g. *"Compare NVDA and AMD for a bullish view on semiconductors — which has the better setup?"* — the question shape that used to exhaust the reactive loop's tool-call cap. GPT-OSS 20B keeps the neuron cost down. The run card should finish with every step checked off, a verifier verdict with confidence, and an answer built from the step findings. With Autopilot off, the same question takes the reactive path, unchanged.
+2. **List the runs.** `GET https://pay.openaimp.com/api/public/autopilot-runs` with the dashboard `X-API-Key` header returns the persisted runs; the newest is the one from step 1. Its presence is the state check — the run survived in the typed `autopilotRuns` state.
+3. **Read the session transcript.** `GET https://pay.openaimp.com/api/public/autopilot-runs/<id>/session` (same header) returns the run's Sessions transcript: the goal, one message per completed step carrying its finding, the verifier verdict, and the final answer — matching the run card. Call it twice: the two lists must be identical. Recording re-runs on every state save during the run, and stable message ids keep the appends idempotent, so duplicated messages mean a bug. Runs created before the platform-alignment deploy (PR #109, 2026-10-15) have no transcript.
+4. **Check tracing.** Cloudflare dashboard → Workers & Pages → `cfmail-agent` → Observability → Traces shows agent activity from step 1 (allow a minute). Message and tool payloads are intentionally not recorded — they can contain email bodies and financial data.
+
+Reading failures: **401** — missing or wrong API key. **404** on the session URL — wrong run id, or a pre-alignment run. **AiError 4006 / 3043** mid-run — Workers AI quota / transient errors; the run dies at whichever AI call it was making, so retry. **HTTP 502, "Internal error in Durable Object storage caused object to be reset"** — the agent's Durable Object was reset by a storage-layer error mid-run (first observed 2026-10-15, on the step-1 test question above). Retry the run; if it recurs, treat it as a defect in the run's state/session writes, not a Workers AI problem.
+
 ## API Endpoints
 
 | Endpoint | Method | Auth | Description |
