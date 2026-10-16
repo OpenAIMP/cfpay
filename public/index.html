@@ -276,7 +276,7 @@
           <h3 style="margin-bottom:1rem;">Ask about an instrument</h3>
           <div class="chat-container" id="publicMessages"></div>
           <div style="display:flex;gap:0.5rem;">
-            <input type="text" id="publicInput" placeholder="Compare NVDA and AMD for a bullish view on semiconductors — which has the better setup?" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
+            <input type="text" id="publicInput" placeholder="e.g. Which looks best for a bullish view on semiconductors?" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
             <button class="btn" onclick="sendPublic()">Ask</button>
           </div>
           <label style="display:flex;gap:0.45rem;align-items:flex-start;margin-top:0.6rem;font-size:0.8rem;color:var(--muted);cursor:pointer;">
@@ -407,46 +407,6 @@
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
     }
-    // Safe markdown subset for Public answers (issue #112): the model writes
-    // tables and verdicts that used to arrive as raw pipe text. The input is
-    // escaped FIRST via escapeHtml; afterwards only the constant tags below
-    // are emitted, so no raw HTML, link or image from model output can reach
-    // the page. Links are deliberately not rendered.
-    function renderMarkdownSafe(text) {
-      const inline = (s) => s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
-      const lines = escapeHtml(text == null ? '' : String(text)).split('\n');
-      const out = [];
-      let i = 0;
-      while (i < lines.length) {
-        const line = lines[i];
-        if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes('-')) {
-          const cells = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => inline(c.trim()));
-          const head = cells(line);
-          let rows = '';
-          i += 2;
-          while (i < lines.length && /^\s*\|/.test(lines[i])) { rows += '<tr>' + cells(lines[i]).map((c) => '<td style="border:1px solid var(--border);padding:0.25rem 0.5rem;">' + c + '</td>').join('') + '</tr>'; i++; }
-          out.push('<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:0.8rem;margin:0.4rem 0;"><thead><tr>' + head.map((c) => '<th style="border:1px solid var(--border);padding:0.25rem 0.5rem;text-align:left;">' + c + '</th>').join('') + '</tr></thead><tbody>' + rows + '</tbody></table></div>');
-          continue;
-        }
-        if (!line.trim()) { i++; continue; }
-        const h = line.match(/^(#{1,4})\s+(.*)$/);
-        if (h) { out.push('<div style="font-weight:600;margin:0.55rem 0 0.2rem;">' + inline(h[2]) + '</div>'); i++; continue; }
-        if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
-          const ordered = /^\s*\d+\./.test(line);
-          let items = '';
-          while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) { items += '<li>' + inline(lines[i].replace(/^\s*([-*]|\d+\.)\s+/, '')) + '</li>'; i++; }
-          const tag = ordered ? 'ol' : 'ul';
-          out.push('<' + tag + ' style="margin:0.3rem 0;padding-left:1.2rem;line-height:1.6;">' + items + '</' + tag + '>');
-          continue;
-        }
-        const v = line.replace(/^\*\*/, '').match(/^Verdict:\s*(.*)$/i);
-        if (v) { out.push('<div style="border-left:3px solid var(--blue);background:var(--bg);padding:0.45rem 0.7rem;margin:0.2rem 0 0.5rem;font-weight:600;">Verdict: ' + inline(v[1].replace(/\*\*/g, '')) + '</div>'); i++; continue; }
-        out.push('<p style="margin:0.3rem 0;line-height:1.65;">' + inline(line) + '</p>');
-        i++;
-      }
-      return out.join('');
-    }
-
     let apiKey = localStorage.getItem('cfmail_api_key') || '';
     let chatHistory = [];
     let account = null;
@@ -1723,11 +1683,73 @@ async function loadStats() {
 
     // Render one tool call so the answer can be checked against what ran.
     // Collapsed by default; the summary line is the first line of the result.
-    function renderToolTrace(trace) {
+    // Raw-data downloads (issue #112): the trace carries each call's FULL
+    // result from Public.com; these helpers turn it into downloadable files.
+    const pubData = [];
+    const pBtn = 'background:var(--bg);color:var(--text);border:1px solid var(--border);padding:0.15rem 0.5rem;font-size:0.7rem;';
+    const pParse = (r) => { try { return JSON.parse(r); } catch { return undefined; } };
+    const pEnv = (t) => { const p = pParse(t.result || ''); return { tool: t.name, args: t.args || {}, ok: t.ok, result: p !== undefined ? p : (t.result || '') }; };
+    // A result's tabular payload: a top-level array of objects, or the
+    // largest array of objects within two levels (a chain's contracts).
+    function pTable(result) {
+      const data = pParse(result);
+      if (data === undefined || data === null) return null;
+      const isRows = (v) => Array.isArray(v) && v.length > 0 && v[0] !== null && typeof v[0] === 'object';
+      if (Array.isArray(data)) return isRows(data) ? data : null;
+      if (typeof data !== 'object') return null;
+      let best = null;
+      const consider = (v) => { if (isRows(v) && (!best || v.length > best.length)) best = v; };
+      for (const o of [data, ...Object.values(data).filter((v) => v && typeof v === 'object' && !Array.isArray(v))]) for (const k of Object.keys(o)) consider(o[k]);
+      return best || [data];
+    }
+    function pCsv(rows) {
+      const keys = [];
+      for (const r of rows) for (const k of Object.keys(r)) if (!keys.includes(k)) keys.push(k);
+      const cell = (v) => {
+        if (v === null || v === undefined) return '';
+        const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      const lines = [keys.map(cell).join(',')];
+      for (const r of rows) lines.push(keys.map((k) => cell(r[k])).join(','));
+      return lines.join('\n');
+    }
+    function pDown(filename, text, type) {
+      const url = URL.createObjectURL(new Blob([text], { type }));
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+    const pStamp = () => new Date().toISOString().replace(/[-:]/g, '').slice(0, 13);
+    function downloadPublicCall(idx, callIdx, format) {
+      const entry = pubData[idx]; if (!entry) return;
+      const t = entry.trace[callIdx]; if (!t) return;
+      const base = 'public-' + t.name + '-' + pStamp();
+      if (format === 'csv') {
+        const rows = pTable(t.result || '');
+        if (rows) pDown(base + '.csv', pCsv(rows), 'text/csv');
+      } else {
+        const p = pParse(t.result || '');
+        pDown(base + '.json', JSON.stringify(p !== undefined ? p : pEnv(t), null, 2), 'application/json');
+      }
+    }
+    function downloadPublicAll(idx) {
+      const entry = pubData[idx]; if (!entry) return;
+      const payload = { question: entry.question, model: entry.model, finishReason: entry.finishReason, calls: entry.trace.map(pEnv) };
+      pDown('public-data-' + pStamp() + '.json', JSON.stringify(payload, null, 2), 'application/json');
+    }
+
+    function renderToolTrace(trace, answerIdx = -1) {
       if (!Array.isArray(trace) || trace.length === 0) {
         return '<div class="status-msg error" style="margin-top:0.5rem;">No tools were called. The answer below is not backed by Public.com data.</div>';
       }
+      const hasIdx = answerIdx >= 0;
+      const dlBtn = (i, f) => '<button class="btn" style="' + pBtn + '" onclick="downloadPublicCall(' + answerIdx + ',' + i + ', \'' + f + '\')">Download ' + f.toUpperCase() + '</button>';
+      const dlFor = (t, i) => '<div style="margin-top:0.4rem;display:flex;gap:0.4rem;">' + dlBtn(i, 'json')
+        + (pTable(t.result || '') ? dlBtn(i, 'csv') : '') + '</div>';
       const rows = trace.map((t, i) => {
+        const dl = hasIdx ? dlFor(t, i) : '';
         const badge = t.proposed
           ? '<span style="background:#b45309;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;">proposed</span>'
           : t.refused
@@ -1743,12 +1765,13 @@ async function loadStats() {
           + '<div><strong>arguments</strong></div>'
           + '<pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg);border-radius:4px;padding:0.4rem;margin:0.2rem 0 0.5rem;">' + args + '</pre>'
           + '<div><strong>result</strong> <span style="opacity:0.7;">(' + (t.result || '').length + ' chars)</span></div>'
-          + '<pre style="white-space:pre-wrap;word-break:break-word;max-height:18rem;overflow:auto;background:var(--bg);border-radius:4px;padding:0.4rem;margin:0.2rem 0 0;">' + body + '</pre>'
+          + '<pre style="white-space:pre-wrap;word-break:break-word;max-height:18rem;overflow:auto;background:var(--bg);border-radius:4px;padding:0.4rem;margin:0.2rem 0 0;">' + body + '</pre>' + dl
           + '</div></details>';
       }).join('');
-      return '<div style="margin-top:0.5rem;">'
-        + '<div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Tool calls (' + trace.length + ')</div>'
-        + rows + '</div>';
+      const bar = '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">'
+        + '<div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Tool calls (' + trace.length + ')' + (hasIdx ? ' \u00b7 raw data from Public.com' : '') + '</div>'
+        + (hasIdx ? '<button class="btn" style="' + pBtn + '" onclick="downloadPublicAll(' + answerIdx + ')">Download all (JSON)</button>' : '') + '</div>';
+      return '<div style="margin-top:0.5rem;">' + bar + rows + '</div>';
     }
 
     // The autopilot run card: the persisted Goal -> Planner -> Queue ->
@@ -1769,17 +1792,10 @@ async function loadStats() {
           + (Array.isArray(v.gaps) && v.gaps.length ? '<div style="color:var(--muted);font-size:0.75rem;">Gaps: ' + v.gaps.map(g => escapeHtml(g)).join('; ') + '</div>' : '')
           + '</div>';
       }
-      let banner = '';
-      if (run.verification) {
-        const bv = run.verification;
-        const bpct = Math.round((Number(bv.confidence) || 0) * 100);
-        banner = '<div style="margin-top:0.45rem;border-left:3px solid ' + (bv.complete ? '#16a34a' : '#b45309') + ';background:var(--bg);padding:0.4rem 0.6rem;font-size:0.8rem;font-weight:600;">'
-          + (bv.complete ? '\u2713 Verified complete' : '\u26a0 Incomplete') + ' \u2014 confidence ' + bpct + '%</div>';
-      }
       const evCount = Array.isArray(run.evidence) ? run.evidence.length : 0;
       return '<details open style="margin-top:0.4rem;border:1px solid var(--border);border-radius:6px;padding:0.5rem;">'
         + '<summary style="cursor:pointer;font-size:0.78rem;">\uD83E\uDDED Autopilot run \u2014 ' + escapeHtml(run.status) + ' \u00b7 ' + run.steps.length + ' steps \u00b7 ' + evCount + ' evidence</summary>'
-        + banner + '<div style="margin-top:0.4rem;">' + steps + verdict + '</div></details>';
+        + '<div style="margin-top:0.4rem;">' + steps + verdict + '</div></details>';
     }
 
     // `preset` lets a question-library button send a prepared prompt without
@@ -1802,7 +1818,7 @@ async function loadStats() {
         if (res.error) {
           container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.error) + '</div>';
         } else {
-          container.innerHTML += '<div class="chat-msg assistant">' + renderMarkdownSafe(res.answer || '(no answer)') + '</div>';
+          container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.answer || '(no answer)') + '</div>';
           const trace = Array.isArray(res.trace) ? res.trace : [];
           const names = trace.map(c => c.name);
           const modelNote = res.model ? 'Model: ' + res.model + ' - ' : '';
@@ -1827,8 +1843,9 @@ async function loadStats() {
               + renderAutopilotRun(res.autopilot) + '</div>';
           }
           // Inline the trace with the answer so a claim can be traced to a result.
+          const answerIdx = pubData.push({ question: msg, model: res.model || null, finishReason: res.finishReason || null, trace }) - 1;
           container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
-            + renderToolTrace(trace) + '</div>';
+            + renderToolTrace(trace, answerIdx) + '</div>';
           // The answer may have created a trade proposal; surface it.
           loadPublicTrades();
         }
