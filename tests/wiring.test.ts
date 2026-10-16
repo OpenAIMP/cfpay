@@ -1494,6 +1494,17 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("autopilotVerdictBanner(run)");
   });
 
+  it("the trading desk data endpoints read MCP tools directly (issue #112)", () => {
+    expect(api).toContain('"/api/public/quotes"');
+    expect(api).toContain('"/api/public/portfolio"');
+    expect(api).toContain('"/api/public/chain"');
+    expect(api).toContain('"get_quotes"');
+    expect(api).toContain('"get_portfolio"');
+    expect(api).toContain('"get_option_chain"');
+    expect(api).toContain('"get_option_expirations"');
+    expect(api).toContain('from "./public-data"');
+  });
+
   it("public raw data is downloadable as JSON/CSV (issue #112)", () => {
     expect(idx).toContain("function downloadPublicCall(");
     expect(idx).toContain("function downloadPublicAll(");

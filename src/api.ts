@@ -10,10 +10,21 @@ import { timingSafeStringEqual } from "./mcp-auth";
 import { getOAuthUserFromRequest } from "./auth";
 import {
   PUBLIC_MCP_URL,
+  callTool,
   listTools,
   mcpCall,
   type McpSession,
 } from "./public-mcp";
+import {
+  extractAccountId,
+  extractExpirations,
+  matchProp,
+  missingRequired,
+  parseSymbolsParam,
+  parseToolJson,
+  pickArgs,
+  schemaProps,
+} from "./public-data";
 import {
   DEFAULT_PUBLIC_OAUTH_SCOPES,
   buildAuthorizeUrl,
@@ -341,6 +352,183 @@ export function createApp() {
   app.get("/api/public/autopilot-runs/:id/session", requireAuth, async (c) => {
     const agent = getAgent(c);
     return c.json({ messages: await agent.getAutopilotRunSession(c.req.param("id")) });
+  });
+
+  // Trading desk data reads (issue #112 part 2): the desk's panels call
+  // the MCP tools directly — no model in the path, so the numbers on the
+  // desk are the tools' own. Parameter names are mapped onto each tool's
+  // live inputSchema (see src/public-data.ts); a required parameter that
+  // cannot be mapped is reported by name, never guessed.
+  const asData = (text: string): { data: unknown; raw?: string } => {
+    const parsed = parseToolJson(text);
+    return parsed === undefined ? { data: null, raw: text } : { data: parsed };
+  };
+
+  app.get("/api/public/quotes", requireAuth, async (c) => {
+    const symbols = parseSymbolsParam(c.req.query("symbols"));
+    if (!symbols.length) {
+      return c.json({ error: "Pass ?symbols=NVDA,AMD with at least one valid symbol." }, 400);
+    }
+    const agent = getAgent(c);
+    const token = await agent.getPublicToken();
+    if (!token) {
+      return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+    }
+    try {
+      const session: McpSession = {};
+      const tools = await listTools(token, session);
+      const tool = tools.find((t) => t.name === "get_quotes");
+      if (!tool) {
+        return c.json({ error: "Public.com did not offer get_quotes for this account." }, 502);
+      }
+      const declared = Object.keys(schemaProps(tool.inputSchema).properties).join(", ");
+      const list = pickArgs(tool.inputSchema, {
+        symbols: { names: ["symbols", "tickers"], value: symbols },
+      });
+      let payload: { data: unknown; raw?: string };
+      if (list.matched.symbols) {
+        payload = asData(await callTool(token, "get_quotes", list.args, session));
+      } else {
+        const probe = pickArgs(tool.inputSchema, {
+          symbol: { names: ["symbol", "ticker"], value: symbols[0] },
+        });
+        if (!probe.matched.symbol) {
+          return c.json(
+            { error: "get_quotes declares no symbols/symbol parameter (it declares: " + declared + ")." },
+            502,
+          );
+        }
+        const rows: unknown[] = [];
+        for (const s of symbols) {
+          const one = pickArgs(tool.inputSchema, {
+            symbol: { names: ["symbol", "ticker"], value: s },
+          });
+          const parsed = parseToolJson(await callTool(token, "get_quotes", one.args, session));
+          rows.push({ symbol: s, quote: parsed === undefined ? null : parsed });
+        }
+        payload = { data: rows };
+      }
+      return c.json({ tool: "get_quotes", symbols, ...payload, fetchedAt: new Date().toISOString() });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+    }
+  });
+
+  app.get("/api/public/portfolio", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const token = await agent.getPublicToken();
+    if (!token) {
+      return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+    }
+    try {
+      const session: McpSession = {};
+      const tools = await listTools(token, session);
+      const tool = tools.find((t) => t.name === "get_portfolio");
+      if (!tool) {
+        return c.json({ error: "Public.com did not offer get_portfolio for this account." }, 502);
+      }
+      const args: Record<string, unknown> = {};
+      const { properties, required } = schemaProps(tool.inputSchema);
+      const acctProp = matchProp(properties, ["accountId", "account_id", "account", "accountNumber"]);
+      if (acctProp && required.includes(acctProp)) {
+        const accounts = parseToolJson(await callTool(token, "get_accounts", {}, session));
+        const accountId = extractAccountId(accounts);
+        if (!accountId) {
+          return c.json(
+            { error: "get_portfolio requires an account id, but none could be read from get_accounts." },
+            502,
+          );
+        }
+        args[acctProp] = accountId;
+      }
+      const missing = missingRequired(tool.inputSchema, args);
+      if (missing.length) {
+        return c.json(
+          { error: "get_portfolio requires unsupported parameters: " + missing.join(", ") + "." },
+          502,
+        );
+      }
+      const payload = asData(await callTool(token, "get_portfolio", args, session));
+      return c.json({ tool: "get_portfolio", ...payload, fetchedAt: new Date().toISOString() });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+    }
+  });
+
+  app.get("/api/public/chain", requireAuth, async (c) => {
+    const symbol = (c.req.query("symbol") || "").trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9.\-]{0,11}$/.test(symbol)) {
+      return c.json({ error: "Pass ?symbol=SMH (and optionally &expiry=YYYY-MM-DD)." }, 400);
+    }
+    let expiry = c.req.query("expiry") || "";
+    if (expiry && !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+      return c.json({ error: "expiry must be YYYY-MM-DD." }, 400);
+    }
+    const agent = getAgent(c);
+    const token = await agent.getPublicToken();
+    if (!token) {
+      return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+    }
+    try {
+      const session: McpSession = {};
+      const tools = await listTools(token, session);
+      const chainTool = tools.find((t) => t.name === "get_option_chain");
+      if (!chainTool) {
+        return c.json({ error: "Public.com did not offer get_option_chain for this account." }, 502);
+      }
+      let expirations: string[] = [];
+      if (!expiry) {
+        const expTool = tools.find((t) => t.name === "get_option_expirations");
+        if (expTool) {
+          const picked = pickArgs(expTool.inputSchema, {
+            symbol: { names: ["symbol", "ticker", "underlying"], value: symbol },
+          });
+          if (picked.matched.symbol) {
+            const text = await callTool(token, "get_option_expirations", picked.args, session);
+            expirations = extractExpirations(parseToolJson(text));
+            expiry = expirations[0] ?? "";
+          }
+        }
+        if (!expiry) {
+          return c.json(
+            { error: "No expirations could be resolved for " + symbol + " — pass &expiry=YYYY-MM-DD explicitly." },
+            502,
+          );
+        }
+      }
+      const picked = pickArgs(chainTool.inputSchema, {
+        symbol: { names: ["symbol", "ticker", "underlying"], value: symbol },
+        expiration: {
+          names: ["expiration", "expirationDate", "expiry", "expiration_date", "date"],
+          value: expiry,
+        },
+      });
+      if (!picked.matched.symbol) {
+        const declared = Object.keys(schemaProps(chainTool.inputSchema).properties).join(", ");
+        return c.json(
+          { error: "get_option_chain declares no symbol parameter (it declares: " + declared + ")." },
+          502,
+        );
+      }
+      const missing = missingRequired(chainTool.inputSchema, picked.args);
+      if (missing.length) {
+        return c.json(
+          { error: "get_option_chain requires unsupported parameters: " + missing.join(", ") + "." },
+          502,
+        );
+      }
+      const payload = asData(await callTool(token, "get_option_chain", picked.args, session));
+      return c.json({
+        tool: "get_option_chain",
+        symbol,
+        expiry,
+        expirations,
+        ...payload,
+        fetchedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+    }
   });
 
   app.get("/api/public/trades", requireAuth, async (c) => {
