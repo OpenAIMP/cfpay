@@ -12,6 +12,7 @@ import {
   AUTOPILOT_PLANNER_SYSTEM,
   AUTOPILOT_VERIFIER_SYSTEM,
   buildEvidenceDigest,
+  mergeAutopilotRuns,
   parsePlan,
   parseVerification,
   readRunSession,
@@ -221,8 +222,14 @@ describe("Sessions transcript recording", () => {
     return {
       session: (_id: string) => ({
         appendMessage: async (m: any) => {
-          if (!store.has(m.id)) store.set(m.id, m); // the store is idempotent on id
-          return { inserted: true };
+          if (store.has(m.id)) return { inserted: false, message: store.get(m.id) };
+          store.set(m.id, m);
+          return { inserted: true, message: m };
+        },
+        updateMessage: async (m: any) => {
+          if (!store.has(m.id)) return null;
+          store.set(m.id, m);
+          return m;
         },
         getHistory: async () => [...store.values()],
       }),
@@ -258,6 +265,23 @@ describe("Sessions transcript recording", () => {
     expect(messages[3].text).toBe("NVDA leads.");
   });
 
+  it("refreshes the verdict when a replan replaces it (issue #110)", async () => {
+    const sessions = fakeSessions();
+    const round0 = {
+      ...run,
+      verification: { complete: false, confidence: 0.4, gaps: ["AMD chain"], summary: "missing AMD" },
+      answer: "",
+    } as AutopilotRun;
+    await recordRunToSession(sessions, round0);
+    await recordRunToSession(sessions, run); // post-replan save: complete verdict + answer
+    const messages = await readRunSession(sessions, "run-1");
+    const verdict = messages.find((m) => m.id === "verdict");
+    expect(verdict?.text).toContain("complete");
+    expect(verdict?.text).toContain("covered");
+    expect(verdict?.text).not.toContain("missing AMD");
+    expect(messages.map((m) => m.id)).toEqual(["goal", "step-s1", "verdict", "answer"]);
+  });
+
   it("never throws when the store fails", async () => {
     const broken = {
       session: () => ({
@@ -267,5 +291,38 @@ describe("Sessions transcript recording", () => {
       }),
     } as any;
     await expect(recordRunToSession(broken, run)).resolves.toBeUndefined();
+  });
+});
+
+describe("mergeAutopilotRuns (issue #110)", () => {
+  const mk = (id: string, createdAt: string, goal = "g") =>
+    ({
+      id,
+      goal,
+      status: "done",
+      createdAt,
+      updatedAt: createdAt,
+      steps: [],
+      evidence: [],
+      verification: null,
+      answer: "",
+      model: "@cf/test",
+      replans: 0,
+    }) as AutopilotRun;
+
+  it("merges table and legacy runs newest-first, deduped by id", () => {
+    const stored = [mk("b", "2026-10-15T20:00:00.000Z"), mk("a", "2026-10-15T19:00:00.000Z", "stored wins")];
+    const legacy = [mk("a", "2026-10-15T19:00:00.000Z", "legacy loses"), mk("c", "2026-10-15T18:00:00.000Z")];
+    const merged = mergeAutopilotRuns(stored, legacy);
+    expect(merged.map((r) => r.id)).toEqual(["b", "a", "c"]);
+    expect(merged[1].goal).toBe("stored wins");
+  });
+
+  it("caps the merged list at AUTOPILOT_MAX_RUNS_KEPT", () => {
+    const many = Array.from({ length: 25 }, (_, i) =>
+      mk("r" + i, new Date(Date.UTC(2026, 9, 15, 0, i)).toISOString()),
+    );
+    expect(mergeAutopilotRuns(many, [])).toHaveLength(20);
+    expect(mergeAutopilotRuns([], [])).toEqual([]);
   });
 });

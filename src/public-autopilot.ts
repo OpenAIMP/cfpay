@@ -389,6 +389,75 @@ export async function runAutopilotPipeline(
   return { answer: run.answer, trace, model: modelId, cost: null, autopilot: run };
 }
 
+/* ------------------------- per-run persistence ------------------------- */
+
+/**
+ * Autopilot runs, one SQLite row per run in the host Durable Object
+ * (issue #110) — the same table pattern as the A2A task store in
+ * src/a2a.ts. Runs used to live inside the agent state blob, so every
+ * pipeline save rewrote the host's ENTIRE state (stored emails, payments,
+ * webhook payloads, ...) through setState — and a run saves ~13–26
+ * times. Here a save writes only the run's own row.
+ */
+export class AutopilotRunStore {
+  constructor(private sql: SqlStorage) {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS autopilot_runs (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        data TEXT NOT NULL
+      )
+    `);
+  }
+
+  save(run: AutopilotRun): void {
+    this.sql.exec(
+      "INSERT OR REPLACE INTO autopilot_runs (id, created_at, data) VALUES (?, ?, ?)",
+      run.id,
+      run.createdAt,
+      JSON.stringify(run),
+    );
+    this.sql.exec(
+      "DELETE FROM autopilot_runs WHERE id NOT IN (SELECT id FROM autopilot_runs ORDER BY created_at DESC LIMIT ?)",
+      AUTOPILOT_MAX_RUNS_KEPT,
+    );
+  }
+
+  list(): AutopilotRun[] {
+    const rows = [...this.sql.exec(
+      "SELECT data FROM autopilot_runs ORDER BY created_at DESC LIMIT ?",
+      AUTOPILOT_MAX_RUNS_KEPT,
+    )];
+    const runs: AutopilotRun[] = [];
+    for (const row of rows) {
+      try {
+        runs.push(JSON.parse(row.data as string) as AutopilotRun);
+      } catch {
+        // Skip a corrupt row rather than failing the whole list.
+      }
+    }
+    return runs;
+  }
+}
+
+/**
+ * The run list the API serves: per-run table rows merged with any runs
+ * still held in the legacy agent-state field (written before issue #110).
+ * Table rows win on id; the result is newest-first and capped. Pure, so
+ * the merge semantics are unit-testable without a Durable Object.
+ */
+export function mergeAutopilotRuns(
+  stored: AutopilotRun[],
+  legacy: AutopilotRun[],
+): AutopilotRun[] {
+  const byId = new Map<string, AutopilotRun>();
+  for (const run of legacy) byId.set(run.id, run);
+  for (const run of stored) byId.set(run.id, run);
+  return [...byId.values()]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, AUTOPILOT_MAX_RUNS_KEPT);
+}
+
 /** The Sessions namespace one run's transcript lives under. */
 export function autopilotSessionId(runId: string): string {
   return "autopilot-" + runId;
@@ -400,13 +469,20 @@ export function autopilotSessionId(runId: string): string {
  * then each finished step's finding, the verifier's verdict, and the final
  * answer. Message ids are stable per run part and appendMessage is
  * idempotent on id, so the pipeline's save-on-every-transition hook can call
- * this on every save without duplicating rows. Recording is observability,
+ * this on every save without duplicating rows. The verdict and the answer
+ * go through an append-or-update: a replan replaces the verdict, and an
+ * insert-or-ignore append alone would leave the superseded round-0 verdict
+ * in the transcript forever (issue #110). Recording is observability,
  * never a run dependency: failures are logged, never thrown.
  */
 export async function recordRunToSession(sessions: Sessions, run: AutopilotRun): Promise<void> {
   try {
     const session = sessions.session(autopilotSessionId(run.id));
     const parts = (text: string): SessionMessage["parts"] => [{ type: "text", text }];
+    const upsert = async (message: SessionMessage): Promise<void> => {
+      const res = await session.appendMessage(message);
+      if (!res.inserted) await session.updateMessage(message);
+    };
     await session.appendMessage({ id: "goal", role: "user", parts: parts("Goal: " + run.goal) });
     for (const step of run.steps) {
       if (!step.answer) continue;
@@ -418,7 +494,7 @@ export async function recordRunToSession(sessions: Sessions, run: AutopilotRun):
     }
     if (run.verification) {
       const v = run.verification;
-      await session.appendMessage({
+      await upsert({
         id: "verdict",
         role: "assistant",
         parts: parts(
@@ -429,7 +505,7 @@ export async function recordRunToSession(sessions: Sessions, run: AutopilotRun):
       });
     }
     if (run.answer) {
-      await session.appendMessage({ id: "answer", role: "assistant", parts: parts(run.answer) });
+      await upsert({ id: "answer", role: "assistant", parts: parts(run.answer) });
     }
   } catch (err) {
     console.error("autopilot session recording failed:", err);

@@ -279,8 +279,11 @@ export interface AgentState {
    */
   publicModel?: string;
   /**
-   * Public.com autopilot runs (issue #107), newest first, capped at
-   * AUTOPILOT_MAX_RUNS_KEPT. Each run's transcript is also recorded in the
+   * Public.com autopilot runs (issue #107). LEGACY location: since
+   * issue #110 runs persist per-run in the `autopilot_runs` table
+   * (AutopilotRunStore in src/public-autopilot.ts); this field is only
+   * read back as a fallback for runs written before that change and is
+   * no longer written. Each run's transcript is also recorded in the
    * Sessions store (agents/sessions) under the id `autopilot-<runId>`.
    */
   autopilotRuns?: AutopilotRun[];
