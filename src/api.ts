@@ -476,32 +476,43 @@ export function createApp() {
       if (!chainTool) {
         return c.json({ error: "Public.com did not offer get_option_chain for this account." }, 502);
       }
+      const symbolNames = ["symbol", "ticker", "underlying", "underlyingSymbol", "underlying_symbol"];
+      const expiryNames = ["expiration", "expirationDate", "expiry", "expiration_date", "date"];
+      // Resolve an expiry when the caller did not give one. Every failure
+      // mode is named in resolutionNote: if the chain call below cannot
+      // proceed without an expiry, the 502 carries the note, so the
+      // response itself says which assumption about the tool was wrong.
       let expirations: string[] = [];
+      let resolutionNote = "";
       if (!expiry) {
         const expTool = tools.find((t) => t.name === "get_option_expirations");
-        if (expTool) {
-          const picked = pickArgs(expTool.inputSchema, {
-            symbol: { names: ["symbol", "ticker", "underlying"], value: symbol },
+        if (!expTool) {
+          resolutionNote = "get_option_expirations was not offered for this account";
+        } else {
+          const expPick = pickArgs(expTool.inputSchema, {
+            symbol: { names: symbolNames, value: symbol },
           });
-          if (picked.matched.symbol) {
-            const text = await callTool(token, "get_option_expirations", picked.args, session);
+          if (!expPick.matched.symbol) {
+            const declared = Object.keys(schemaProps(expTool.inputSchema).properties).join(", ");
+            resolutionNote = "get_option_expirations declares no symbol parameter (it declares: " + declared + ")";
+          } else {
+            const text = await callTool(token, "get_option_expirations", expPick.args, session);
             expirations = extractExpirations(parseToolJson(text));
-            expiry = expirations[0] ?? "";
+            if (expirations.length) {
+              expiry = expirations[0];
+            } else {
+              resolutionNote = "get_option_expirations answered with no readable dates: " + text.slice(0, 200);
+            }
           }
         }
-        if (!expiry) {
-          return c.json(
-            { error: "No expirations could be resolved for " + symbol + " — pass &expiry=YYYY-MM-DD explicitly." },
-            502,
-          );
-        }
       }
+      // With an expiry, map it on; without one, call symbol-only — chain
+      // tools commonly default to the nearest expiry when theirs is
+      // optional. missingRequired below is the guard: if the tool REQUIRES
+      // an expiry and none could be resolved, the call never happens.
       const picked = pickArgs(chainTool.inputSchema, {
-        symbol: { names: ["symbol", "ticker", "underlying"], value: symbol },
-        expiration: {
-          names: ["expiration", "expirationDate", "expiry", "expiration_date", "date"],
-          value: expiry,
-        },
+        symbol: { names: symbolNames, value: symbol },
+        ...(expiry ? { expiration: { names: expiryNames, value: expiry } } : {}),
       });
       if (!picked.matched.symbol) {
         const declared = Object.keys(schemaProps(chainTool.inputSchema).properties).join(", ");
@@ -513,7 +524,12 @@ export function createApp() {
       const missing = missingRequired(chainTool.inputSchema, picked.args);
       if (missing.length) {
         return c.json(
-          { error: "get_option_chain requires unsupported parameters: " + missing.join(", ") + "." },
+          {
+            error:
+              "get_option_chain requires " + missing.join(", ") +
+              ", and no expiration could be resolved for " + symbol +
+              (resolutionNote ? " (" + resolutionNote + ")" : "") + ".",
+          },
           502,
         );
       }
@@ -521,8 +537,9 @@ export function createApp() {
       return c.json({
         tool: "get_option_chain",
         symbol,
-        expiry,
+        expiry: expiry || null,
         expirations,
+        ...(expiry ? {} : { note: resolutionNote || "expiration not specified; the tool's default was used" }),
         ...payload,
         fetchedAt: new Date().toISOString(),
       });

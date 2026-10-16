@@ -173,7 +173,7 @@ function deskRenderChain(data, symbol, expiry) {
   if (!rows) { deskChainState = { cols: [], rows: [], symbol: symbol, expiry: expiry }; return deskJsonFallback(data); }
   const cols = deskCols(rows);
   deskChainState = { cols: cols, rows: rows.map((r) => cols.map((k) => deskCell(r[k]))), symbol: symbol, expiry: expiry };
-  return '<div style="color:var(--muted);font-size:0.75rem;margin-bottom:0.35rem;">' + escapeHtml(symbol) + ' \u00b7 ' + escapeHtml(expiry) + ' \u00b7 ' + rows.length + ' contracts \u2014 click a contract to draft a question about it.</div>'
+  return '<div style="color:var(--muted);font-size:0.75rem;margin-bottom:0.35rem;">' + escapeHtml(symbol) + ' \u00b7 ' + escapeHtml(expiry || 'nearest expiry (tool default)') + ' \u00b7 ' + rows.length + ' contracts \u2014 click a contract to draft a question about it.</div>'
     + deskTableHtml(data, true, 120);
 }
 
@@ -188,7 +188,7 @@ function deskPickContract(i) {
   let type = typeI >= 0 ? row[typeI] : '';
   if (!/call|put/i.test(type)) { const cell = row.find((c) => /^(call|put)$/i.test(c)); type = cell || 'option'; }
   const strike = strikeI >= 0 ? row[strikeI] : '';
-  const q = 'For ' + st.symbol + (strike ? ', the ' + strike + ' ' : ' ') + type + ' expiring ' + st.expiry + ': give the bid, ask, delta and implied volatility from the chain, the premium per contract, and what strategy this contract best serves.';
+  const q = 'For ' + st.symbol + (strike ? ', the ' + strike + ' ' : ' ') + type + (st.expiry ? ' expiring ' + st.expiry : ' at the nearest expiry') + ': give the bid, ask, delta and implied volatility from the chain, the premium per contract, and what strategy this contract best serves.';
   const input = document.getElementById('publicInput');
   if (input) { input.value = q; input.focus(); input.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
 }

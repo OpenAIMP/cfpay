@@ -75,7 +75,18 @@ export function missingRequired(
 /** Parse a tool's text result as JSON; undefined when it is not JSON. */
 export function parseToolJson(text: string): unknown {
   try {
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    // Some MCP wrappers double-encode: the text parses to a string that is
+    // itself JSON. Unwrap one level so shape extraction can work on it.
+    if (typeof parsed === "string") {
+      try {
+        const inner = JSON.parse(parsed);
+        if (inner && typeof inner === "object") return inner;
+      } catch {
+        /* keep the string */
+      }
+    }
+    return parsed;
   } catch {
     return undefined;
   }
@@ -139,18 +150,36 @@ const EXPIRY_FIELDS = ["expiration", "expirationDate", "expiry", "date", "expira
  * Returned in the order the tool gave them (nearest first, as listed).
  */
 export function extractExpirations(result: unknown): string[] {
+  // The first YYYY-MM-DD anywhere in a value: expiry fields are usually
+  // bare dates, but display strings ("Fri, Oct 23 2026 (2026-10-23)")
+  // carry them embedded.
+  const firstDate = (v: unknown): string => {
+    if (typeof v !== "string") return "";
+    const m = v.match(/\d{4}-\d{2}-\d{2}/);
+    return m ? m[0] : "";
+  };
   const fromArray = (arr: unknown[]): string[] => {
     const out: string[] = [];
     for (const el of arr) {
-      if (typeof el === "string" && DATE_RE.test(el)) out.push(el.slice(0, 10));
-      else if (el && typeof el === "object") {
+      const direct = firstDate(el);
+      if (direct) {
+        out.push(direct);
+      } else if (el && typeof el === "object") {
         const rec = el as Record<string, unknown>;
+        let found = "";
         for (const f of EXPIRY_FIELDS) {
-          if (typeof rec[f] === "string" && DATE_RE.test(rec[f] as string)) {
-            out.push((rec[f] as string).slice(0, 10));
-            break;
+          found = firstDate(rec[f]);
+          if (found) break;
+        }
+        // The date may ride in a field under any name (display strings,
+        // nested contract ids) — take the first date-like string value.
+        if (!found) {
+          for (const v of Object.values(rec)) {
+            found = firstDate(v);
+            if (found) break;
           }
         }
+        if (found) out.push(found);
       }
     }
     return out;
@@ -163,6 +192,8 @@ export function extractExpirations(result: unknown): string[] {
       if (Array.isArray(rec[k])) {
         const dates = fromArray(rec[k] as unknown[]);
         if (dates.length > best.length) best = dates;
+      } else if (typeof rec[k] === "string" && DATE_RE.test(rec[k] as string)) {
+        return [(rec[k] as string).slice(0, 10)];
       }
     }
     return best;
