@@ -33,6 +33,22 @@ function record(name, ok, detail) {
   console.log(`  [${ok ? "PASS" : "FAIL"}] ${name}${detail ? ` - ${detail}` : ""}`);
 }
 
+// QAAgent prefixes every browser-capacity refusal the same way
+// (describeBrowserFailure in src/qa-agent.ts): the session could not be
+// opened at all, which is Cloudflare Browser Rendering quota/concurrency
+// — weather, not evidence about the app. Per this suite's contract, a
+// check that could not run is a SKIP, never a failure; the skip line
+// keeps the refusal visible in the log and the summary.
+const CAPACITY_WHY =
+  "browser capacity unavailable (Cloudflare Browser Rendering quota/concurrency) - check not run";
+function isCapacityRefusal(...texts) {
+  return texts.some(
+    (t) =>
+      typeof t === "string" &&
+      t.toLowerCase().includes("could not open a browser session"),
+  );
+}
+
 function skip(name, why) {
   results.push({ name, ok: true, skipped: true, detail: why });
   console.log(`  [SKIP] ${name} - ${why}`);
@@ -140,6 +156,8 @@ async function main() {
     const { status, json } = await post("/api/dashboard/qa/tabs", {});
     if (status === 400) {
       skip("dashboard tabs render real data", "endpoint requires an explicit API key");
+    } else if (isCapacityRefusal(json?.error)) {
+      skip("dashboard tabs render real data", CAPACITY_WHY);
     } else {
       record(
         "dashboard tabs render real data",
@@ -161,13 +179,17 @@ async function main() {
   try {
     const { status, json } = await post("/api/dashboard/qa/ux-audit", {});
     const findings = Array.isArray(json?.checks) ? json.checks : [];
-    record(
-      "UX audit runs against the dashboard",
-      status === 200 && findings.length > 0,
-      json?.error || `${findings.length} findings, status=${status}`,
-    );
-    for (const f of findings) {
-      console.log(`      ${f.passed ? "ok  " : "BAD "} ${f.name} (${f.detail})`);
+    if (isCapacityRefusal(json?.error)) {
+      skip("UX audit runs against the dashboard", CAPACITY_WHY);
+    } else {
+      record(
+        "UX audit runs against the dashboard",
+        status === 200 && findings.length > 0,
+        json?.error || `${findings.length} findings, status=${status}`,
+      );
+      for (const f of findings) {
+        console.log(`      ${f.passed ? "ok  " : "BAD "} ${f.name} (${f.detail})`);
+      }
     }
   } catch (err) {
     record("UX audit runs against the dashboard", false, err.message);
@@ -204,15 +226,22 @@ async function main() {
     const misses = expectations.filter(
       ([n, p, d]) => !expectFinding(n, p, d),
     );
-    record(
-      "UX audit catches the fixture's planted violations",
-      status === 200 && misses.length === 0,
-      misses.length
-        ? `missed: ${misses.map(([n]) => n).join(", ")} (status=${status})`
-        : "all 4 planted violations caught, compliant controls clean",
-    );
-    for (const c of json?.checks || []) {
-      console.log(`      ${c.passed ? "ok  " : "BAD "} ${c.name} (${c.detail})`);
+    if (
+      isCapacityRefusal(json?.error) &&
+      (json?.checks || []).length === 0
+    ) {
+      skip("UX audit catches the fixture's planted violations", CAPACITY_WHY);
+    } else {
+      record(
+        "UX audit catches the fixture's planted violations",
+        status === 200 && misses.length === 0,
+        misses.length
+          ? `missed: ${misses.map(([n]) => n).join(", ")} (status=${status})`
+          : "all 4 planted violations caught, compliant controls clean",
+      );
+      for (const c of json?.checks || []) {
+        console.log(`      ${c.passed ? "ok  " : "BAD "} ${c.name} (${c.detail})`);
+      }
     }
   } catch (err) {
     record("UX audit catches the fixture's planted violations", false, err.message);
@@ -229,11 +258,15 @@ async function main() {
       const { status, json } = await post("/api/dashboard/qa/test-attachment", {
         toEmail: TEST_EMAIL,
       });
-      record(
-        "send-email form with attachment",
-        status === 200 && json?.ok === true,
-        json?.error || json?.detail || `status=${status}`,
-      );
+      if (isCapacityRefusal(json?.error, json?.detail)) {
+        skip("send-email form with attachment", CAPACITY_WHY);
+      } else {
+        record(
+          "send-email form with attachment",
+          status === 200 && json?.ok === true,
+          json?.error || json?.detail || `status=${status}`,
+        );
+      }
     } catch (err) {
       record("send-email form with attachment", false, err.message);
     }
@@ -253,13 +286,17 @@ async function main() {
       const { status, json } = await post("/api/dashboard/qa/email-report", {
         toEmail: TEST_EMAIL,
       });
-      record(
-        "QA report email with screenshots",
-        status === 200 && json?.emailed === true,
-        json?.error || `status=${status}`,
-      );
-      for (const t of json?.tabs || []) {
-        console.log(`      ${t.passed ? "ok  " : "BAD "} ${t.name}: ${t.detail}`);
+      if (isCapacityRefusal(json?.error)) {
+        skip("QA report email with screenshots", CAPACITY_WHY);
+      } else {
+        record(
+          "QA report email with screenshots",
+          status === 200 && json?.emailed === true,
+          json?.error || `status=${status}`,
+        );
+        for (const t of json?.tabs || []) {
+          console.log(`      ${t.passed ? "ok  " : "BAD "} ${t.name}: ${t.detail}`);
+        }
       }
     } catch (err) {
       record("QA report email with screenshots", false, err.message);
