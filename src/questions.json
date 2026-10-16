@@ -20,6 +20,18 @@
   ],
   "groups": [
     {
+      "id": "compare",
+      "label": "Head-to-head comparisons",
+      "intro": "Two instruments, one view — the agent pulls both sides' data and has to pick. The first entry is the tab's default question and the standing autopilot smoke test.",
+      "questions": [
+        {
+          "id": "semi-compare",
+          "label": "NVDA vs AMD — bullish semiconductor setup",
+          "question": "Compare NVDA and AMD for a bullish view on semiconductors — which has the better setup?"
+        }
+      ]
+    },
+    {
       "id": "covered",
       "label": "Covered & cash-secured",
       "intro": "Income trades against stock or cash you already hold.",
