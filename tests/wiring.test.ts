@@ -1475,6 +1475,22 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(wrangler).toMatch(/"traces":\s*{\s*"enabled": true/);
   });
 
+  it("the autopilot trading desk wraps the public tab (issue #112)", () => {
+    expect(idx).toContain('id="publicDesk"');
+    expect(idx).toContain('id="deskWatch"');
+    expect(idx).toContain('id="deskPortfolio"');
+    expect(idx).toContain('id="deskChainSymbol"');
+    expect(idx).toContain('id="deskRuns"');
+    expect(idx).toContain('id="publicAutopilot" checked');
+    expect(idx).toContain("deskRefreshAll();");
+    expect(pdata).toContain("function deskRenderQuotes(");
+    expect(pdata).toContain("function deskRenderChain(");
+    expect(pdata).toContain("function deskPickContract(");
+    expect(pdata).toContain("/api/public/quotes?symbols=");
+    expect(pdata).toContain("/api/public/portfolio");
+    expect(pdata).toContain("/api/public/chain?symbol=");
+  });
+
   it("public answers render through the safe markdown subset (issue #112)", () => {
     expect(pdata).toContain("function renderMarkdownSafe(");
     expect(pdata).toContain("const lines = escapeHtml(");
@@ -1506,12 +1522,15 @@ describe("the Public autopilot stays wired (issue #107)", () => {
   });
 
   it("public raw data is downloadable as JSON/CSV (issue #112)", () => {
-    expect(idx).toContain("function downloadPublicCall(");
-    expect(idx).toContain("function downloadPublicAll(");
+    // The trace renderer and download helpers live in public-data.js
+    // (moved when the trading desk landed); the page wires answers in.
+    expect(pdata).toContain("function downloadPublicCall(");
+    expect(pdata).toContain("function downloadPublicAll(");
+    expect(pdata).toContain("raw data from Public.com");
+    expect(pdata).toContain("function pTable(");
+    expect(pdata).toContain("function pCsv(");
     expect(idx).toContain("renderToolTrace(trace, answerIdx)");
-    expect(idx).toContain("raw data from Public.com");
-    expect(idx).toContain("function pTable(");
-    expect(idx).toContain("function pCsv(");
+    expect(idx).toContain("pubData.push(");
   });
 
   it("the chat route branches on the autopilot flag", () => {

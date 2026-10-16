@@ -34,6 +34,18 @@
     .panel { display: none; }
     .panel.active { display: block; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; }
+    .desk { display:grid; grid-template-columns:minmax(0,1fr) 370px; gap:1rem; align-items:start; }
+    .desk-wide { grid-column:1 / -1; }
+    .desk-main, .desk-rail { display:flex; flex-direction:column; gap:1rem; min-width:0; }
+    .desk .card { margin-bottom:0; }
+    .desk-quote { border:1px solid var(--border); border-radius:6px; padding:0.4rem 0.6rem; min-width:6.2rem; }
+    .desk-quote .sym { font-weight:700; font-size:0.8rem; }
+    .desk-quote .last { font-size:0.95rem; }
+    .desk-table { border-collapse:collapse; font-size:0.78rem; width:100%; }
+    .desk-table th, .desk-table td { border:1px solid var(--border); padding:0.22rem 0.45rem; text-align:left; white-space:nowrap; }
+    .desk-chain-row { cursor:pointer; }
+    .desk-chain-row:hover { background:var(--bg); }
+    @media (max-width: 1024px) { .desk { grid-template-columns:1fr; } }
     .card-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem; }
     .card-header .subject { font-weight: 600; font-size: 0.95rem; }
     .card-header .meta { font-size: 0.75rem; color: var(--muted); }
@@ -272,6 +284,21 @@
           <div id="publicQuestions"></div>
         </div>
 
+        <!-- Autopilot Trading Desk (issue #112 part 2): the watchlist
+             strip spans the top; the autopilot composer and its run history
+             sit in the main column; the account panels (portfolio, option
+             chain, trade approvals, trading status) sit in the rail. Every
+             panel reads the MCP tools directly through the desk data
+             endpoints — none of it is rendered from model prose. -->
+        <div class="desk" id="publicDesk" style="display:none;">
+        <div class="card desk-wide">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+            <h3 style="font-size:1rem;">Watchlist</h3>
+            <span style="display:flex;gap:0.5rem;align-items:center;"><span id="deskWatchUpdated" style="color:var(--muted);font-size:0.72rem;"></span><button class="btn" style="padding:0.25rem 0.6rem;" onclick="deskLoadQuotes()">Refresh</button></span>
+          </div>
+          <div id="deskWatch" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.6rem;"><span style="color:var(--muted);font-size:0.8rem;">Loading quotes\u2026</span></div>
+        </div>
+          <div class="desk-main">
         <div class="card" id="publicChatCard" style="display:none;">
           <h3 style="margin-bottom:1rem;">Ask about an instrument</h3>
           <div class="chat-container" id="publicMessages"></div>
@@ -280,7 +307,7 @@
             <button class="btn" onclick="sendPublic()">Ask</button>
           </div>
           <label style="display:flex;gap:0.45rem;align-items:flex-start;margin-top:0.6rem;font-size:0.8rem;color:var(--muted);cursor:pointer;">
-            <input type="checkbox" id="publicAutopilot" style="margin-top:0.15rem;" />
+            <input type="checkbox" id="publicAutopilot" checked style="margin-top:0.15rem;" />
             <span><strong style="color:var(--text);">Autopilot</strong> &mdash; plan the goal into steps, execute each one, and verify the evidence before answering. Slower and uses more AI calls; best for multi-part comparisons.</span>
           </label>
           <div id="publicTools" style="margin-top:0.75rem;color:var(--muted);font-size:0.75rem;"></div>
@@ -301,6 +328,31 @@
           </div>
         </div>
 
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+              <h3 style="font-size:1rem;">Autopilot runs</h3>
+              <button class="btn" style="padding:0.25rem 0.6rem;" onclick="deskLoadRuns()">Refresh</button>
+            </div>
+            <div id="deskRuns" style="margin-top:0.5rem;"><span style="color:var(--muted);font-size:0.8rem;">No runs loaded yet.</span></div>
+          </div>
+          </div>
+          <div class="desk-rail">
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+              <h3 style="font-size:1rem;">Portfolio</h3>
+              <button class="btn" style="padding:0.25rem 0.6rem;" onclick="deskLoadPortfolio()">Refresh</button>
+            </div>
+            <div id="deskPortfolio" style="margin-top:0.5rem;"><span style="color:var(--muted);font-size:0.8rem;">Loading portfolio\u2026</span></div>
+          </div>
+          <div class="card">
+            <h3 style="font-size:1rem;margin-bottom:0.5rem;">Option chain</h3>
+            <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+              <input type="text" id="deskChainSymbol" value="SMH" style="width:5.5rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.45rem;color:var(--text);font-size:0.85rem;" />
+              <select id="deskChainExpiry" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.45rem;color:var(--text);font-size:0.85rem;"><option value="">Nearest expiry</option></select>
+              <button class="btn" onclick="deskLoadChain()">Load chain</button>
+            </div>
+            <div id="deskChain" style="margin-top:0.6rem;"><span style="color:var(--muted);font-size:0.8rem;">Pick a symbol and load its chain \u2014 click any contract to draft a question about it.</span></div>
+          </div>
         <div class="card" id="publicTradesCard" style="display:none;border-left:3px solid #b45309;">
           <h3 style="font-size:1.1rem;margin-bottom:0.35rem;">Trade approvals</h3>
           <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.5rem;">
@@ -324,6 +376,8 @@
             executes it. Reads
             &mdash; balances, quotes, option chains, holdings &mdash; work either way.
           </p>
+        </div>
+          </div>
         </div>
       </div>
       <!-- Webhooks -->
@@ -1340,6 +1394,7 @@ async function loadStats() {
         document.getElementById('publicConnectBox').style.display = connected ? 'none' : '';
         document.getElementById('publicConnectedBox').style.display = connected ? '' : 'none';
         document.getElementById('publicChatCard').style.display = connected ? '' : 'none';
+        document.getElementById('publicDesk').style.display = connected ? '' : 'none';
         notice.innerHTML = '';
         if (connected && Number.isFinite(publicConnectedCount)) {
           notice.innerHTML = '<div class="status-msg success">Public connected - ' + publicConnectedCount + ' tools available.</div>';
@@ -1356,6 +1411,7 @@ async function loadStats() {
           loadPublicModels();
           loadPublicTools();
           loadPublicTrades();
+          deskRefreshAll();
         }
       } catch (err) {
         notice.innerHTML = '<div class="status-msg error">Could not read status: ' + escapeHtml(err.message) + '</div>';
@@ -1682,101 +1738,6 @@ async function loadStats() {
       setTimeout(loadPublicTrades, 4000);
     }
 
-    // Render one tool call so the answer can be checked against what ran.
-    // Collapsed by default; the summary line is the first line of the result.
-    // Raw-data downloads (issue #112): the trace carries each call's FULL
-    // result from Public.com; these helpers turn it into downloadable files.
-    const pubData = [];
-    const pBtn = 'background:var(--bg);color:var(--text);border:1px solid var(--border);padding:0.15rem 0.5rem;font-size:0.7rem;';
-    const pParse = (r) => { try { return JSON.parse(r); } catch { return undefined; } };
-    const pEnv = (t) => { const p = pParse(t.result || ''); return { tool: t.name, args: t.args || {}, ok: t.ok, result: p !== undefined ? p : (t.result || '') }; };
-    // A result's tabular payload: a top-level array of objects, or the
-    // largest array of objects within two levels (a chain's contracts).
-    function pTable(result) {
-      const data = pParse(result);
-      if (data === undefined || data === null) return null;
-      const isRows = (v) => Array.isArray(v) && v.length > 0 && v[0] !== null && typeof v[0] === 'object';
-      if (Array.isArray(data)) return isRows(data) ? data : null;
-      if (typeof data !== 'object') return null;
-      let best = null;
-      const consider = (v) => { if (isRows(v) && (!best || v.length > best.length)) best = v; };
-      for (const o of [data, ...Object.values(data).filter((v) => v && typeof v === 'object' && !Array.isArray(v))]) for (const k of Object.keys(o)) consider(o[k]);
-      return best || [data];
-    }
-    function pCsv(rows) {
-      const keys = [];
-      for (const r of rows) for (const k of Object.keys(r)) if (!keys.includes(k)) keys.push(k);
-      const cell = (v) => {
-        if (v === null || v === undefined) return '';
-        const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
-        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-      };
-      const lines = [keys.map(cell).join(',')];
-      for (const r of rows) lines.push(keys.map((k) => cell(r[k])).join(','));
-      return lines.join('\n');
-    }
-    function pDown(filename, text, type) {
-      const url = URL.createObjectURL(new Blob([text], { type }));
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-    }
-    const pStamp = () => new Date().toISOString().replace(/[-:]/g, '').slice(0, 13);
-    function downloadPublicCall(idx, callIdx, format) {
-      const entry = pubData[idx]; if (!entry) return;
-      const t = entry.trace[callIdx]; if (!t) return;
-      const base = 'public-' + t.name + '-' + pStamp();
-      if (format === 'csv') {
-        const rows = pTable(t.result || '');
-        if (rows) pDown(base + '.csv', pCsv(rows), 'text/csv');
-      } else {
-        const p = pParse(t.result || '');
-        pDown(base + '.json', JSON.stringify(p !== undefined ? p : pEnv(t), null, 2), 'application/json');
-      }
-    }
-    function downloadPublicAll(idx) {
-      const entry = pubData[idx]; if (!entry) return;
-      const payload = { question: entry.question, model: entry.model, finishReason: entry.finishReason, calls: entry.trace.map(pEnv) };
-      pDown('public-data-' + pStamp() + '.json', JSON.stringify(payload, null, 2), 'application/json');
-    }
-
-    function renderToolTrace(trace, answerIdx = -1) {
-      if (!Array.isArray(trace) || trace.length === 0) {
-        return '<div class="status-msg error" style="margin-top:0.5rem;">No tools were called. The answer below is not backed by Public.com data.</div>';
-      }
-      const hasIdx = answerIdx >= 0;
-      const dlBtn = (i, f) => '<button class="btn" style="' + pBtn + '" onclick="downloadPublicCall(' + answerIdx + ',' + i + ', \'' + f + '\')">Download ' + f.toUpperCase() + '</button>';
-      const dlFor = (t, i) => '<div style="margin-top:0.4rem;display:flex;gap:0.4rem;">' + dlBtn(i, 'json')
-        + (pTable(t.result || '') ? dlBtn(i, 'csv') : '') + '</div>';
-      const rows = trace.map((t, i) => {
-        const dl = hasIdx ? dlFor(t, i) : '';
-        const badge = t.proposed
-          ? '<span style="background:#b45309;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;">proposed</span>'
-          : t.refused
-            ? '<span class="badge-failed">blocked</span>'
-            : (t.ok ? '<span class="badge-confirmed">ok</span>' : '<span class="badge-failed">error</span>');
-        const args = escapeHtml(JSON.stringify(t.args || {}));
-        const body = escapeHtml(t.result || '');
-        const summary = escapeHtml(t.summary || '');
-        return '<details style="margin-top:0.4rem;border:1px solid var(--border);border-radius:6px;padding:0.5rem;">'
-          + '<summary style="cursor:pointer;font-size:0.78rem;">' + badge + ' <code>' + escapeHtml(t.name)
-          + '</code> <span style="color:var(--muted);">' + summary + '</span></summary>'
-          + '<div style="margin-top:0.5rem;font-size:0.72rem;color:var(--muted);">'
-          + '<div><strong>arguments</strong></div>'
-          + '<pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg);border-radius:4px;padding:0.4rem;margin:0.2rem 0 0.5rem;">' + args + '</pre>'
-          + '<div><strong>result</strong> <span style="opacity:0.7;">(' + (t.result || '').length + ' chars)</span></div>'
-          + '<pre style="white-space:pre-wrap;word-break:break-word;max-height:18rem;overflow:auto;background:var(--bg);border-radius:4px;padding:0.4rem;margin:0.2rem 0 0;">' + body + '</pre>' + dl
-          + '</div></details>';
-      }).join('');
-      const bar = '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">'
-        + '<div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Tool calls (' + trace.length + ')' + (hasIdx ? ' \u00b7 raw data from Public.com' : '') + '</div>'
-        + (hasIdx ? '<button class="btn" style="' + pBtn + '" onclick="downloadPublicAll(' + answerIdx + ')">Download all (JSON)</button>' : '') + '</div>';
-      return '<div style="margin-top:0.5rem;">' + bar + rows + '</div>';
-    }
-
-    // The autopilot run card: the persisted Goal -> Planner -> Queue ->
-    // Executor -> Verifier state, rendered from the run the response carries.
     function renderAutopilotRun(run) {
       if (!run || !Array.isArray(run.steps)) return '';
       const icon = { done: '\u2713', failed: '\u2717', running: '\u2026', pending: '\u2022' };
