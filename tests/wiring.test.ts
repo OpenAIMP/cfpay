@@ -1417,6 +1417,7 @@ describe("the Public autopilot stays wired (issue #107)", () => {
   const api = read("src/api.ts");
   const idx = read("public/index.html");
   const ap = read("src/public-autopilot.ts");
+  const pdata = read("public/public-data.js");
   const types = read("src/types.ts");
   const wrangler = read("wrangler.jsonc");
 
@@ -1472,6 +1473,25 @@ describe("the Public autopilot stays wired (issue #107)", () => {
 
   it("agent tracing is enabled in the Worker config (observability)", () => {
     expect(wrangler).toMatch(/"traces":\s*{\s*"enabled": true/);
+  });
+
+  it("public answers render through the safe markdown subset (issue #112)", () => {
+    expect(pdata).toContain("function renderMarkdownSafe(");
+    expect(pdata).toContain("const lines = escapeHtml(");
+    expect(idx).toContain("renderMarkdownSafe(res.answer");
+    expect(idx).toContain("/public-data.js");
+    expect(idx).not.toContain("escapeHtml(res.answer ||");
+  });
+
+  it("the answer contracts ask for a verdict line and a metrics table (issue #112)", () => {
+    expect(agent).toContain("For comparisons, lead with a 'Verdict:");
+    expect(ap).toContain("markdown table of the key metrics from the evidence");
+  });
+
+  it("the autopilot run card leads with a verdict banner (issue #112)", () => {
+    expect(pdata).toContain("function autopilotVerdictBanner(");
+    expect(pdata).toContain("Verified complete");
+    expect(idx).toContain("autopilotVerdictBanner(run)");
   });
 
   it("public raw data is downloadable as JSON/CSV (issue #112)", () => {
