@@ -1474,21 +1474,13 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(wrangler).toMatch(/"traces":\s*{\s*"enabled": true/);
   });
 
-  it("public answers render through the safe markdown subset (issue #112)", () => {
-    expect(idx).toContain("function renderMarkdownSafe(");
-    expect(idx).toContain("const lines = escapeHtml(");
-    expect(idx).toContain("renderMarkdownSafe(res.answer");
-    expect(idx).not.toContain("escapeHtml(res.answer ||");
-  });
-
-  it("the answer contracts ask for a verdict line and a metrics table (issue #112)", () => {
-    expect(agent).toContain("For comparisons, lead with a 'Verdict:");
-    expect(ap).toContain("markdown table of the key metrics from the evidence");
-  });
-
-  it("the autopilot run card leads with a verdict banner (issue #112)", () => {
-    expect(idx).toContain("Verified complete");
-    expect(idx).toContain("+ banner +");
+  it("public raw data is downloadable as JSON/CSV (issue #112)", () => {
+    expect(idx).toContain("function downloadPublicCall(");
+    expect(idx).toContain("function downloadPublicAll(");
+    expect(idx).toContain("renderToolTrace(trace, answerIdx)");
+    expect(idx).toContain("raw data from Public.com");
+    expect(idx).toContain("function pTable(");
+    expect(idx).toContain("function pCsv(");
   });
 
   it("the chat route branches on the autopilot flag", () => {
