@@ -21,20 +21,36 @@
 // group. Inline styles + theme variables only — no stylesheet changes.
 function questionGroupChips(g) {
   if (!g) return '';
-  const arrows = { bullish: '\u25B2', bearish: '\u25BC', neutral: '\u25C6', directional: '\u21C5' };
+  // Every pill carries a glyph and, where the theme offers one, a color:
+  // outlook by direction, premium by cash-flow sign, tier by signal bars
+  // that fill (and heat up) with proficiency.
+  const outlookMeta = {
+    bullish: { glyph: '\u25B2', color: 'var(--green)' },
+    bearish: { glyph: '\u25BC', color: 'var(--red)' },
+    neutral: { glyph: '\u25C6', color: '#d8a13c' },
+    directional: { glyph: '\u21C5', color: 'var(--accent)' },
+  };
+  const premiumMeta = {
+    selling: { glyph: '+$', color: 'var(--green)' },
+    buying: { glyph: '\u2212$', color: 'var(--blue)' },
+    mixed: { glyph: '\u00B1$', color: undefined },
+  };
+  const tierMeta = {
+    basic: { glyph: '\u2582', color: undefined },
+    intermediate: { glyph: '\u2582\u2584', color: 'var(--blue)' },
+    advanced: { glyph: '\u2582\u2584\u2586', color: '#d8a13c' },
+    expert: { glyph: '\u2582\u2584\u2586\u2588', color: 'var(--red)' },
+  };
   const chip = (text, color) =>
     '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.45rem;border:1px solid ' +
     (color || 'var(--border)') + ';border-radius:999px;font-size:0.66rem;color:' + (color || 'var(--muted)') +
     ';vertical-align:middle;white-space:nowrap;">' + escapeHtml(text) + '</span>';
+  const pill = (meta, text) =>
+    meta ? chip(meta.glyph + ' ' + text, meta.color) : chip(text);
   let out = '';
-  if (g.outlook) out += chip((arrows[g.outlook] ? arrows[g.outlook] + ' ' : '') + g.outlook);
-  if (g.premium) {
-    out += chip(
-      'premium ' + g.premium,
-      g.premium === 'selling' ? 'var(--green)' : g.premium === 'buying' ? 'var(--blue)' : undefined,
-    );
-  }
-  if (g.tier) out += chip(g.tier);
+  if (g.outlook) out += pill(outlookMeta[g.outlook], g.outlook);
+  if (g.premium) out += pill(premiumMeta[g.premium], 'premium ' + g.premium);
+  if (g.tier) out += pill(tierMeta[g.tier], g.tier);
   return out;
 }
 
