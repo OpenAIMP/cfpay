@@ -79,6 +79,11 @@ describe("public desk data: request and result shapes", () => {
     expect(extractAccountId("acc-5")).toBeUndefined();
   });
 
+  it("unwraps double-encoded tool JSON", () => {
+    expect(parseToolJson(JSON.stringify(JSON.stringify({ a: 1 })))).toEqual({ a: 1 });
+    expect(parseToolJson(JSON.stringify("plain"))).toBe("plain");
+  });
+
   it("extracts expirations across get_option_expirations shapes", () => {
     expect(extractExpirations(["2026-10-23", "2026-10-30"])).toEqual(["2026-10-23", "2026-10-30"]);
     expect(
@@ -86,6 +91,8 @@ describe("public desk data: request and result shapes", () => {
     ).toEqual(["2026-10-23", "2026-11-20"]);
     expect(extractExpirations({ expirations: ["2026-10-23"] })).toEqual(["2026-10-23"]);
     expect(extractExpirations(["not-a-date", 42])).toEqual([]);
+    expect(extractExpirations([{ label: "Fri, Oct 23 2026 (2026-10-23)" }])).toEqual(["2026-10-23"]);
+    expect(extractExpirations({ nearestExpiration: "2026-10-23" })).toEqual(["2026-10-23"]);
     expect(extractExpirations(null)).toEqual([]);
   });
 });

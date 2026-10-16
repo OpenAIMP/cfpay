@@ -57,6 +57,20 @@ async function post(path, body) {
   return { status: res.status, json };
 }
 
+/** GET with the dashboard key. */
+async function get(path) {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: { ...(API_KEY ? { "X-API-Key": API_KEY } : {}) },
+  });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    // Same reasoning as post(): an HTML error page is itself a finding.
+  }
+  return { status: res.status, json };
+}
+
 function finish() {
   const ran = results.filter((r) => !r.skipped).length;
   const skipped = results.filter((r) => r.skipped).length;
@@ -250,6 +264,27 @@ async function main() {
     } catch (err) {
       record("QA report email with screenshots", false, err.message);
     }
+  }
+
+  // 9. Trading desk data endpoints (issue #112 part 2): the desk's panels
+  //    read quotes / portfolio / chain straight from the MCP tools via
+  //    these endpoints, so the suite exercises them directly. A 409 means
+  //    Public.com is not connected on this deployment; the endpoints then
+  //    cannot be exercised and the section skips rather than fails.
+  try {
+    const quotes = await get("/api/public/quotes?symbols=NVDA,AMD");
+    if (quotes.status === 409) {
+      skip("trading desk data endpoints respond", "Public.com is not connected");
+    } else {
+      const hasData = (r) => r.status === 200 && r.json && "data" in r.json;
+      record("desk quotes respond", hasData(quotes), quotes.json?.error || `status=${quotes.status}`);
+      const portfolio = await get("/api/public/portfolio");
+      record("desk portfolio responds", hasData(portfolio), portfolio.json?.error || `status=${portfolio.status}`);
+      const chain = await get("/api/public/chain?symbol=SMH");
+      record("desk chain responds", hasData(chain), chain.json?.error || `status=${chain.status}`);
+    }
+  } catch (err) {
+    record("trading desk data endpoints respond", false, err.message);
   }
 
   finish();
