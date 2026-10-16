@@ -476,6 +476,17 @@ export function createApp() {
       if (!chainTool) {
         return c.json({ error: "Public.com did not offer get_option_chain for this account." }, 502);
       }
+      // The option tools require the account id (production-verified:
+      // get_option_expirations rejects a symbol-only call with
+      // "account_id: Field required"). In chat the model resolves it
+      // conversationally; here it is resolved explicitly, the same way
+      // /api/public/portfolio does. Mapped on below only where a tool's
+      // schema actually declares it.
+      const accounts = parseToolJson(await callTool(token, "get_accounts", {}, session));
+      const accountId = extractAccountId(accounts);
+      const accountSpec: Record<string, { names: string[]; value: unknown }> = accountId
+        ? { account: { names: ["account_id", "accountId", "account", "accountNumber"], value: accountId } }
+        : {};
       const symbolNames = ["symbol", "ticker", "underlying", "underlyingSymbol", "underlying_symbol"];
       const expiryNames = ["expiration", "expirationDate", "expiry", "expiration_date", "date"];
       // Resolve an expiry when the caller did not give one. Every failure
@@ -491,6 +502,7 @@ export function createApp() {
         } else {
           const expPick = pickArgs(expTool.inputSchema, {
             symbol: { names: symbolNames, value: symbol },
+            ...accountSpec,
           });
           if (!expPick.matched.symbol) {
             const declared = Object.keys(schemaProps(expTool.inputSchema).properties).join(", ");
@@ -512,6 +524,7 @@ export function createApp() {
       // an expiry and none could be resolved, the call never happens.
       const picked = pickArgs(chainTool.inputSchema, {
         symbol: { names: symbolNames, value: symbol },
+        ...accountSpec,
         ...(expiry ? { expiration: { names: expiryNames, value: expiry } } : {}),
       });
       if (!picked.matched.symbol) {
@@ -528,7 +541,10 @@ export function createApp() {
             error:
               "get_option_chain requires " + missing.join(", ") +
               ", and no expiration could be resolved for " + symbol +
-              (resolutionNote ? " (" + resolutionNote + ")" : "") + ".",
+              (resolutionNote ? " (" + resolutionNote + ")" : "") +
+              (!accountId && missing.includes("account_id")
+                ? " No account id could be read from get_accounts."
+                : "") + ".",
           },
           502,
         );
