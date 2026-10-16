@@ -86,6 +86,7 @@ export const AUTOPILOT_SYNTHESIS_SYSTEM = [
   "You answer the user's goal from verified evidence gathered by a research agent.",
   "Use only facts present in the evidence; never invent a price, symbol, balance or expiry.",
   "Say which instruments were compared and why, name any gap the verifier left open, and note this is not investment advice when recommending anything.",
+  "If the goal compares instruments or strategies, open with a 'Verdict: <winner> \u2014 <one-line reason>' line, then a markdown table of the key metrics from the evidence (one column per instrument), then brief prose. A table cell may only contain a figure present in the evidence; write n/a for anything not retrieved.",
 ].join("\n");
 
 /** Extract the first JSON object from a model reply, tolerating fences/prose. */

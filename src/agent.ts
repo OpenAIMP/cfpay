@@ -2036,6 +2036,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
           "When the account is unknown, call check_setup or get_accounts once to resolve the account id, then carry on.",
           "Never repeat a call you have already made in this conversation - the result is above. If a call returned nothing useful, try different arguments or answer with what you have.",
           "Stop gathering once you can answer. Say which instruments you compared and why.",
+          "For comparisons, lead with a 'Verdict: <winner> \u2014 <one-line reason>' line, then a markdown table of the metrics you retrieved (one column per instrument), then brief prose. Use only figures the tools returned.",
           "This is not investment advice; say so when recommending anything.",
           tradingAllowed
             ? "Order-placing tools are enabled, but calling one does not execute it: the call becomes a trade proposal that a human must approve in the dashboard before anything runs. Only call one when the user has clearly asked to trade, and afterwards tell the user the order is awaiting their approval."

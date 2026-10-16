@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest";
 import {
   AUTOPILOT_MAX_STEPS,
   AUTOPILOT_PLANNER_SYSTEM,
+  AUTOPILOT_SYNTHESIS_SYSTEM,
   AUTOPILOT_VERIFIER_SYSTEM,
   buildEvidenceDigest,
   mergeAutopilotRuns,
@@ -21,6 +22,14 @@ import {
   type AutopilotDeps,
   type AutopilotRun,
 } from "../src/public-autopilot";
+
+describe("the synthesis answer contract (issue #112)", () => {
+  it("comparisons must open with a verdict line and an evidence-only table", () => {
+    expect(AUTOPILOT_SYNTHESIS_SYSTEM).toContain("Verdict: <winner>");
+    expect(AUTOPILOT_SYNTHESIS_SYSTEM).toContain("markdown table of the key metrics from the evidence");
+    expect(AUTOPILOT_SYNTHESIS_SYSTEM).toContain("write n/a for anything not retrieved");
+  });
+});
 
 describe("parsePlan", () => {
   it("parses a well-formed planner reply", () => {
