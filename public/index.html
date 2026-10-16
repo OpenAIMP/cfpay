@@ -276,7 +276,7 @@
           <h3 style="margin-bottom:1rem;">Ask about an instrument</h3>
           <div class="chat-container" id="publicMessages"></div>
           <div style="display:flex;gap:0.5rem;">
-            <input type="text" id="publicInput" placeholder="e.g. Which looks best for a bullish view on semiconductors?" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
+            <input type="text" id="publicInput" placeholder="Compare NVDA and AMD for a bullish view on semiconductors — which has the better setup?" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem;color:var(--text);font-size:0.875rem;" />
             <button class="btn" onclick="sendPublic()">Ask</button>
           </div>
           <label style="display:flex;gap:0.45rem;align-items:flex-start;margin-top:0.6rem;font-size:0.8rem;color:var(--muted);cursor:pointer;">
@@ -396,6 +396,7 @@
       </div>
     </div>
   </div>
+  <script src="/public-data.js"></script>
   <script>
     // Escapes text before it is placed in innerHTML. Needed because error
     // detail can originate from a remote response body, not just our own code.
@@ -1792,10 +1793,11 @@ async function loadStats() {
           + (Array.isArray(v.gaps) && v.gaps.length ? '<div style="color:var(--muted);font-size:0.75rem;">Gaps: ' + v.gaps.map(g => escapeHtml(g)).join('; ') + '</div>' : '')
           + '</div>';
       }
+      const banner = autopilotVerdictBanner(run);
       const evCount = Array.isArray(run.evidence) ? run.evidence.length : 0;
       return '<details open style="margin-top:0.4rem;border:1px solid var(--border);border-radius:6px;padding:0.5rem;">'
         + '<summary style="cursor:pointer;font-size:0.78rem;">\uD83E\uDDED Autopilot run \u2014 ' + escapeHtml(run.status) + ' \u00b7 ' + run.steps.length + ' steps \u00b7 ' + evCount + ' evidence</summary>'
-        + '<div style="margin-top:0.4rem;">' + steps + verdict + '</div></details>';
+        + banner + '<div style="margin-top:0.4rem;">' + steps + verdict + '</div></details>';
     }
 
     // `preset` lets a question-library button send a prepared prompt without
@@ -1818,7 +1820,7 @@ async function loadStats() {
         if (res.error) {
           container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.error) + '</div>';
         } else {
-          container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.answer || '(no answer)') + '</div>';
+          container.innerHTML += '<div class="chat-msg assistant">' + renderMarkdownSafe(res.answer || '(no answer)') + '</div>';
           const trace = Array.isArray(res.trace) ? res.trace : [];
           const names = trace.map(c => c.name);
           const modelNote = res.model ? 'Model: ' + res.model + ' - ' : '';
