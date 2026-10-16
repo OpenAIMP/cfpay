@@ -1449,6 +1449,19 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(agent).toContain("autopilotRuns: []");
   });
 
+  it("runs persist per-run in their own table, not the state blob (issue #110)", () => {
+    expect(ap).toContain("export class AutopilotRunStore");
+    expect(ap).toContain("autopilot_runs");
+    expect(agent).toContain("new AutopilotRunStore(this.ctx.storage.sql)");
+    expect(agent).not.toContain("autopilotRuns: list.slice");
+  });
+
+  it("the transcript refreshes verdict/answer and merges legacy runs (issue #110)", () => {
+    expect(ap).toContain("session.updateMessage(message)");
+    expect(ap).toContain("export function mergeAutopilotRuns(");
+    expect(agent).toContain("mergeAutopilotRuns(");
+  });
+
   it("run transcripts record into the Sessions store (sessions lifecycle)", () => {
     expect(ap).toContain("export async function recordRunToSession(");
     expect(ap).toContain('sessions.session(autopilotSessionId(run.id))');
