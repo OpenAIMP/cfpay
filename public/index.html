@@ -1345,7 +1345,7 @@ async function loadStats() {
           + '<details style="margin-top:0.6rem;">'
           + '<summary style="cursor:pointer;font-size:0.85rem;color:var(--text);">'
           + escapeHtml(g.label) + ' <span style="color:var(--muted);font-size:0.72rem;">('
-          + g.questions.length + ')</span></summary>'
+          + g.questions.length + ')</span>' + questionGroupChips(g) + '</summary>'
           + (g.intro ? '<div style="color:var(--muted);font-size:0.75rem;margin-top:0.35rem;">' + escapeHtml(g.intro) + '</div>' : '')
           + items
           + '</details>';
