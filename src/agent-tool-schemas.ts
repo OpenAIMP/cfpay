@@ -157,3 +157,17 @@ export const chatAgentToolSchema = {
   },
   required: ["operation"],
 } as const;
+/** Search capability operations (issue #170): retrieval over the owner's AI Search index. */
+export const searchAgentToolSchema = {
+  type: "object",
+  properties: {
+    operation: {
+      type: "string",
+      enum: ["search.summary", "search.query", "search.ask"],
+      description: "Which search operation to perform.",
+    },
+    query: { type: "string", description: "The search query or question. Required for search.query and search.ask." },
+    limit: { type: "integer", description: "Max chunks for search.query (1-10, default 5)." },
+  },
+  required: ["operation"],
+} as const;
