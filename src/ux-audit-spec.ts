@@ -56,6 +56,14 @@ export interface UxAuditSpec {
    * Absent/empty = one default (un-emulated) pass, as before.
    */
   viewports?: { name: string; width: number; height: number }[];
+  /**
+   * Visual baselines (issue #102): "record" stores each measured
+   * view's screenshot hash as its baseline; "compare" fails the
+   * Visual baselines finding for any view whose screenshot hash
+   * differs from the recorded one. Exact-change detection (a hash),
+   * not perceptual diffing - any pixel change counts as changed.
+   */
+  baselines?: "record" | "compare";
   /** Audit a page once this selector exists; default: readyState complete. */
   settleSelector?: string;
   settleTimeoutMs?: number;
@@ -306,4 +314,51 @@ export function viewportListOf(spec: UxAuditSpec): AuditViewport[] {
     out.push({ name, width, height });
   }
   return out.length > 0 ? out : [{ name: "default" }];
+}
+
+/** SHA-256 (hex) of base64-decoded bytes - the baseline fingerprint. */
+export async function sha256Hex(base64: string): Promise<string> {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** One view's baseline outcome for an audit run. */
+export interface BaselineResult {
+  view: string;
+  status: "recorded" | "match" | "changed" | "new" | "unavailable";
+}
+
+/**
+ * Aggregate baseline outcomes into one finding. A changed view fails
+ * it; a view with no baseline yet is reported, not failed (record
+ * first, then compare).
+ */
+export function summarizeBaselines(
+  results: BaselineResult[],
+  mode: "record" | "compare",
+): { name: string; passed: boolean; detail: string } {
+  const changed = results.filter((r) => r.status === "changed").map((r) => r.view);
+  const fresh = results.filter((r) => r.status === "new").map((r) => r.view);
+  const matched = results.filter((r) => r.status === "match").length;
+  const recorded = results.filter((r) => r.status === "recorded").length;
+  if (mode === "record") {
+    return {
+      name: "Visual baselines",
+      passed: results.every((r) => r.status === "recorded"),
+      detail: `${recorded}/${results.length} view baseline(s) recorded (screenshot hashes). Future "compare" runs fail on any pixel change.`,
+    };
+  }
+  const parts = [`${matched} view(s) match their baseline`];
+  if (fresh.length > 0) parts.push(`${fresh.length} without a baseline (${fresh.slice(0, 3).join(", ")})`);
+  if (changed.length > 0) parts.push(`CHANGED: ${changed.slice(0, 4).join(", ")}`);
+  return {
+    name: "Visual baselines",
+    passed: changed.length === 0,
+    detail: parts.join("; ") + ".",
+  };
 }

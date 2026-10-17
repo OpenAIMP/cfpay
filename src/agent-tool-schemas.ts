@@ -119,6 +119,7 @@ export const qaAgentToolSchema = {
         },
         settleSelector: { type: "string", description: "Audit each page once this selector exists." },
         evidence: { type: "boolean", description: "Capture console errors, failed requests, and Web Vitals per page (default true)." },
+        baselines: { type: "string", enum: ["record", "compare"], description: "Visual baselines: record stores each view's screenshot hash; compare fails on any view whose screenshot changed since recording." },
         viewports: {
           type: "array",
           items: {
