@@ -43,9 +43,20 @@
       {
         "name": "VOICE_AGENT",
         "class_name": "VoiceAgent"
+      },
+      {
+        "name": "SEARCH_AGENT",
+        "class_name": "SearchAgent"
       }
     ]
   },
+  "ai_search_namespaces": [
+    {
+      "binding": "AI_SEARCH",
+      "namespace": "default",
+      "remote": true
+    }
+  ],
   "migrations": [
     { "tag": "v1", "new_classes": ["CfmailAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] },
@@ -55,7 +66,8 @@
     { "tag": "v6", "new_sqlite_classes": ["SlackAgent"] },
   { "tag": "v7", "new_sqlite_classes": ["QAAgent"] },
     { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] },
-    { "tag": "v9", "new_sqlite_classes": ["VoiceAgent"] }
+    { "tag": "v9", "new_sqlite_classes": ["VoiceAgent"] },
+    { "tag": "v10", "new_sqlite_classes": ["SearchAgent"] }
   ],
   "workflows": [
     {
