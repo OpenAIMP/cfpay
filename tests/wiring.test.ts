@@ -1634,6 +1634,28 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("deskShowView('trading')");
   });
 
+  it("the desk layout refinements are wired (issue #152)", () => {
+    const pdata = read("public/public-data.js");
+    const qa = read("src/qa-agent.ts");
+    const api = read("src/api.ts");
+    // Nav views for watchlist / portfolio / endpoint tests.
+    expect(pdata).toContain("navBtn('watchlist', 'Watchlist')");
+    expect(pdata).toContain("navBtn('portfolio', 'Portfolio')");
+    expect(pdata).toContain("navBtn('endpoints', 'Endpoints')");
+    expect(pdata).toContain("moveCardOf('deskPortfolio', 'portfolio')");
+    expect(pdata).toContain("moveCardOf('publicTradingTitle', 'status')");
+    expect(pdata).toContain("desk-intro");
+    // Endpoints view: probe route + callable + per-endpoint retest.
+    expect(qa).toContain("qaA2AProbe");
+    expect(api).toContain('"/api/dashboard/qa/a2a-probe"');
+    expect(pdata).toContain("deskRunA2ATests(true)");
+    // Chain: scrollable + CSV download; snapshot reveal hook.
+    expect(pdata).toContain("#deskChain{max-height:");
+    expect(pdata).toContain("deskDownloadChainCsv()");
+    expect(pdata).toContain("window.deskReveal");
+    expect(qa).toContain("window.deskReveal");
+  });
+
   it("the A2A endpoint test email is wired (all agents, read-only probes)", () => {
     const qa = read("src/qa-agent.ts");
     const api = read("src/api.ts");

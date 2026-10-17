@@ -459,6 +459,7 @@ function deskShowView(name) {
   document.querySelectorAll('.desk-nav-btn').forEach((b) => { b.classList.toggle('active', b.dataset.view === name); });
   if (name === 'tools') deskSyncToolsView();
   if (name === 'logs') deskRenderLogs();
+  if (name === 'endpoints') deskRunA2ATests(true);
 }
 
 function deskTraceLink(idx) {
@@ -551,6 +552,10 @@ function deskInitViews() {
     + '#deskRuns{max-height:17rem;overflow-y:auto;}'
     + '#publicTrades{max-height:17rem;overflow-y:auto;}'
     + '#deskToolsList{max-height:26rem;overflow-y:auto;}'
+    + '#deskChain{max-height:22rem;overflow-y:auto;}'
+    + '.desk-intro{padding:0.75rem 1rem;}'
+    + '.desk-intro h3{margin-bottom:0.2rem !important;font-size:1rem;}'
+    + '.desk-intro p{font-size:0.82rem !important;line-height:1.45 !important;margin-bottom:0.4rem !important;}'
     + '.desk-view>.card{margin-bottom:1rem;}'
     + '@media (max-width:760px){.desk-shell{flex-direction:column;}.desk-nav{flex-direction:row;flex-wrap:wrap;position:static;}}';
   document.head.appendChild(style);
@@ -559,7 +564,7 @@ function deskInitViews() {
   shell.className = 'desk-shell';
   const navBtn = (k, label) => '<button class="btn desk-nav-btn' + (k === 'trading' ? ' active' : '') + '" data-view="' + k + '" onclick="deskShowView(\'' + k + '\')">' + label + '</button>';
   shell.innerHTML = '<nav class="desk-nav">'
-    + navBtn('trading', 'Trading') + navBtn('questions', 'Questions') + navBtn('tools', 'Tools') + navBtn('logs', 'Logs') + navBtn('status', 'Status')
+    + navBtn('trading', 'Trading') + navBtn('questions', 'Questions') + navBtn('watchlist', 'Watchlist') + navBtn('portfolio', 'Portfolio') + navBtn('tools', 'Tools') + navBtn('logs', 'Logs') + navBtn('endpoints', 'Endpoints') + navBtn('status', 'Status')
     + '</nav><div class="desk-views">'
     + '<section class="desk-view" data-view="trading"></section>'
     + '<section class="desk-view" data-view="questions" style="display:none;"></section>'
@@ -568,12 +573,21 @@ function deskInitViews() {
     + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">MCP tools <span id="deskToolsCount" style="color:var(--muted);font-size:0.8rem;"></span></h3>'
     + '<input type="text" placeholder="Filter tools..." oninput="deskFilterTools(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.5rem;color:var(--text);font-size:0.85rem;box-sizing:border-box;margin-bottom:0.6rem;">'
     + '<div id="deskToolsList"><span style="color:var(--muted);font-size:0.8rem;">Loading the catalogue...</span></div></div></section>'
+    + '<section class="desk-view" data-view="watchlist" style="display:none;">'
+    + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Watchlist</h3><div id="deskWatchHost"></div></div></section>'
+    + '<section class="desk-view" data-view="portfolio" style="display:none;"></section>'
     + '<section class="desk-view" data-view="logs" style="display:none;">'
     + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Logs - model &amp; MCP detail</h3><div id="deskLogsList"></div></div></section>'
+    + '<section class="desk-view" data-view="endpoints" style="display:none;">'
+    + '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;"><h3 style="font-size:1rem;">A2A endpoint tests</h3>'
+    + '<span style="display:flex;gap:0.4rem;align-items:center;"><span id="a2aTestStamp" style="color:var(--muted);font-size:0.75rem;"></span>'
+    + '<button class="btn" style="padding:0.25rem 0.6rem;" onclick="deskRunA2ATests(true)">Test all now</button></span></div>'
+    + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin:0.4rem 0;">Every agent\'s A2A surface, probed the way an external caller would: card served, 401 without auth, snapshot reply with auth. Read-only. Runs automatically when you open this view; the same probes go out in the A2A test email.</p>'
+    + '<div id="a2aTestTable"><span style="color:var(--muted);font-size:0.8rem;">Not tested yet.</span></div></div></section>'
     + '<section class="desk-view" data-view="status" style="display:none;"></section>'
     + '</div>';
   const intro = panel.querySelector(':scope > .card');
-  if (intro) intro.after(shell); else panel.appendChild(shell);
+  if (intro) { intro.classList.add('desk-intro'); intro.after(shell); } else panel.appendChild(shell);
   // The host MUST be section-scoped: the nav buttons carry the same
   // data-view values and precede the sections in the shell markup, so
   // an unscoped [data-view=...] query returns a BUTTON - and the desk
@@ -587,9 +601,24 @@ function deskInitViews() {
   move('publicDesk', 'trading');
   move('publicQuestionCard', 'questions');
   move('publicConnectedBox', 'status');
-  // Opportunity hunt card (issue #135) into the desk rail.
+  // Watchlist strip out of the intro card into its own view (issue #152).
+  const watch = document.getElementById('deskWatch');
+  const watchHost = document.getElementById('deskWatchHost');
+  if (watch && watchHost) watchHost.appendChild(watch);
+  // Portfolio card and the trading explainer card become views too.
+  const moveCardOf = (id, view) => {
+    const anchor = document.getElementById(id);
+    const card = anchor && anchor.closest('.card');
+    const host = shell.querySelector('section.desk-view[data-view="' + view + '"]');
+    if (card && host) host.appendChild(card);
+  };
+  moveCardOf('deskPortfolio', 'portfolio');
+  moveCardOf('publicTradingTitle', 'status');
+  // Opportunity hunt card (issue #135): right next to the composer
+  // ("Ask about an instrument") in the main column (issue #152).
   const rail = document.querySelector('#publicDesk .desk-rail');
-  if (rail && !document.getElementById('huntCard')) {
+  const chatCard = document.getElementById('publicChatCard');
+  if ((chatCard || rail) && !document.getElementById('huntCard')) {
     const card = document.createElement('div');
     card.className = 'card';
     card.id = 'huntCard';
@@ -601,7 +630,18 @@ function deskInitViews() {
       + '<label style="font-size:0.75rem;color:var(--muted);">Symbols (optional)<br><input type="text" id="huntSymbols" placeholder="NVDA, AMD, SMH" style="width:10rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.45rem;color:var(--text);font-size:0.85rem;"></label>'
       + '<button class="btn" onclick="runOpportunityHunt()">Run hunt</button></div>'
       + '<div id="huntResult"></div><div id="huntHistory"></div>';
-    rail.appendChild(card);
+    if (chatCard) chatCard.after(card); else rail.appendChild(card);
+  }
+
+  // Chain CSV download (issue #152), beside Load chain.
+  const chainBtn = document.querySelector('#publicDesk button[onclick="deskLoadChain()"]');
+  if (chainBtn && !document.getElementById('deskChainCsv')) {
+    const csvBtn = document.createElement('button');
+    csvBtn.className = 'btn';
+    csvBtn.id = 'deskChainCsv';
+    csvBtn.textContent = 'Download CSV';
+    csvBtn.setAttribute('onclick', 'deskDownloadChainCsv()');
+    chainBtn.after(csvBtn);
   }
 
   // The per-answer model/tools meta line is a log line, not trading UI.
@@ -705,4 +745,93 @@ async function emailHuntReport(id) {
   } catch (e) {
     if (st) st.textContent = 'Failed: ' + (e.message || e);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Option chain CSV (issue #152): serialize the rendered chain table.
+
+function deskDownloadChainCsv() {
+  const host = document.getElementById('deskChain');
+  const table = host && host.querySelector('table');
+  if (!table) return;
+  const cell = (s) => '"' + String(s || '').replace(/"/g, '""') + '"';
+  const rows = [...table.querySelectorAll('tr')].map((tr) =>
+    [...tr.querySelectorAll('th,td')].map((td) => cell(td.textContent.trim())).join(','));
+  if (!rows.length) return;
+  const symbol = (document.getElementById('deskChainSymbol') || {}).value || 'chain';
+  const expiry = (document.getElementById('deskChainExpiry') || {}).value || 'nearest';
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'option-chain-' + symbol + '-' + expiry + '.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+// Reveal an element's desk view (used by QAAgent's snapshot flow before
+// it scrolls an anchor into view - a hidden view's anchor has no box).
+window.deskReveal = function (el) {
+  if (!el || !el.closest) return;
+  const view = el.closest('.desk-view');
+  if (view && view.dataset.view) deskShowView(view.dataset.view);
+};
+
+// ---------------------------------------------------------------------------
+// A2A endpoint tests view (issue #152): the probe matrix from the A2A
+// test email (PR #151), tabulated in the desk. Switching to the view
+// runs the probes; Test all / per-endpoint Test now re-run on demand.
+
+let deskA2ARows = [];
+let deskA2ARunning = false;
+
+function deskA2ARowHtml(r) {
+  const badge = (ok) => ok
+    ? '<span style="background:var(--verified);color:var(--on-accent);border-radius:4px;padding:0.05rem 0.4rem;font-size:0.72rem;">ok</span>'
+    : '<span class="badge-failed">fail</span>';
+  return '<tr><td><strong>' + escapeHtml(r.agent) + '</strong><br><span style="color:var(--muted);font-size:0.72rem;">' + escapeHtml(r.rpc) + '</span></td>'
+    + '<td>' + badge(r.cardOk) + (r.cardName ? '<br><span style="color:var(--muted);font-size:0.72rem;">' + escapeHtml(r.cardName) + '</span>' : '') + '</td>'
+    + '<td>' + badge(r.unauthStatus === 401) + '<br><span style="color:var(--muted);font-size:0.72rem;">' + r.unauthStatus + '</span></td>'
+    + '<td>' + badge(r.dispatchOk) + (r.reply ? '<br><span style="color:var(--muted);font-size:0.72rem;">' + escapeHtml(r.reply.slice(0, 90)) + '</span>' : '') + '</td>'
+    + '<td><button class="btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="deskRunA2ATests(true, \'' + escapeHtml(r.rpc) + '\')">Test now</button></td></tr>';
+}
+
+function deskRenderA2ATests() {
+  const host = document.getElementById('a2aTestTable');
+  if (!host) return;
+  if (!deskA2ARows.length) {
+    host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">' + (deskA2ARunning ? 'Testing...' : 'Not tested yet.') + '</span>';
+    return;
+  }
+  host.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:0.8rem;"><thead><tr>'
+    + '<th style="text-align:left;padding:0.3rem;">Agent</th><th style="text-align:left;padding:0.3rem;">Card</th>'
+    + '<th style="text-align:left;padding:0.3rem;">No-auth</th><th style="text-align:left;padding:0.3rem;">Dispatch</th><th></th></tr></thead>'
+    + '<tbody>' + deskA2ARows.map(deskA2ARowHtml).join('') + '</tbody></table>';
+}
+
+async function deskRunA2ATests(force, rpc) {
+  const stamp = document.getElementById('a2aTestStamp');
+  if (deskA2ARunning) return;
+  if (!force && deskA2ARows.length && !rpc) { deskRenderA2ATests(); return; }
+  deskA2ARunning = true;
+  if (stamp) stamp.textContent = 'Testing' + (rpc ? ' ' + rpc : ' all endpoints') + '...';
+  deskRenderA2ATests();
+  try {
+    const res = await api('/api/dashboard/qa/a2a-probe', 'POST', rpc ? { rpc } : {});
+    const rows = (res && res.results) || [];
+    if (rpc) {
+      const i = deskA2ARows.findIndex((r) => r.rpc === rpc);
+      if (i >= 0 && rows[0]) deskA2ARows[i] = rows[0];
+      else if (rows[0]) deskA2ARows.push(rows[0]);
+    } else {
+      deskA2ARows = rows;
+    }
+    if (stamp) {
+      const passed = deskA2ARows.filter((r) => r.ok).length;
+      stamp.textContent = passed + '/' + deskA2ARows.length + ' responding · ' + new Date().toLocaleTimeString();
+    }
+  } catch (e) {
+    if (stamp) stamp.textContent = 'Test failed: ' + (e.message || e);
+  }
+  deskA2ARunning = false;
+  deskRenderA2ATests();
 }
