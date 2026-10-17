@@ -164,6 +164,26 @@ The Public tab is an analysis and execution desk over a connected Public.com acc
 - **Multi-agent orchestration** (issue #180): the OrchestratorAgent takes a goal, plans steps across the other agents from a fixed operation catalog, runs independent steps in parallel, retries a failed step once before reporting it by name, and merges one report; jobs persist in its own storage. Dispatch goes through each agent's own A2A handler, so every agent's gates apply unchanged. Surface: the desk's Orchestrate view, the `orchestratorAgent` host tool, and `/a2a/orchestrator`.
 - **Opportunity hunt** (issue #135) - a budget-bounded scan for premium-selling trades: the pipeline gathers live chain evidence and proposes candidates; deterministic code verifies and sizes them (below), and the resulting plan renders as an HTML report or an emailed PDF. Report-only - the hunt has no path to an order.
 
+### Multi-agent orchestration
+
+The OrchestratorAgent (issue #180) is the coordination layer above the agents. The host agent has always been able to dispatch one agent at a time inside its own chat; the orchestrator takes a **goal** and runs it as a durable, multi-agent job.
+
+**The pattern.** A job uses the orchestrator's own LLM exactly twice:
+
+1. **Planning** - one model call turns the goal into a JSON step plan. The prompt is generated from a fixed operation catalog (`src/orchestrate.ts`, the only operations a plan may use), and deterministic code validates the reply: an operation outside the catalog, a dependency cycle, a dangling reference, or more than 8 steps rejects the plan. One correction retry, then the job fails by name instead of improvising.
+2. **Synthesis** - after execution, one model call writes the merged report from the step results. If it fails, the deterministic step summary stands as the report.
+
+Everything between those calls is code, not model judgement: dependency waves are computed topologically, independent steps run in parallel, each result is judged by a fixed rule (no reply text, `ok: false`, or an `error` field means failure), a failed step is retried once and then reported by name with its dependents skipped, and the job and its steps persist in the orchestrator's own SQL tables - so a job outlives any conversation and stays inspectable in the desk's Orchestrate view.
+
+**Dispatch: A2A, not agent-as-a-tool.** Each step is executed by building the same JSON-RPC `message/send` body an external A2A caller would send (operation and arguments in a data part) and calling the owning agent's `handleA2A` directly on its Durable Object stub - no HTTP hop, since it is the same Worker. The rationale, in order of weight:
+
+- **One dispatch path per agent.** The A2A handler is the same code external callers, the endpoint tests, and the post-deploy probes exercise. Orchestration cannot drift onto a second, private path into each agent that behaves differently from what the world sees.
+- **Gates stay with the owner.** Each agent enforces its own rules inside its own handler - `payment.process` refuses without a verified claim, trades still need dashboard approval, QA stays read-only. The orchestrator holds no other agent's credentials and cannot bypass anything; it just delivers the same requests any caller could.
+- **Jobs are not chat turns.** Agent-as-a-tool runs the child inside the *host's* conversation - its history, registry, and cancellation. An orchestration job is none of that: it is planned upfront, runs steps in parallel, and must survive independently of any chat. The A2A request/reply shape fits that; the tool-call shape does not.
+- **Uniform contract.** Every agent exposes the same handler, so the catalog is uniform - and an external orchestrator could drive the identical steps over real HTTP A2A unchanged.
+
+The two mechanisms coexist at different layers: agent-as-a-tool remains how the host dispatches within a conversation (and the orchestrator itself is registered as a host tool, `orchestratorAgent`), while the orchestrator dispatches downward over A2A.
+
 ### Separation of concerns
 
 | Component | Owns | Never does |

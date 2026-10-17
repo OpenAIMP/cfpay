@@ -33,6 +33,15 @@ import {
 // apply unchanged: payment.process refuses without a verified
 // claim, trades still need dashboard approval, QA stays read-only.
 // Orchestration adds no bypass and holds no other agent's secrets.
+//
+// Why A2A rather than agent-as-a-tool (the host's mechanism): one
+// dispatch path per agent (the same code the endpoint tests and
+// external callers exercise), gates enforced by the owning agent
+// rather than the caller's context, and a request/reply contract
+// that fits durable parallel jobs - where a tool call runs the
+// child inside the host's chat turn, with its history and
+// cancellation. The README's Multi-agent orchestration section
+// carries the full rationale.
 
 export interface OrchestratorJob {
   id: string;
