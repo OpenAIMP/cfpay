@@ -29,6 +29,8 @@ const RUN_A2A =
   String(process.env.QA_RUN_A2A_CHECK || "").toLowerCase() !== "false";
 const RUN_PDF =
   String(process.env.QA_RUN_PDF_CHECK || "").toLowerCase() !== "false";
+const RUN_SLACK_POST =
+  String(process.env.QA_RUN_SLACK_POST || "").toLowerCase() !== "false";
 
 const results = [];
 let failed = 0;
@@ -658,6 +660,91 @@ async function runSections() {
     } catch (err) {
       record("Autopilot hunt report PDF email", false, err.message);
     }
+  }
+  }
+
+  if (shouldRun("agent A2A operations answer (all agents)")) {
+  // 14. Agent A2A operations (issue #190): the manual curl checks,
+  //     automated - one REAL read operation per A2A surface (the
+  //     same authenticated message/send body an external caller
+  //     sends with curl), plus the slack.post write proof
+  //     (issue #188). Headless and model-free: runs even when
+  //     browser capacity or the neuron budget is exhausted.
+  //     QA_RUN_SLACK_POST=false skips only the Slack write row.
+  try {
+    const a2aOp = async (path, data) => {
+      const res = await fetch(`${BASE_URL}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${API_KEY}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: `smoke-${data.operation}`,
+          method: "message/send",
+          params: {
+            message: {
+              kind: "message",
+              role: "user",
+              messageId: `smoke-${Date.now()}`,
+              parts: [{ kind: "data", data }],
+            },
+          },
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      return { status: res.status, json };
+    };
+    const replyText = (json) =>
+      (json?.result?.parts || [])
+        .filter((p) => p.kind === "text")
+        .map((p) => p.text || "")
+        .join(" ");
+    const replyData = (json) =>
+      (json?.result?.parts || []).find((p) => p.kind === "data")?.data || {};
+    const rows = [
+      ["host chat.summary", "/a2a", "chat.summary"],
+      ["email.summary", "/a2a/email", "email.summary"],
+      ["payments ledger.summary", "/a2a/payments", "ledger.summary"],
+      ["webhooks webhook.summary", "/a2a/webhooks", "webhook.summary"],
+      ["slack.summary", "/a2a/slack", "slack.summary"],
+      ["qa.summary", "/a2a/qa", "qa.summary"],
+      ["chat.summary", "/a2a/chat", "chat.summary"],
+      ["voice.snapshot", "/a2a/voice", "voice.snapshot"],
+      ["search.summary", "/a2a/search", "search.summary"],
+      ["orchestrator.summary", "/a2a/orchestrator", "orchestrator.summary"],
+    ];
+    const bad = [];
+    for (const [label, path, operation] of rows) {
+      const r = await a2aOp(path, { operation });
+      const data = replyData(r.json);
+      const okRow =
+        r.status === 200 &&
+        r.json?.result?.kind === "message" &&
+        replyText(r.json).length > 0 &&
+        data?.ok !== false &&
+        !data?.error;
+      console.log(`      ${okRow ? "ok  " : "BAD "} ${label} (status=${r.status})`);
+      if (!okRow) bad.push(`${label}: ${data?.error || `status=${r.status}`}`);
+    }
+    if (RUN_SLACK_POST) {
+      const p = await a2aOp("/a2a/slack", {
+        operation: "slack.post",
+        text: `Post-deploy check (${new Date().toISOString()}): slack.post over A2A is live.`,
+      });
+      const pd = replyData(p.json);
+      const postOk = p.status === 200 && pd?.ok === true;
+      console.log(`      ${postOk ? "ok  " : "BAD "} slack.post write (via=${pd?.via || "?"})`);
+      if (!postOk) bad.push(`slack.post: ${pd?.error || `status=${p.status}`}`);
+    }
+    record(
+      "agent A2A operations answer (all agents)",
+      bad.length === 0,
+      bad.length ? bad.join("; ") : "10 read ops + slack.post write ok",
+    );
+  } catch (err) {
+    record("agent A2A operations answer (all agents)", false, err.message);
   }
   }
 }
