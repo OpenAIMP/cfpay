@@ -1384,6 +1384,15 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(qa).toContain("expectedButtonBg");
   });
 
+  it("supports visual baselines in the audit (issue #102)", () => {
+    const specMod = read("src/ux-audit-spec.ts");
+    expect(specMod).toContain("summarizeBaselines");
+    expect(specMod).toContain('baselines?: "record" | "compare"');
+    expect(qa).toContain("baselineStore");
+    expect(qa).toContain("ux_baselines");
+    expect(qa).toContain("summarizeBaselines(baselineResults, baselineMode)");
+  });
+
   it("discovers dashboard tabs from the DOM (issue #102)", () => {
     const qaMod = read("src/qa-agent.ts");
     const cov = read("src/tab-coverage.ts");
