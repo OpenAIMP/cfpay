@@ -405,6 +405,23 @@ async function emailDeskSnapshot() {
   } catch (e) { if (result) result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; await qaLiveFinish(false); }
 }
 
+async function emailA2ATest() {
+  const toEl = document.getElementById('qaEmailTo');
+  const result = document.getElementById('qaEmailResult');
+  const toEmail = toEl ? toEl.value : '';
+  if (!toEmail) { if (result) result.innerHTML = '<div class="status-msg error">Enter an email address</div>'; return; }
+  if (result) result.innerHTML = '<div class="loading">Probing every agent\'s A2A endpoint and emailing the results...</div>';
+  const runId = qaLiveBegin('A2A Test Email');
+  try {
+    const res = await api('/api/dashboard/qa/a2a-test', 'POST', { toEmail, runId });
+    const rows = res.results || [];
+    const passed = rows.filter((r) => r.ok).length;
+    if (res.emailed) { if (result) result.innerHTML = '<div class="status-msg success">A2A test emailed (' + passed + '/' + rows.length + ' surfaces responding)!</div>'; }
+    else { if (result) result.innerHTML = '<div class="status-msg error">Failed: ' + (res.error || 'Unknown error') + '</div>'; }
+    await qaLiveFinish(!!(res && res.emailed && res.ok));
+  } catch (e) { if (result) result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; await qaLiveFinish(false); }
+}
+
 // Persistent browser profile (issue #102): one signed-in Browser Run
 // session reused across runs (10-minute idle cap). The button toggles
 // start/stop; the span shows the state after each action.
