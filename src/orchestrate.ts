@@ -14,9 +14,9 @@
 //   - email.sendWithAttachments (attachment bytes can't be planned)
 //   - webhook.receive (inbound-event simulation, not coordination)
 //   - chat.clear (destructive; orchestration never wipes state)
-//   - slack.post (the Slack agent refuses posting over A2A by name,
-//     by design: a shared bearer credential must not be enough to
-//     speak in the workspace - posting is internal-only)
+// (slack.post was briefly excluded while the Slack agent refused
+// it over A2A; the owner enabled posting over A2A in issue #188,
+// so it is plannable like the other operations.)
 // Every other operation keeps its own agent's gates: payment.process
 // still refuses without a verified claim, trade proposals still
 // require dashboard approval. Orchestration adds no bypass.
@@ -36,7 +36,7 @@ export const OPERATION_CATALOG: CatalogEntry[] = [
   { agent: "email", binding: "EMAIL_AGENT", instance: "email", operations: ["email.summary", "email.totals", "email.list", "email.quota", "email.send"], blurb: "Email records and sending (the agent's quota and self-send rules apply)." },
   { agent: "payments", binding: "PAYMENTS_AGENT", instance: "payments", operations: ["ledger.summary", "payments.list", "payments.totals", "payment.process", "checkout.create", "checkout.status", "checkout.fulfil"], blurb: "The payments ledger and x402 checkouts. payment.process refuses without a verified claim or card reference." },
   { agent: "webhooks", binding: "WEBHOOK_AGENT", instance: "webhooks", operations: ["webhook.summary", "webhook.totals", "webhook.list"], blurb: "Inbound webhook event records." },
-  { agent: "slack", binding: "SLACK_AGENT", instance: "slack", operations: ["slack.summary", "slack.totals", "slack.status", "slack.list"], blurb: "Slack channel records and status. Posting is internal-only in this deployment (refused over A2A), so it is not plannable." },
+  { agent: "slack", binding: "SLACK_AGENT", instance: "slack", operations: ["slack.summary", "slack.totals", "slack.status", "slack.list", "slack.post"], blurb: "Slack channel records, status, and posting (slack.post: channel argument posts via the bot, otherwise via the incoming webhook)." },
   { agent: "qa", binding: "QA_AGENT", instance: "qa", operations: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit", "qa.investigate", "qa.browser_profile"], blurb: "Browser QA: checks, dashboard verification, UX audits, investigations. Browser steps are slow (minutes)." },
   { agent: "chat", binding: "CHAT_AGENT", instance: "chat", operations: ["chat.summary", "chat.totals", "chat.transcript", "chat.emailTranscript"], blurb: "Conversation history records and transcripts." },
   { agent: "voice", binding: "VOICE_AGENT", instance: "desk", operations: ["voice.snapshot", "voice.ask"], blurb: "The voice channel: voice.ask runs the desk pipeline and returns the speakable answer." },

@@ -30,7 +30,8 @@ describe("orchestration planning core", () => {
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "nope", operation: "qa.summary" }]))).toBeNull();
     // The deliberate exclusions are not plannable either.
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "chat", operation: "chat.clear" }]))).toBeNull();
-    expect(parsePlan(JSON.stringify([{ id: "s1", agent: "slack", operation: "slack.post" }]))).toBeNull();
+    // slack.post IS plannable since issue #188 enabled it over A2A.
+    expect(parsePlan(JSON.stringify([{ id: "s1", agent: "slack", operation: "slack.post", args: { text: "hi" } }]))).not.toBeNull();
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "webhooks", operation: "webhook.receive" }]))).toBeNull();
   });
 
