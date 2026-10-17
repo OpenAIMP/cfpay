@@ -790,6 +790,7 @@ export function createApp() {
         ok: boolean;
         checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[];
         emailed: boolean;
+        investigation?: { question: string; answer: string; steps: number };
         error?: string;
       }>;
     };
