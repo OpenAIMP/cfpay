@@ -67,6 +67,9 @@ export const A2A_SLACK_CARD_PATH = "/a2a/slack/agent-card.json";
 export const A2A_QA_RPC_PATH = "/a2a/qa";
 export const A2A_QA_CARD_PATH = "/a2a/qa/agent-card.json";
 
+export const A2A_SEARCH_RPC_PATH = "/a2a/search";
+export const A2A_SEARCH_CARD_PATH = "/a2a/search/agent-card.json";
+
 export const A2A_VOICE_RPC_PATH = "/a2a/voice";
 export const A2A_VOICE_CARD_PATH = "/a2a/voice/agent-card.json";
 
@@ -529,6 +532,41 @@ export function voiceCard(origin: string): AgentCard {
         examples: [
           "Compare NVDA and AMD for a covered call.",
           "What is in my portfolio?",
+        ],
+      },
+    ],
+  };
+}
+/**
+ * Card for the search capability (issue #170): retrieval over the
+ * owner's own AI Search index. The disclosure is stated plainly:
+ * search.query returns chunks of the indexed content itself, so a
+ * caller with the credential reads what the owner indexed - the
+ * index is the owner's data, exposed to their own callers.
+ */
+export function searchCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Search Agent",
+    description:
+      "Retrieval over the owner's knowledge base, indexed by Cloudflare AI Search (website, R2, or uploaded files). search.query returns the retrieved chunks; search.ask returns a grounded answer with the chunks behind it. The agent reports honestly when no instance is configured yet.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_SEARCH_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "knowledge-search",
+        name: "Knowledge search",
+        description:
+          "Search the owner's indexed content (search.query) or ask it a question (search.ask). Returned chunks are the indexed content itself - a disclosure of the owner's own data to a credential holder. All operations require a bearer <redacted>",
+        tags: ["search", "retrieval", "read"],
+        examples: [
+          "How are trade proposals approved?",
+          "What does the QA summary email contain?",
         ],
       },
     ],

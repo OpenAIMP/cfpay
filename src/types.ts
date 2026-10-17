@@ -32,6 +32,9 @@ export interface Env {
   /** Autonomous QA agent (Think-based). */
   QA_AGENT: DurableObjectNamespace;
   VOICE_AGENT: DurableObjectNamespace;
+  SEARCH_AGENT: DurableObjectNamespace;
+  AI_SEARCH: AiSearchNamespace;
+  AI_SEARCH_INSTANCE?: string;
   /** Owns the webhook event log and the GitHub delivery registry. */
   WEBHOOK_AGENT: DurableObjectNamespace;
   /**

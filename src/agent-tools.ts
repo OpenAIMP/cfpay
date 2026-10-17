@@ -29,10 +29,12 @@ import { WebhookAgent } from "./webhook-agent";
 import { SlackAgent } from "./slack-agent";
 import { QAAgent } from "./qa-agent";
 import { ChatAgent } from "./chat-agent";
+import { SearchAgent } from "./search-agent";
 import {
   paymentAgentToolSchema,
   slackAgentToolSchema,
   chatAgentToolSchema,
+  searchAgentToolSchema,
   qaAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -182,4 +184,19 @@ export const chatAgentTool = agentTool<AgentToolInput>(ChatAgent, {
   ].join(" "),
   displayName: "Chat Agent",
   inputSchema: asZod<AgentToolInput>(chatAgentToolSchema),
+});
+/**
+ * Dispatch the search agent (issue #170): retrieval over the owner's
+ * AI Search knowledge base. search.query returns the indexed chunks
+ * themselves - the owner's own data, disclosed to the credential
+ * holder, as the agent's card states.
+ */
+export const searchAgentTool = agentTool<AgentToolInput>(SearchAgent, {
+  description: [
+    "Dispatch the search agent to query the owner's knowledge base (Cloudflare AI Search).",
+    "Use search.query for the retrieved chunks, or search.ask for a grounded answer with its chunks.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Search Agent",
+  inputSchema: asZod<AgentToolInput>(searchAgentToolSchema),
 });

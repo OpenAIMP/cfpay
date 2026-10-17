@@ -820,6 +820,15 @@ export function createApp() {
     }
   }
 
+  async function getSearchAgent(c: any) {
+    const stub = await getAgentByName(c.env.SEARCH_AGENT as any, "search");
+    return stub as unknown as {
+      searchQuery(query: string, limit?: number): Promise<unknown>;
+      searchAsk(query: string): Promise<unknown>;
+      searchSnapshot(): Promise<unknown>;
+    };
+  }
+
   async function getQAAgent(c: any) {
     // Awaiting is the fix: getAgentByName resolves to Promise<DurableObjectStub<T>>, and
     // the previous version returned that Promise while callers used it as a stub. Every QA
@@ -1712,6 +1721,19 @@ export function createApp() {
 
   // The A2A probes without the email (issue #152): the Endpoints
   // view's data source. Body { rpc } tests one surface; empty = all.
+  // Knowledge search (issue #170): the dashboard face of SearchAgent.
+  // mode "ask" returns the grounded answer; "query" the raw chunks.
+  app.post("/api/dashboard/search", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { query?: string; mode?: string; limit?: number };
+    const query = (body.query || "").trim();
+    if (!query) return c.json({ error: "query is required" }, 400);
+    const searchAgent = await getSearchAgent(c);
+    const result = body.mode === "query"
+      ? await searchAgent.searchQuery(query, body.limit)
+      : await searchAgent.searchAsk(query);
+    return c.json(result as Record<string, unknown>);
+  });
+
   app.post("/api/dashboard/qa/a2a-probe", requireAuth, async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const presented = c.req.header("X-API-Key") || "";

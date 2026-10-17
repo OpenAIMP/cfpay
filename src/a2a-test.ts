@@ -24,6 +24,7 @@ export const A2A_ENDPOINTS: A2AEndpoint[] = [
   { agent: "QA", rpc: "/a2a/qa", card: "/a2a/qa/agent-card.json" },
   { agent: "Chat (host surface)", rpc: "/a2a/chat", card: "/a2a/chat/agent-card.json" },
   { agent: "Voice", rpc: "/a2a/voice", card: "/a2a/voice/agent-card.json" },
+  { agent: "Search", rpc: "/a2a/search", card: "/a2a/search/agent-card.json" },
 ];
 
 export interface A2ARow {
