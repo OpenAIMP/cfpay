@@ -1384,6 +1384,14 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(qa).toContain("expectedButtonBg");
   });
 
+  it("measures pages at multiple viewports (issue #102)", () => {
+    const specMod = read("src/ux-audit-spec.ts");
+    expect(specMod).toContain("viewportListOf");
+    expect(specMod).toContain("viewports?:");
+    expect(qa).toContain("Emulation.setDeviceMetricsOverride");
+    expect(qa).toContain("viewportListOf(spec)");
+  });
+
   it("captures console, network, and vitals evidence per page (issue #102)", () => {
     const specMod = read("src/ux-audit-spec.ts");
     expect(specMod).toContain("evidenceCollectorScript");

@@ -49,6 +49,13 @@ export interface UxAuditSpec {
    * collector and its findings entirely.
    */
   evidence?: boolean;
+  /**
+   * Measure every page at each of these viewports (issue #102):
+   * findings are reported per page per viewport (label suffix
+   * "@ name"). At most 3 are honored; sizes clamp to 320..2560.
+   * Absent/empty = one default (un-emulated) pass, as before.
+   */
+  viewports?: { name: string; width: number; height: number }[];
   /** Audit a page once this selector exists; default: readyState complete. */
   settleSelector?: string;
   settleTimeoutMs?: number;
@@ -273,4 +280,30 @@ export function summarizeEvidence(
       : "No vitals captured (pages may not expose the Performance APIs). Informational - not gated.",
   });
   return findings;
+}
+
+/** A sanitized audit viewport; width/height absent = no emulation. */
+export interface AuditViewport {
+  name: string;
+  width?: number;
+  height?: number;
+}
+
+/** The viewports an audit measures at: the spec's list, sanitized. */
+export function viewportListOf(spec: UxAuditSpec): AuditViewport[] {
+  const raw = Array.isArray(spec.viewports) ? spec.viewports : [];
+  const out: AuditViewport[] = [];
+  const names = new Set<string>();
+  for (const v of raw) {
+    if (out.length >= 3) break;
+    const width = Math.round(Number((v as any)?.width) || 0);
+    const height = Math.round(Number((v as any)?.height) || 0);
+    if (width < 320 || width > 2560 || height < 320 || height > 2560) continue;
+    const clean = typeof (v as any)?.name === "string" ? (v as any).name.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24) : "";
+    const name = clean || `vp${out.length + 1}`;
+    if (names.has(name)) continue;
+    names.add(name);
+    out.push({ name, width, height });
+  }
+  return out.length > 0 ? out : [{ name: "default" }];
 }

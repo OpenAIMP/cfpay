@@ -119,6 +119,15 @@ export const qaAgentToolSchema = {
         },
         settleSelector: { type: "string", description: "Audit each page once this selector exists." },
         evidence: { type: "boolean", description: "Capture console errors, failed requests, and Web Vitals per page (default true)." },
+        viewports: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { name: { type: "string" }, width: { type: "number" }, height: { type: "number" } },
+            required: ["name", "width", "height"],
+          },
+          description: "Measure every page at each viewport (max 3, sizes 320..2560). Findings are labelled per viewport.",
+        },
         settleTimeoutMs: { type: "integer", description: "Settle timeout per page in ms (clamped)." },
         rules: { type: "object", description: "Optional rule profile: contrastNormal, contrastLarge, minTargetPx, ignoreSelectors, expectedButtonBg." },
       },

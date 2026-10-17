@@ -9,7 +9,7 @@
  * agentTool(). It is reachable three ways: a direct @callable() RPC, an A2A operation
  * at /a2a/qa, and a dispatch from a host agent's tool list.
  */
-import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, summarizeEvidence } from "./ux-audit-spec";
+import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, summarizeEvidence, viewportListOf } from "./ux-audit-spec";
 import type { PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 import { callable } from "agents";
@@ -1503,6 +1503,7 @@ export class QAAgent extends Think<Env> {
     const probes: { view: string; data: any }[] = [];
     const evidencePages: PageEvidence[] = [];
     const evidenceOn = spec.evidence !== false;
+    const viewports = viewportListOf(spec);
     const failures: string[] = [];
     try {
       const cdp = await this.openBrowserSession(env);
@@ -1533,7 +1534,7 @@ export class QAAgent extends Think<Env> {
           const entry = queue.shift()!;
           const pageUrl = entry.url;
           attempted++;
-          const label = (() => {
+          let label = (() => {
             try {
               const u = new URL(pageUrl);
               return u.pathname === "/" ? u.origin : u.origin + u.pathname;
@@ -1541,18 +1542,20 @@ export class QAAgent extends Think<Env> {
               return pageUrl;
             }
           })();
+          const baseLabel = label;
           this.emitLive(runId, { kind: "step", label: `Auditing ${label}` });
+          for (const vp of viewports) {
+            if (vp.width && vp.height) {
+              await cdp.send("Emulation.setDeviceMetricsOverride", { width: vp.width, height: vp.height, deviceScaleFactor: 1, mobile: vp.width < 600 }, { sessionId }).catch(() => {});
+            } else {
+              await cdp.send("Emulation.clearDeviceMetricsOverride", {}, { sessionId }).catch(() => {});
+            }
+            label = vp.width ? `${baseLabel} @ ${vp.name}` : baseLabel;
           try {
             await cdp.send("Page.navigate", { url: pageUrl }, { sessionId });
             if (!seeded && spec.auth?.mode === "localStorage" && spec.auth.localStorage) {
               await new Promise((r) => setTimeout(r, 1500));
-              await cdp.send(
-                "Runtime.evaluate",
-                {
-                  expression: `(() => { const items = ${JSON.stringify(spec.auth.localStorage)}; for (const k of Object.keys(items)) localStorage.setItem(k, items[k]); })()`,
-                },
-                { sessionId },
-              );
+              await cdp.send("Runtime.evaluate", { expression: `(() => { const items = ${JSON.stringify(spec.auth.localStorage)}; for (const k of Object.keys(items)) localStorage.setItem(k, items[k]); })()` }, { sessionId });
               seeded = true;
               await cdp.send("Page.navigate", { url: pageUrl }, { sessionId });
             }
@@ -1564,9 +1567,7 @@ export class QAAgent extends Think<Env> {
               const settleExpr = spec.settleSelector
                 ? `!!document.querySelector(${JSON.stringify(spec.settleSelector)})`
                 : `document.readyState === "complete"`;
-              const st = (await cdp
-                .send("Runtime.evaluate", { expression: settleExpr, returnByValue: true }, { sessionId })
-                .catch(() => null)) as { result?: { value?: boolean } } | null;
+              const st = (await cdp.send("Runtime.evaluate", { expression: settleExpr, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: boolean } } | null;
               if (st?.result?.value === true) break;
               if (Date.now() > deadline) break;
               await new Promise((r) => setTimeout(r, 250));
@@ -1579,9 +1580,7 @@ export class QAAgent extends Think<Env> {
             // never a silent skip.
             for (const step of entry.steps) {
               const clickExpr = `(() => { const el = document.querySelector(${JSON.stringify(step.click)}); if (!el) return false; el.scrollIntoView({ block: "center" }); el.click(); return true; })()`;
-              const cr = (await cdp
-                .send("Runtime.evaluate", { expression: clickExpr, returnByValue: true }, { sessionId })
-                .catch(() => null)) as { result?: { value?: boolean } } | null;
+              const cr = (await cdp.send("Runtime.evaluate", { expression: clickExpr, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: boolean } } | null;
               if (cr?.result?.value !== true) {
                 failures.push(`${label}: step click "${step.click}" matched nothing`);
                 continue;
@@ -1592,14 +1591,8 @@ export class QAAgent extends Think<Env> {
 
             // Crawl (step 2): harvest this page's same-origin links for
             // the queue, breadth-first, within the depth and page caps.
-            if (crawlOn && entry.depth < maxDepth) {
-              const lr = (await cdp
-                .send(
-                  "Runtime.evaluate",
-                  { expression: `Array.from(document.querySelectorAll("a[href]")).map((x) => x.href)`, returnByValue: true },
-                  { sessionId },
-                )
-                .catch(() => null)) as { result?: { value?: string[] } } | null;
+            if (crawlOn && vp === viewports[0] && entry.depth < maxDepth) {
+              const lr = (await cdp.send("Runtime.evaluate", { expression: `Array.from(document.querySelectorAll("a[href]")).map((x) => x.href)`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: string[] } } | null;
               let added = 0;
               for (const h of lr?.result?.value ?? []) {
                 const key = crawlUrlKey(h, origin);
@@ -1613,11 +1606,7 @@ export class QAAgent extends Think<Env> {
               }
             }
 
-            const ux = (await cdp.send(
-              "Runtime.evaluate",
-              { expression: uxProbeExpression(rules), returnByValue: true },
-              { sessionId },
-            )) as { result?: { value?: any } };
+            const ux = (await cdp.send("Runtime.evaluate", { expression: uxProbeExpression(rules), returnByValue: true }, { sessionId })) as { result?: { value?: any } };
             if (!ux.result?.value) {
               failures.push(`${label}: probe returned no data`);
               continue;
@@ -1634,23 +1623,16 @@ export class QAAgent extends Think<Env> {
             }
 
             try {
-              const { data } = (await cdp.send(
-                "Page.captureScreenshot",
-                { format: "png" },
-                { sessionId },
-              )) as { data?: string };
+              const { data } = (await cdp.send("Page.captureScreenshot", { format: "png" }, { sessionId })) as { data?: string };
               if (data) {
-                this.emitLive(runId, {
-                  kind: "screenshot",
-                  label: `${label} view`,
-                  image: `data:image/png;base64,${data}`,
-                });
+                this.emitLive(runId, { kind: "screenshot", label: `${label} view`, image: `data:image/png;base64,${data}` });
               }
             } catch {
               // Evidence for the panel, never the audit itself.
             }
           } catch (err) {
             failures.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+          }
           }
         }
       } finally {
@@ -1686,8 +1668,8 @@ export class QAAgent extends Think<Env> {
       "Coverage",
       failures.length === 0,
       failures.length === 0
-        ? `${probes.length}/${attempted} pages measured.`
-        : `${probes.length}/${attempted} pages measured; failed: ${failures.join("; ")}`,
+        ? `${probes.length}/${attempted * viewports.length} page-measurements (${attempted} page(s)${viewports.length > 1 ? `, ${viewports.length} viewports` : ""}).`
+        : `${probes.length}/${attempted * viewports.length} page-measurements; failed: ${failures.join("; ")}`,
     );
     if (crawlOn) {
       addFinding(
@@ -1923,11 +1905,8 @@ export class QAAgent extends Think<Env> {
     toEmail: string,
     runId?: string,
   ): Promise<{ ok: boolean; emailed: boolean; tabs: any[]; error?: string }> {
-    // ONE session for the whole report: the tab check and the screenshot both
-    // need a browser, and opening one each is what exhausted the Browser
-    // Rendering concurrency limit. A refusal there surfaces as "did not return a
-    // WebSocket", which reads like a configuration fault but is really
-    // exhaustion - so the count is reduced rather than the symptom retried.
+    // ONE session for the whole report: opening one session per check
+    // is what exhausted the Browser Rendering concurrency limit.
     const env = this.env as Env;
     this.emitLive(runId, { kind: "step", label: "Building QA report with screenshots" });
     let connection: CdpLike | null = null;
@@ -2150,16 +2129,7 @@ export class QAAgent extends Think<Env> {
         // (or the wait budget ends - a disconnected desk still snapshots).
         const deadline = Date.now() + 15000;
         for (;;) {
-          const ready = (await cdp
-            .send(
-              "Runtime.evaluate",
-              {
-                expression: `(() => { const d = document.getElementById('publicDesk'); if (!d || getComputedStyle(d).display === 'none') return false; const w = document.getElementById('deskWatch'); return !!w && !/Loading/.test(w.innerText || ''); })()`,
-                returnByValue: true,
-              },
-              { sessionId },
-            )
-            .catch(() => null)) as { result?: { value?: boolean } } | null;
+          const ready = (await cdp.send("Runtime.evaluate", { expression: `(() => { const d = document.getElementById('publicDesk'); if (!d || getComputedStyle(d).display === 'none') return false; const w = document.getElementById('deskWatch'); return !!w && !/Loading/.test(w.innerText || ''); })()`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: boolean } } | null;
           if (ready?.result?.value === true) break;
           if (Date.now() > deadline) break;
           await new Promise((r) => setTimeout(r, 500));
