@@ -1,85 +1,94 @@
-# Self-heal fixer — GitHub Actions edition (issue #195).
+# Self-heal fixer — GitHub Actions edition, COPILOT variant (issue #195).
 #
 # INSTALL (owner, via the GitHub web UI — the assistant's integration
 # cannot write workflow files):
-#   1. Add the repository secret ANTHROPIC_API_KEY (Settings → Secrets
-#      and variables → Actions).
-#   2. Create .github/workflows/self-heal-fixer.yml with exactly this
-#      content (this file is the versioned template; the live copy
-#      lives under .github/workflows/).
+#   Create .github/workflows/self-heal-fixer.yml with exactly this
+#   content (this file is the versioned template; the live copy lives
+#   under .github/workflows/). No new secrets and no external model
+#   key: the fixer is GitHub's own Copilot coding agent, running on
+#   the account's existing Copilot plan/credits.
 #
-# Two fixers watch the same [QA self-heal] issues — this one and the
-# Muse cron fixer. They coordinate through the issue itself: before
-# working, a fixer posts a claim comment; the other side skips a
-# claimed issue (claims go stale after 2 hours) and anything with a
-# fix PR or an open self-heal/<issue#>- branch. First to claim wins.
+# HOW IT WORKS: this workflow does not write code itself. When a
+# [QA self-heal] issue is filed (and on a 6-hour sweep for stragglers),
+# it ASSIGNS the issue to Copilot. Copilot reads the issue — which the
+# post-deploy smoke already writes as a complete brief (failure detail,
+# run link, QAAgent diagnosis) — works in its own Actions-powered
+# environment, and opens a DRAFT PR on a copilot/ branch. The human
+# reviews and merges; the loop's auto-close finishes the job.
+#
+# Coordination with the Muse fixer (same queue): assignment is the
+# claim. The Muse runbook skips issues assigned to Copilot, issues
+# with a fresh "Fix claimed by" comment, and issues with a fix PR.
+# The sweep below leaves any issue with a claim comment from the last
+# 2 hours alone (the Muse fixer works a 30-minute cycle).
+#
+# PREREQUISITE: Copilot coding agent must be available on the repo
+# (the account's Copilot plan). The workflow checks suggestedActors
+# first and comments instead of failing if Copilot is not available.
+# If the workflow's GITHUB_TOKEN cannot perform the assignment, store
+# a fine-grained PAT with Issues write as COPILOT_ASSIGN_TOKEN and the
+# steps will prefer it automatically.
 
-name: Self-heal Fixer
+name: Self-heal Fixer (Copilot)
 
 on:
   issues:
     types: [opened]
   workflow_dispatch:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "23 */6 * * *"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
   issues: write
 
 jobs:
-  fix:
-    name: Attempt a self-heal fix
+  assign-opened:
+    name: Assign the new self-heal issue to Copilot
     runs-on: ubuntu-24.04
-    if: github.event_name != 'issues' || startsWith(github.event.issue.title, '[QA self-heal]')
+    if: github.event_name == 'issues' && startsWith(github.event.issue.title, '[QA self-heal]')
+    env:
+      GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN || secrets.GITHUB_TOKEN }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
+      - name: Assign to Copilot
+        run: |
+          set -euo pipefail
+          OWNER="${{ github.repository_owner }}"
+          NAME="${{ github.event.repository.name }}"
+          REPO_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { id } }" --jq '.data.repository.id')
+          BOT_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { suggestedActors(first: 20) { nodes { id login } } } }" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id' | head -1)
+          if [ -z "${BOT_ID}" ]; then
+            gh issue comment "${ISSUE_NUMBER}" --body "Self-heal fixer (Actions/Copilot): Copilot coding agent is not available on this repository, so no assignment was made. The Muse fixer remains on this queue."
+            exit 0
+          fi
+          ISSUE_ID=$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}" --jq '.node_id')
+          gh api graphql -H 'GraphQL-Features: issues_copilot_assignment_api_support,coding_agent_model_selection' -f query="mutation { replaceActorsForAssignable(input: { assignableId: \"$ISSUE_ID\", actorIds: [\"$BOT_ID\"], agentAssignment: { targetRepositoryId: \"$REPO_ID\", baseRef: \"main\", customInstructions: \"This is an automated post-deploy QA failure; the issue body is your brief. Triage first: if the cause is environmental (browser capacity, Workers AI neuron limits, provider transients) or needs the owner (a dashboard step, a secret, a policy decision), post that triage as an issue comment and make NO code changes. Otherwise make the minimal fix, run npx tsc --noEmit and npm test until both are green, and keep the pull request as a draft for human review - never merge. Never edit .github/workflows. Keep the change scoped to the failing area.\", customAgent: \"\", model: \"\" } }) { assignable { ... on Issue { id } } } }"
+          gh issue comment "${ISSUE_NUMBER}" --body "Assigned to Copilot by the self-heal fixer workflow. Copilot's draft PR is the fix candidate; a human reviews and merges."
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run the fixer agent
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: "--max-turns 60"
-          prompt: |
-            You are the GitHub Actions self-heal fixer for this repository (issue #195).
-            A second fixer (in Muse) watches the same issues; coordinate through
-            the issues themselves, as described below. Work at most ONE issue.
-
-            1. Find candidates: open issues whose title starts with "[QA self-heal] ",
-               oldest first (use `gh issue list --state open --limit 100 --json number,title,createdAt`).
-               When this run was triggered by an issue event, start with that issue.
-            2. Skip an issue when ANY of these hold:
-               - a comment on it contains "Fix PR:";
-               - an open PR exists whose head branch starts with "self-heal/<issue#>-"
-                 (`gh pr list --state open --json headRefName`);
-               - a comment containing "Fix claimed by" was posted within the last 2 hours.
-            3. Claim before working: post a comment "Fix claimed by GitHub Actions fixer."
-               (`gh issue comment <n> --body "..."`). Then re-check once: if another claim
-               predates yours, stand down.
-            4. Triage from the issue body (failure detail + QAAgent diagnosis):
-               - ENVIRONMENTAL (browser capacity, Workers AI neuron exhaustion / AiError 4006,
-                 provider transients): comment "Triaged: ENVIRONMENTAL — <reason>. No code
-                 change will fix this; the issue auto-closes when the section passes." Stop.
-               - NEEDS-OWNER (a dashboard step, a secret, a policy decision): comment
-                 "Triaged: NEEDS-OWNER — <exactly what the owner must do>." Stop.
-               - CODE (a repo defect): proceed.
-            5. Fix (CODE only): reproduce the root cause from the code; state it in one
-               sentence; make the MINIMAL fix on branch "self-heal/<issue#>-<short-slug>".
-               Gates, all green before pushing: `npx tsc --noEmit`, `npm test`,
-               `node --check` for any plain-JS file. Push the branch and open a PR titled
-               "Self-heal fix for #<issue#>: <summary>" whose body gives the root cause,
-               the fix, and the gate results. Comment on the issue: "Fix PR: <url>".
-            6. NEVER merge a PR. The human merge is the designed gate; after it, the
-               next deploy's post-deploy QA auto-closes the issue when the section passes.
+  sweep:
+    name: Assign unclaimed self-heal issues to Copilot
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'issues'
+    env:
+      GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Sweep
+        run: |
+          set -euo pipefail
+          OWNER="${{ github.repository_owner }}"
+          NAME="${{ github.event.repository.name }}"
+          REPO_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { id } }" --jq '.data.repository.id')
+          BOT_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { suggestedActors(first: 20) { nodes { id login } } } }" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id' | head -1)
+          if [ -z "${BOT_ID}" ]; then
+            echo "Copilot coding agent not available; nothing to sweep."
+            exit 0
+          fi
+          CUTOFF=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          gh issue list --state open --limit 100 --json number,title,assignees,comments \
+            --jq '.[] | select(.title | startswith("[QA self-heal]")) | select(.assignees | length == 0) | select([.comments[] | select(.body | contains("Fix PR:"))] | length == 0) | select([.comments[] | select(.body | contains("Fix claimed by")) | select(.createdAt > "'"$CUTOFF"'")] | length == 0) | .number' \
+          | while read -r N; do
+              ISSUE_ID=$(gh api "repos/${{ github.repository }}/issues/${N}" --jq '.node_id')
+              gh api graphql -H 'GraphQL-Features: issues_copilot_assignment_api_support,coding_agent_model_selection' -f query="mutation { replaceActorsForAssignable(input: { assignableId: \"$ISSUE_ID\", actorIds: [\"$BOT_ID\"], agentAssignment: { targetRepositoryId: \"$REPO_ID\", baseRef: \"main\", customInstructions: \"This is an automated post-deploy QA failure; the issue body is your brief. Triage first: if the cause is environmental (browser capacity, Workers AI neuron limits, provider transients) or needs the owner (a dashboard step, a secret, a policy decision), post that triage as an issue comment and make NO code changes. Otherwise make the minimal fix, run npx tsc --noEmit and npm test until both are green, and keep the pull request as a draft for human review - never merge. Never edit .github/workflows. Keep the change scoped to the failing area.\", customAgent: \"\", model: \"\" } }) { assignable { ... on Issue { id } } } }"
+              gh issue comment "${N}" --body "Assigned to Copilot by the self-heal fixer sweep. Copilot's draft PR is the fix candidate; a human reviews and merges."
+            done
