@@ -753,6 +753,11 @@ export function createApp() {
         toEmail: string,
         runId?: string,
       ): Promise<{ ok: boolean; emailed: boolean; tabs: unknown[]; error?: string }>;
+      qaDeskSnapshotEmail(
+        key: string,
+        toEmail: string,
+        runId?: string,
+      ): Promise<{ ok: boolean; emailed: boolean; shots: string[]; error?: string }>;
       testEmailAttachmentUI(
         apiKey: string,
         toEmail: string,
@@ -1528,6 +1533,26 @@ export function createApp() {
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
     const result = await qaAgent.qaAndEmailReport(apiKey, toEmail, runId);
     return jsonOr500(c, result, "qa/email-report");
+  });
+
+  // Autopilot Trading Desk snapshot email (2026-10-17): a separate
+  // email from the QA report - five screenshots of the desk workflow.
+  app.post("/api/dashboard/qa/desk-snapshot", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const toEmail = body.toEmail as string;
+    if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
+      return c.json({ error: "Valid toEmail required" }, 400);
+    }
+    const presented = c.req.header("X-API-Key") || "";
+    const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const key = presented || auth || undefined;
+    if (!key) {
+      return c.json({ error: "API key required" }, 401);
+    }
+    const qaAgent = await getQAAgent(c);
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const result = await qaAgent.qaDeskSnapshotEmail(key, toEmail, runId);
+    return jsonOr500(c, result, "qa/desk-snapshot");
   });
 
 

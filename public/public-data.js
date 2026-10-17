@@ -385,3 +385,21 @@ function renderToolTrace(trace, answerIdx = -1) {
 
 // The autopilot run card: the persisted Goal -> Planner -> Queue ->
 // Executor -> Verifier state, rendered from the run the response carries.
+
+// Desk snapshot email (2026-10-17): five screenshots of the Autopilot
+// Trading Desk, as its own email - the QA report email is unchanged.
+// Reuses the report's recipient field and the live-run panel.
+async function emailDeskSnapshot() {
+  const toEl = document.getElementById('qaEmailTo');
+  const result = document.getElementById('qaEmailResult');
+  const toEmail = toEl ? toEl.value : '';
+  if (!toEmail) { if (result) result.innerHTML = '<div class="status-msg error">Enter an email address</div>'; return; }
+  if (result) result.innerHTML = '<div class="loading">Capturing desk snapshots and emailing...</div>';
+  const runId = qaLiveBegin('Desk Snapshot Email');
+  try {
+    const res = await api('/api/dashboard/qa/desk-snapshot', 'POST', { toEmail, runId });
+    if (res.emailed) { if (result) result.innerHTML = '<div class="status-msg success">Desk snapshot emailed (' + (res.shots || []).length + ' screenshots)!</div>'; }
+    else { if (result) result.innerHTML = '<div class="status-msg error">Failed: ' + (res.error || 'Unknown error') + '</div>'; }
+    await qaLiveFinish(!!(res && res.emailed));
+  } catch (e) { if (result) result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; await qaLiveFinish(false); }
+}
