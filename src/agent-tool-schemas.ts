@@ -78,7 +78,35 @@ export const qaAgentToolSchema = {
     spec: {
       type: "object",
       properties: {
-        pages: { type: "array", items: { type: "string" }, description: "Absolute http(s) URLs to audit; all on one origin, max 8. Required for qa.ux_audit." },
+        pages: {
+          type: "array",
+          items: {
+            anyOf: [
+              { type: "string" },
+              {
+                type: "object",
+                properties: {
+                  url: { type: "string" },
+                  steps: {
+                    type: "array",
+                    items: { type: "object", properties: { click: { type: "string" } }, required: ["click"] },
+                    description: "Clicks applied to the page before it is measured (max 5).",
+                  },
+                },
+                required: ["url"],
+              },
+            ],
+          },
+          description: "Pages to audit: absolute http(s) URLs on one origin, max 8; an entry may be { url, steps } to click through states first. Required for qa.ux_audit.",
+        },
+        crawl: {
+          type: "object",
+          properties: {
+            maxPages: { type: "integer", description: "Total pages including seeds (clamped 1-8)." },
+            maxDepth: { type: "integer", description: "Link depth from the seeds (clamped 0-2)." },
+          },
+          description: "Optional same-origin crawl: follow each audited page's links breadth-first and audit those pages too.",
+        },
         auth: {
           type: "object",
           properties: {

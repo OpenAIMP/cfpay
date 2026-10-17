@@ -472,7 +472,7 @@ export function qaCard(origin: string): AgentCard {
   return {
     name: "CFmail QA Agent",
     description:
-      "Runs browser checks against a URL and reports whether it loaded and whether expected text is present, with a screenshot. qa.check directs this Worker to load a caller-chosen http(s) URL, so it should be treated as a credentialed, outbound-capable operation rather than a read. qa.ux_audit runs the deterministic UX audit (WCAG contrast, target size, headings, layout, alt text) over a caller-supplied spec of pages on one origin, with optional header or localStorage auth for the target app.",
+      "Runs browser checks against a URL and reports whether it loaded and whether expected text is present, with a screenshot. qa.check directs this Worker to load a caller-chosen http(s) URL, so it should be treated as a credentialed, outbound-capable operation rather than a read. qa.ux_audit runs the deterministic UX audit (WCAG contrast, target size, headings, layout, alt text) over a caller-supplied spec of pages on one origin, with optional header or localStorage auth for the target app. The spec may also crawl same-origin links (breadth-first, capped) and apply per-page click steps before measuring.",
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_QA_RPC_PATH,
