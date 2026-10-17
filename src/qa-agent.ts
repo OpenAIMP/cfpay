@@ -3,6 +3,7 @@ import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence,
 import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mergeDiscoveredTabs } from "./tab-coverage";
 import { openProfileConnection, profileRowClear, profileRowGet, profileRowSet, profileSessionAlive } from "./browser-profile";
 import { A2A_ENDPOINTS, composeA2AEmail, runA2AEndpointTests, testA2AEndpoint } from "./a2a-test";
+import { printTestBody, printTestHtml, printTestSubject } from "./print-test";
 import type { A2ARow } from "./a2a-test";
 import type { BaselineResult, PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
@@ -34,11 +35,7 @@ export interface QACheckResult {
   error?: string;
 }
 
-/**
- * One live-view event for a QA run (issue #88): broadcast over the
- * agent WebSocket so the QA tab's panel can show the run working -
- * steps, verdicts, screenshots. Keyed by a caller-minted run id.
- */
+/** One live-view event for a QA run (issue #88), keyed by run id. */
 export interface QALiveEvent {
   seq: number;
   ts: string;
@@ -174,11 +171,7 @@ function uxProbeExpression(profile?: UxRuleProfile): string {
   })()`;
 }
 
-/**
- * Turn per-page probe measurements into findings for the generalized
- * audit (issue #94) - the same rules qaUxAudit computes for the
- * dashboard, plus design-token conformance. Pure.
- */
+/** Turn per-page probe measurements into audit findings (issue #94). Pure. */
 function summarizeUxProbes(
   probes: { view: string; data: any }[],
   rules: { minTargetPx: number; expectedButtonBg?: string },
@@ -302,11 +295,7 @@ function summarizeUxProbes(
   return findings;
 }
 
-/**
- * The slice of the CDP connection this agent uses. Naming the shape
- * keeps void-close mistakes visible to the compiler (a `close().catch`
- * on the real void method once compiled clean and threw at runtime).
- */
+/** The slice of the CDP connection this agent uses (typed so void-close mistakes surface). */
 interface CdpLike {
   send(method: string, params?: unknown, options?: { sessionId?: string }): Promise<unknown>;
   attachToTarget(targetId: string, options?: unknown): Promise<string>;
@@ -326,11 +315,7 @@ function describeBrowserFailure(err: unknown): string {
   // produced "Browser check failed: Could not open a browser session: ...".
   if (message.startsWith("Could not open a browser session")) return message;
   if (/did not return a WebSocket/i.test(message)) {
-    // States what is known and what to try, without asserting a cause that has
-    // not been established. The previous wording claimed "this is exhaustion",
-    // which is the leading explanation but was never confirmed - and a message
-    // that asserts a cause it cannot prove is worse than one that names the
-    // possibilities, because it stops the next person looking.
+    // State what is known without asserting an unproven cause.
     return (
       "Could not open a browser session. The browser binding is configured, so " +
       "treat this as a transient capacity refusal (concurrency or quota) rather " +
@@ -377,10 +362,8 @@ export class QAAgent extends Think<Env> {
     // This makes the email capability available for LLM-driven dispatch.
     const env = this.env as Env;
 
-    // Model-driven browser tools, guarded: creating them needs the
-    // BROWSER and LOADER bindings, and a throwing getTools() would take
-    // down every chat turn - an absent optional binding must simply
-    // mean fewer tools, never a failed boot.
+    // Model-driven browser tools, guarded: an absent optional binding
+    // means fewer tools, never a failed boot.
     let browserTools: Record<string, unknown> = {};
     if (env.BROWSER && env.LOADER) {
       try {
@@ -402,11 +385,7 @@ export class QAAgent extends Think<Env> {
       ...browserTools,
     };
   }
-  /**
-   * Open a Browser Rendering session, translating a refusal into
-   * something actionable. Retries once after a wait on a capacity
-   * refusal (see isCapacityRefusal); other errors surface at once.
-   */
+  /** Open a browser session; one retry after a wait on a capacity refusal. */
   private async openBrowserSession(env: Env): Promise<CdpLike> {
     const { connectBrowser } = await import("agents/browser");
     try {
@@ -426,12 +405,7 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-  /**
-   * Navigate to the dashboard, then seed its API key, then reload so
-   * init reads it. Order matters: localStorage is origin-scoped, so
-   * seeding on about:blank leaves checks asserting against the login
-   * page (the PR #74 bug).
-   */
+  /** Navigate, seed the API key, reload (order matters - PR #74). */
   private async navigateAndSeed(cdp: CdpLike, sessionId: string, origin: string, key: string): Promise<void> {
     await cdp.send("Page.navigate", { url: origin }, { sessionId });
     await new Promise((r) => setTimeout(r, 3000));
@@ -552,11 +526,7 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-  /**
-   * Record and broadcast one live-view event (issue #88). No-ops without a
-   * run id, and never throws: the live view is an observer, and an observer
-   * failure must not fail the check it is watching.
-   */
+  /** Record + broadcast one live-view event; never throws (an observer must not fail the check). */
   private emitLive(
     runId: string | undefined,
     ev: { kind: QALiveEvent["kind"]; label: string; detail?: string; ok?: boolean; skipped?: boolean; image?: string },
@@ -784,10 +754,8 @@ export class QAAgent extends Think<Env> {
           return { ok: false, tabs: results, error: detail };
         }
 
-        // DOM tab discovery (issue #102): every tab the dashboard
-        // renders joins the run - known tabs with their expectations,
-        // the rest verified generically - so new tabs gain coverage
-        // without a code change here.
+        // DOM tab discovery (issue #102): every rendered tab joins
+        // the run; unknown tabs are verified generically.
         const disc = (await cdp.send("Runtime.evaluate", { expression: `Array.from(document.querySelectorAll("[data-tab]")).map((el) => el.getAttribute("data-tab"))`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: string[] } } | null;
         const discovered = Array.isArray(disc?.result?.value) ? disc.result.value : [];
         tabsToTest = mergeDiscoveredTabs(tabsToTest, discovered);
@@ -1361,6 +1329,40 @@ export class QAAgent extends Think<Env> {
     }
     const rows = await runA2AEndpointTests(origin, apiKey);
     return { ok: rows.every((r) => r.ok), results: rows };
+  }
+
+  /**
+   * PDF pipeline test email (post-deploy coverage): print the
+   * canonical test page and email it as a PDF attachment - the same
+   * path the opportunity-hunt report uses.
+   */
+  @callable()
+  async qaPrintTestEmail(
+    toEmail: string,
+    runId?: string,
+  ): Promise<{ ok: boolean; emailed: boolean; error?: string }> {
+    const stamp = new Date().toISOString();
+    const printed = await this.qaPrintPdf(printTestHtml(stamp));
+    if (!printed.ok || !printed.pdfBase64) {
+      return { ok: false, emailed: false, error: printed.error || "PDF rendering failed" };
+    }
+    const { emailAgentStub } = await import("./email-tool");
+    const emailAgent = emailAgentStub(this.env as Env);
+    if (!emailAgent) return { ok: false, emailed: false, error: "Email agent unavailable" };
+    const sendResult = await emailAgent.sendThroughAgent({
+      to: toEmail,
+      subject: printTestSubject(stamp),
+      body: printTestBody(stamp),
+      attachments: [
+        { filename: `pdf-pipeline-test-${stamp.slice(0, 10)}.pdf`, type: "application/pdf", content: printed.pdfBase64 },
+      ],
+    });
+    this.emitLive(runId, { kind: "result", label: "PDF test email", ok: !!sendResult?.ok });
+    return {
+      ok: !!sendResult?.ok,
+      emailed: !!sendResult?.ok,
+      error: sendResult?.ok ? undefined : sendResult?.error || "The email agent refused the send.",
+    };
   }
 
   /** Render standalone HTML to a PDF (issue #135): Page.printToPDF on a data: URL. */

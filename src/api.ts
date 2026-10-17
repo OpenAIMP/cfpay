@@ -868,6 +868,10 @@ export function createApp() {
         apiKey: string,
         rpc?: string,
       ): Promise<{ ok: boolean; results: unknown[] }>;
+      qaPrintTestEmail(
+        toEmail: string,
+        runId?: string,
+      ): Promise<{ ok: boolean; emailed: boolean; error?: string }>;
       testEmailAttachmentUI(
         apiKey: string,
         toEmail: string,
@@ -1697,6 +1701,19 @@ export function createApp() {
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaA2AProbe(key, body.rpc as string | undefined);
     return jsonOr500(c, result, "qa/a2a-probe");
+  });
+
+  // PDF pipeline test email (post-deploy coverage): print the
+  // canonical test page and email it as a PDF attachment.
+  app.post("/api/dashboard/qa/print-test", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const toEmail = body.toEmail as string;
+    if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
+      return c.json({ error: "Valid toEmail required" }, 400);
+    }
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaPrintTestEmail(toEmail, body.runId as string | undefined);
+    return jsonOr500(c, result, "qa/print-test");
   });
 
   app.post("/api/dashboard/qa/browser-profile", requireAuth, async (c) => {

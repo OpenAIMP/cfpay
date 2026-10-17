@@ -1634,6 +1634,15 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("deskShowView('trading')");
   });
 
+  it("the PDF pipeline test is wired into post-deploy QA", () => {
+    const qa = read("src/qa-agent.ts");
+    const api = read("src/api.ts");
+    const smoke = read("scripts/qa-smoke.mjs");
+    expect(qa).toContain("qaPrintTestEmail");
+    expect(api).toContain('"/api/dashboard/qa/print-test"');
+    expect(smoke).toContain("PDF pipeline test email");
+  });
+
   it("the desk layout refinements are wired (issue #152)", () => {
     const pdata = read("public/public-data.js");
     const qa = read("src/qa-agent.ts");
