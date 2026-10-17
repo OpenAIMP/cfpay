@@ -557,14 +557,20 @@ function deskInitViews() {
     + '.desk-intro h3{margin-bottom:0.2rem !important;font-size:1rem;}'
     + '.desk-intro p{font-size:0.82rem !important;line-height:1.45 !important;margin-bottom:0.4rem !important;}'
     + '.desk-view>.card{margin-bottom:1rem;}'
-    + '@media (max-width:760px){.desk-shell{flex-direction:column;}.desk-nav{flex-direction:row;flex-wrap:wrap;position:static;}}';
+    + '.desk-duo{display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start;}'
+    + '.desk-duo>.card{margin-bottom:0;}'
+    + '.desk-logs-duo{display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start;margin-bottom:1rem;}'
+    + '.desk-logs-duo>.card{margin-bottom:0;}'
+    + '.desk-rail:empty{display:none;}'
+    + '#publicDesk:has(> .desk-rail:empty){grid-template-columns:minmax(0,1fr);}'
+    + '@media (max-width:900px){.desk-duo,.desk-logs-duo{grid-template-columns:1fr;}}@media (max-width:760px){.desk-shell{flex-direction:column;}.desk-nav{flex-direction:row;flex-wrap:wrap;position:static;}}';
   document.head.appendChild(style);
   const shell = document.createElement('div');
   shell.id = 'deskShell';
   shell.className = 'desk-shell';
   const navBtn = (k, label) => '<button class="btn desk-nav-btn' + (k === 'trading' ? ' active' : '') + '" data-view="' + k + '" onclick="deskShowView(\'' + k + '\')">' + label + '</button>';
   shell.innerHTML = '<nav class="desk-nav">'
-    + navBtn('trading', 'Trading') + navBtn('questions', 'Questions') + navBtn('watchlist', 'Watchlist') + navBtn('portfolio', 'Portfolio') + navBtn('tools', 'Tools') + navBtn('logs', 'Logs') + navBtn('endpoints', 'Endpoints') + navBtn('status', 'Status')
+    + navBtn('trading', 'Trading') + navBtn('questions', 'Questions') + navBtn('watchlist', 'Watchlist') + navBtn('portfolio', 'Portfolio') + navBtn('chain', 'Option Chain') + navBtn('tools', 'Tools') + navBtn('logs', 'Logs') + navBtn('endpoints', 'Endpoints') + navBtn('status', 'Status')
     + '</nav><div class="desk-views">'
     + '<section class="desk-view" data-view="trading"></section>'
     + '<section class="desk-view" data-view="questions" style="display:none;"></section>'
@@ -574,9 +580,11 @@ function deskInitViews() {
     + '<input type="text" placeholder="Filter tools..." oninput="deskFilterTools(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.5rem;color:var(--text);font-size:0.85rem;box-sizing:border-box;margin-bottom:0.6rem;">'
     + '<div id="deskToolsList"><span style="color:var(--muted);font-size:0.8rem;">Loading the catalogue...</span></div></div></section>'
     + '<section class="desk-view" data-view="watchlist" style="display:none;">'
-    + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Watchlist</h3><div id="deskWatchHost"></div></div></section>'
+    + '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;"><h3 style="font-size:1rem;">Watchlist</h3><button class="btn" style="padding:0.25rem 0.6rem;" onclick="deskLoadQuotes()">Refresh</button></div><div id="deskWatchHost" style="margin-top:0.5rem;"></div></div></section>'
+    + '<section class="desk-view" data-view="chain" style="display:none;"></section>'
     + '<section class="desk-view" data-view="portfolio" style="display:none;"></section>'
     + '<section class="desk-view" data-view="logs" style="display:none;">'
+    + '<div class="desk-logs-duo" id="deskLogsDuo"></div>'
     + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Logs - model &amp; MCP detail</h3><div id="deskLogsList"></div></div></section>'
     + '<section class="desk-view" data-view="endpoints" style="display:none;">'
     + '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;"><h3 style="font-size:1rem;">A2A endpoint tests</h3>'
@@ -634,7 +642,7 @@ function deskInitViews() {
   }
 
   // Chain CSV download (issue #152), beside Load chain.
-  const chainBtn = document.querySelector('#publicDesk button[onclick="deskLoadChain()"]');
+  const chainBtn = document.querySelector('button[onclick="deskLoadChain()"]');
   if (chainBtn && !document.getElementById('deskChainCsv')) {
     const csvBtn = document.createElement('button');
     csvBtn.className = 'btn';
@@ -642,6 +650,29 @@ function deskInitViews() {
     csvBtn.textContent = 'Download CSV';
     csvBtn.setAttribute('onclick', 'deskDownloadChainCsv()');
     chainBtn.after(csvBtn);
+  }
+
+  // Option chain becomes its own nav view; Autopilot runs and Trade
+  // approvals become side-by-side panes at the top of Logs (issue #159).
+  moveCardOf('deskChain', 'chain');
+  const logsDuo = document.getElementById('deskLogsDuo');
+  const moveCardTo = (id, host) => {
+    const anchor = document.getElementById(id);
+    const card = anchor && anchor.closest('.card');
+    if (card && host) host.appendChild(card);
+  };
+  moveCardTo('deskRuns', logsDuo);
+  const tradesCard = document.getElementById('publicTradesCard');
+  if (tradesCard && logsDuo) logsDuo.appendChild(tradesCard);
+  // Composer + hunt side by side, equally sized (issue #159).
+  const mainCol = document.querySelector('#publicDesk .desk-main');
+  const huntCardEl = document.getElementById('huntCard');
+  if (mainCol && chatCard && huntCardEl) {
+    const duo = document.createElement('div');
+    duo.className = 'desk-duo';
+    mainCol.insertBefore(duo, chatCard);
+    duo.appendChild(chatCard);
+    duo.appendChild(huntCardEl);
   }
 
   // The per-answer model/tools meta line is a log line, not trading UI.
