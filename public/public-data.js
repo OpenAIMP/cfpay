@@ -460,6 +460,7 @@ function deskShowView(name) {
   if (name === 'tools') deskSyncToolsView();
   if (name === 'logs') deskRenderLogs();
   if (name === 'endpoints') deskRunA2ATests(true);
+  if (name === 'orchestrate') deskLoadOrchestrateJobs();
   if (name === 'trading') deskSyncQuestionsClone();
   deskUpdateApprovalNotice();
 }
@@ -576,7 +577,7 @@ function deskInitViews() {
   shell.className = 'desk-shell';
   const navBtn = (k, label) => '<button class="btn desk-nav-btn' + (k === 'trading' ? ' active' : '') + '" data-view="' + k + '" onclick="deskShowView(\'' + k + '\')">' + label + '</button>';
   shell.innerHTML = '<nav class="desk-nav">'
-    + navBtn('trading', 'Trading') + navBtn('hunt', 'Opportunity Hunt') + navBtn('questions', 'Questions') + navBtn('watchlist', 'Watchlist') + navBtn('portfolio', 'Portfolio') + navBtn('chain', 'Option Chain') + navBtn('tools', 'Tools') + navBtn('logs', 'Logs') + navBtn('endpoints', 'Endpoints') + navBtn('status', 'Status')
+    + navBtn('trading', 'Trading') + navBtn('hunt', 'Opportunity Hunt') + navBtn('questions', 'Questions') + navBtn('watchlist', 'Watchlist') + navBtn('portfolio', 'Portfolio') + navBtn('chain', 'Option Chain') + navBtn('tools', 'Tools') + navBtn('orchestrate', 'Orchestrate') + navBtn('logs', 'Logs') + navBtn('endpoints', 'Endpoints') + navBtn('status', 'Status')
     + '</nav><div class="desk-views">'
     + '<section class="desk-view" data-view="trading"></section>'
     + '<section class="desk-view" data-view="questions" style="display:none;"></section>'
@@ -599,6 +600,13 @@ function deskInitViews() {
     + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin:0.4rem 0;">Every agent\'s A2A surface, probed the way an external caller would: card served, 401 without auth, snapshot reply with auth. Read-only. Runs automatically when you open this view; the same probes go out in the A2A test email.</p>'
     + '<div id="a2aTestTable"><span style="color:var(--muted);font-size:0.8rem;">Not tested yet.</span></div></div>'
     + '<div id="a2aCards"></div></section>'
+    + '<section class="desk-view" data-view="orchestrate" style="display:none;">'
+    + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Orchestrate</h3>'
+    + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin:0 0 0.5rem;">Give the orchestrator a goal. It plans steps across the other agents, runs independent steps in parallel, retries a failed step once, and merges one report. Jobs are saved; browser-QA steps can take minutes.</p>'
+    + '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;"><input id="deskOrchGoal" type="text" placeholder="e.g. Summarize every agent\'s state and post it to Slack" style="flex:1;min-width:14rem;">'
+    + '<button class="btn" onclick="deskOrchestrateRun()">Run goal</button></div>'
+    + '<div id="deskOrchResult" style="margin-top:0.6rem;"></div></div>'
+    + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Jobs</h3><div id="deskOrchJobs"><span style="color:var(--muted);font-size:0.8rem;">No jobs loaded yet.</span></div></div></section>'
     + '<section class="desk-view" data-view="status" style="display:none;"></section>'
     + '</div>';
   const intro = panel.querySelector(':scope > .card');
@@ -617,7 +625,7 @@ function deskInitViews() {
       + '<button class="btn" onclick="deskSearchRun(\'ask\')">Ask</button>'
       + '<button class="btn" onclick="deskSearchRun(\'query\')">Chunks</button></div>'
       + '<div id="deskSearchResult" style="margin-top:0.6rem;"></div>';
-    toolsSection.appendChild(searchCard);
+    toolsSection.insertBefore(searchCard, toolsSection.firstChild);
   }
   // The host MUST be section-scoped: the nav buttons carry the same
   // data-view values and precede the sections in the shell markup, so
@@ -1250,3 +1258,51 @@ async function deskSearchRun(mode) {
   }
 }
 window.deskSearchRun = deskSearchRun;
+
+
+// Orchestration view (issue #180): run a goal, list jobs.
+async function deskOrchestrateRun() {
+  const input = document.getElementById('deskOrchGoal');
+  const host = document.getElementById('deskOrchResult');
+  const goal = (input && input.value || '').trim();
+  if (!host) return;
+  if (!goal) { host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Type a goal first.</span>'; return; }
+  host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Planning and running - this can take minutes when QA steps are involved...</span>';
+  try {
+    const job = await api('/api/dashboard/orchestrate', 'POST', { goal });
+    if (job && job.error) throw new Error(job.error);
+    host.innerHTML = deskOrchJobHtml(job, true);
+    deskLoadOrchestrateJobs();
+  } catch (e) {
+    host.innerHTML = '<span class="badge-failed">Job failed</span> <span style="font-size:0.8rem;">' + escapeHtml(String(e.message || e)) + '</span>';
+  }
+}
+window.deskOrchestrateRun = deskOrchestrateRun;
+
+function deskOrchJobHtml(job, open) {
+  if (!job) return '';
+  const steps = (job.plan || []).map((s) => {
+    const o = (job.outcomes || []).find((x) => x.stepId === s.id);
+    const mark = !o ? '\u00b7' : o.skipped ? '\u2013' : o.ok ? '\u2713' : '\u2717';
+    return '<div style="font-size:0.78rem;margin-top:0.2rem;">' + mark + ' ' + escapeHtml(s.agent) + ' / ' + escapeHtml(s.operation)
+      + (o && o.error ? ' <span style="color:var(--muted);">' + escapeHtml(o.error) + '</span>' : '') + '</div>';
+  }).join('');
+  return '<div style="border-top:1px solid var(--border);margin-top:0.5rem;padding-top:0.5rem;">'
+    + '<div style="font-size:0.84rem;"><strong>' + escapeHtml(job.id) + '</strong> \u00b7 ' + escapeHtml(job.status) + ' \u00b7 ' + escapeHtml(job.goal) + '</div>'
+    + steps
+    + (job.result ? '<div style="font-size:0.82rem;line-height:1.55;margin-top:0.45rem;white-space:pre-wrap;">' + escapeHtml(job.result.slice(0, open ? 4000 : 600)) + '</div>' : '')
+    + '</div>';
+}
+
+async function deskLoadOrchestrateJobs() {
+  const host = document.getElementById('deskOrchJobs');
+  if (!host) return;
+  try {
+    const r = await api('/api/dashboard/orchestrate/jobs', 'GET');
+    const jobs = (r && r.jobs) || [];
+    host.innerHTML = jobs.length ? jobs.map((j) => deskOrchJobHtml(j, false)).join('') : '<span style="color:var(--muted);font-size:0.8rem;">No jobs yet. Run a goal above.</span>';
+  } catch (e) {
+    host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Jobs unavailable: ' + escapeHtml(String(e.message || e)) + '</span>';
+  }
+}
+window.deskLoadOrchestrateJobs = deskLoadOrchestrateJobs;
