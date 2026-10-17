@@ -244,7 +244,16 @@ async function fileSelfHealIssues() {
   if (String(process.env.QA_SELF_HEAL || "").toLowerCase() === "false") return;
   const token = process.env.GITHUB_TOKEN || "";
   const repo = process.env.GITHUB_REPOSITORY || "";
-  if (!token || !repo) return;
+  if (!token || !repo) {
+    // Inert outside Actions by design - but INSIDE Actions a missing
+    // token is a workflow misconfiguration, and silence hid exactly
+    // that once (run 39040787456: the qa-smoke step never passed
+    // GITHUB_TOKEN, and the workflow's permissions are read-only).
+    if (process.env.GITHUB_ACTIONS === "true" && !token) {
+      console.log("  [SELF-HEAL] GITHUB_TOKEN is not in the qa-smoke step env - add 'GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}' to the step and 'issues: write' to the job permissions to enable issue filing.");
+    }
+    return;
+  }
   const runUrl = process.env.GITHUB_RUN_ID
     ? `${process.env.GITHUB_SERVER_URL || "https://github.com"}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`
     : "";
