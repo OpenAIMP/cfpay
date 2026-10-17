@@ -30,6 +30,8 @@ import {
   A2A_VOICE_RPC_PATH,
   A2A_SEARCH_CARD_PATH,
   A2A_SEARCH_RPC_PATH,
+  A2A_ORCHESTRATOR_CARD_PATH,
+  A2A_ORCHESTRATOR_RPC_PATH,
   A2A_RPC_PATH,
   a2aAuthorised,
   cfmailCard,
@@ -65,6 +67,7 @@ export { QAAgent } from "./qa-agent";
 export { ChatAgent } from "./chat-agent";
 export { VoiceAgent } from "./voice-agent";
 export { SearchAgent } from "./search-agent";
+export { OrchestratorAgent } from "./orchestrator-agent";
 export { TradeWorkflow } from "./trade-workflow";
 
 const app = createApp();
@@ -395,6 +398,43 @@ export default {
       const sStub = env.SEARCH_AGENT.get(env.SEARCH_AGENT.idFromName("search")) as any;
       try {
         const outcome = await sStub.handleA2A(sbody, url.origin);
+        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (outcome.streamed) {
+          const events = Array.isArray(outcome.events) ? outcome.events : [];
+          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+        }
+        return new Response(JSON.stringify(outcome.result), {
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+      }
+    }
+    // Orchestrator (issue #180): its own card and its own /a2a endpoint.
+    if (url.pathname === A2A_ORCHESTRATOR_CARD_PATH) {
+      const { orchestratorCard } = await import("./a2a");
+      return new Response(JSON.stringify(orchestratorCard(url.origin)), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" },
+      });
+    }
+
+    if (url.pathname === A2A_ORCHESTRATOR_RPC_PATH) {
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key" },
+        });
+      }
+      if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      if (!a2aAuthorised(request, env)) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+      }
+      let obody: unknown;
+      try { obody = await request.json(); } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+      }
+      const oStub = env.ORCHESTRATOR_AGENT.get(env.ORCHESTRATOR_AGENT.idFromName("orchestrator")) as any;
+      try {
+        const outcome = await oStub.handleA2A(obody, url.origin);
         if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
