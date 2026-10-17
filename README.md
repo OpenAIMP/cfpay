@@ -64,6 +64,8 @@ A production-grade, fully agentic solution that:
 2. Request URL: `https://pay.openaimp.com/webhooks/slack`
 3. Uses `SLACK_WEBHOOK_SECRET`, falling back to `SLACK_SIGNING_SECRET`
 
+The complete Slack requirements - every secret, the bot-token scopes (`chat:write`, plus `files:write` for uploads), and the QA file mirror's channel - are documented in `.github/SECRETS.md` under "Slack integration requirements (complete)". In short: inbound events are verified with the signing secrets; outbound messages **and file uploads** use the bot token (Slack's incoming webhook, `SLACK_WEBHOOK_URL`, is text-only and cannot carry attachments); and the QA screenshots/PDF mirror posts to the channel named by `SLACK_QA_CHANNEL_ID`, which the bot must be a member of.
+
 Webhooks are verified by signature before being forwarded to a per-entity agent Durable Object (one agent per GitHub repo, Stripe customer, or Slack channel). The agent records the event, generates an AI analysis, and — for Slack slash commands and `response_url` payloads — replies with the analysis.
 
 ## Routing & Authentication

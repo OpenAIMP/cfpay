@@ -24,6 +24,7 @@ This project uses **GitHub Environments** to manage secrets for CI/CD deployment
 | `SLACK_BOT_TOKEN` | Bot user OAuth token, used to post messages to Slack | Slack App → OAuth & Permissions → Bot User OAuth Token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | App-level token for Socket Mode connections | Slack App → Basic Information → App-Level Tokens (scope `connections:write`, `xapp-...`) |
 | `SLACK_CLIENT_ID` | OAuth client ID used by the `/slack/install` redirect | Slack App → Basic Information → App Credentials → Client ID |
+| `SLACK_QA_CHANNEL_ID` | Channel that receives QA file posts (report/desk screenshots, hunt report PDF) via the bot's file-upload API | Slack: open the channel → About → **Channel ID** (bottom); the bot must be a member of the channel |
 
 ### Cloudflare API Token Permissions
 
@@ -93,6 +94,32 @@ Note: `wrangler secret put SLACK_WEBHOOK_URL <url>` passing the URL as an
 argument can mangle it in some shells; piping it is safer.
 
 Set it as a secret rather than a `wrangler.jsonc` var so the URL is not committed.
+
+## Slack integration requirements (complete)
+
+Slack is used in three distinct ways, and each has its own credential - they are not interchangeable:
+
+| Mechanism | Direction | Credential | What it can do |
+|---|---|---|---|
+| Events API + webhooks | Inbound (Slack → this app) | `SLACK_SIGNING_SECRET` (endpoint `/slack/events`), `SLACK_WEBHOOK_SECRET` (endpoint `/webhooks/slack`) | Receive messages, slash commands, and events; signatures are verified before anything is forwarded to an agent |
+| Bot Web API | Outbound (this app → Slack) | `SLACK_BOT_TOKEN` (`xoxb-...`) | Post messages (`chat.postMessage`) and **upload files** (`files.getUploadURLExternal` → upload → `files.completeUploadExternal`) |
+| Incoming webhook | Outbound, text only | `SLACK_WEBHOOK_URL` | Post plain notifications (the dashboard's "Send to Slack" button, webhook-received alerts). **It cannot carry file attachments** - Slack offers no upload path on a webhook |
+
+Plus, for installs and sockets: `SLACK_CLIENT_ID` (the `/slack/install` OAuth redirect) and `SLACK_APP_TOKEN` (Socket Mode, scope `connections:write`).
+
+**Bot token scopes** (Slack App → OAuth & Permissions → Bot Token Scopes). Required for everything the app sends:
+
+- `chat:write` - post messages, including the headers that accompany file posts.
+- `files:write` - upload files. **Without this scope, uploads fail with `missing_scope`** and the QA results report `slack` posted 0 with the integration shown as configured. Adding a scope requires reinstalling the app to the workspace (Slack prompts for it on the OAuth page).
+
+**The QA file mirror** (`SLACK_QA_CHANNEL_ID`): the post-deploy QA report screenshots, the desk-snapshot screenshots, and the opportunity-hunt report PDF are mirrored to Slack as file uploads through the bot API (see `src/slack-files.ts`). Requirements:
+
+1. `SLACK_BOT_TOKEN` set (above), with `chat:write` + `files:write`.
+2. `SLACK_QA_CHANNEL_ID` set to the destination channel's ID.
+3. **The bot must be a member of that channel** - invite the app (`/invite @cfmail` in the channel). Uploads to a channel the bot has not joined fail with `not_in_channel`.
+
+All Slack values are GitHub `PROD` environment secrets; deploy.yml's "Set production Worker secrets" step pushes each one to the Worker (including `SLACK_QA_CHANNEL_ID`, wired 2026-10-17). When `SLACK_QA_CHANNEL_ID` is unset, the mirror reports "not configured" in the QA emails, the API results, and the post-deploy log instead of pretending to post. Verify an end-to-end post: QA tab → **Email Desk Snapshot**, then check the channel for the five screenshots and the email body for the "also posted to Slack" line; the post-deploy summary email's report/snapshot lines likewise end with `slack=N file(s)`.
+
 
 ## Optional: Card Payments (Stripe)
 
