@@ -1,0 +1,135 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cfmail-agent-preview",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CfmailAgent",
+        "class_name": "CfmailAgentSQLite"
+      },
+      {
+        "name": "PAYMENTS_AGENT",
+        "class_name": "PaymentsAgent"
+      },
+      {
+        "name": "EMAIL_AGENT",
+        "class_name": "EmailAgent"
+      },
+      {
+        "name": "WEBHOOK_AGENT",
+        "class_name": "WebhookAgent"
+      },
+      {
+        "name": "SLACK_AGENT",
+        "class_name": "SlackAgent"
+      },
+      {
+        "name": "QA_AGENT",
+        "class_name": "QAAgent"
+      },
+      {
+        "name": "CHAT_AGENT",
+        "class_name": "ChatAgent"
+      },
+      {
+        "name": "VOICE_AGENT",
+        "class_name": "VoiceAgent"
+      },
+      {
+        "name": "SEARCH_AGENT",
+        "class_name": "SearchAgent"
+      },
+      {
+        "name": "ORCHESTRATOR_AGENT",
+        "class_name": "OrchestratorAgent"
+      }
+    ]
+  },
+  "ai_search_namespaces": [
+    {
+      "binding": "AI_SEARCH",
+      "namespace": "default",
+      "remote": true
+    }
+  ],
+  "migrations": [
+    { "tag": "v1", "new_classes": ["CfmailAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] },
+    { "tag": "v3", "new_sqlite_classes": ["PaymentsAgent"] },
+{ "tag": "v4", "new_sqlite_classes": ["EmailAgent"] },
+    { "tag": "v5", "new_sqlite_classes": ["WebhookAgent"] },
+    { "tag": "v6", "new_sqlite_classes": ["SlackAgent"] },
+  { "tag": "v7", "new_sqlite_classes": ["QAAgent"] },
+    { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] },
+    { "tag": "v9", "new_sqlite_classes": ["VoiceAgent"] },
+    { "tag": "v10", "new_sqlite_classes": ["SearchAgent"] },
+    { "tag": "v11", "new_sqlite_classes": ["OrchestratorAgent"] }
+  ],
+  "workflows": [
+    {
+      "name": "trade-workflow",
+      "binding": "TRADE_WORKFLOW",
+      "class_name": "TradeWorkflow"
+    }
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "remote": true
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  // Preview deploy: NO routes block - the production custom domain
+  // (pay.openaimp.com) can attach to only one Worker, so the preview
+  // Worker must not try to claim it. Keep the rest in sync with
+  // wrangler.jsonc when bindings or migrations change.
+  "vars": {
+    "EMAIL_DOMAIN": "cfmail.openaimp.com",
+    "PAYMENT_DESCRIPTION": "Agent service request via cfmail",
+    "STRIPE_CONFIG": "{\"priceId\":\"price_1UOLlHE1XoNBvuWFNifxjkDG\",\"amountCents\":100,\"currency\":\"usd\"}",
+    "PAY_TO_ADDRESS": "0xF52231E3f19c3a1f9c14C1cE4d1c962C0eCff462",
+    "X402_FACILITATOR_URL": "https://x402.org/facilitator",
+    "APP_BASE_URL": "https://pay.openaimp.com",
+    "PAYMENT_CONFIG": "{\"networks\":{\"eip155:8453\":{\"chainId\":\"0x2105\",\"name\":\"Base\",\"usdc\":\"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"},\"eip155:84532\":{\"chainId\":\"0x14a34\",\"name\":\"Base Sepolia\",\"usdc\":\"0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"},\"eip155:11155111\":{\"chainId\":\"0xaa36a7\",\"name\":\"Ethereum Sepolia\",\"usdc\":\"0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"}}}"
+  }
+,
+  "browser": {
+    "binding": "BROWSER"
+  },
+  // NO worker_loaders binding, deliberately.
+  //
+  // It looked like the right thing to add: createBrowserTools() spawns its
+  // sandbox through this binding, so the model-driven browser tools need it.
+  // But Dynamic Workers require a PAID plan - "In order to use Dynamic Workers,
+  // you must switch to a paid plan at ... [code: 10195]" - and this account is
+  // on the Free plan, so declaring it made every production deploy fail at the
+  // Cloudflare API.
+  //
+  // `wrangler deploy --dry-run` does NOT catch this: it validates the build and
+  // the binding's shape, not the account's entitlement to use it. The failure
+  // only appears at the real API call.
+  //
+  // Nothing is lost for now. QAAgent.getTools() guards on `env.BROWSER &&
+  // env.LOADER` and skips the browser tools when the binding is absent, so the
+  // deterministic CDP checks - which are what the QA suite actually relies on -
+  // are unaffected. Add this binding back if and when the account moves to a
+  // paid plan.
+  "browser": {
+    "binding": "BROWSER"
+  }
+}
