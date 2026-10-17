@@ -1114,7 +1114,8 @@ describe("browser teardown cannot fail a QA run", () => {
     // Every browser teardown goes through the helper. Counted exactly, so both a
     // new raw close() and a removed release are caught.
     const uses = qa.split("closeConnectionQuietly(").length - 1;
-    expect(uses, "every browser teardown must use the helper").toBe(6);
+    // Seven teardowns: the six deterministic flows plus qaInvestigate (issue #102).
+    expect(uses, "every browser teardown must use the helper").toBe(7);
   });
 
   it("keeps the report's tab call inside a guard", () => {
@@ -1313,10 +1314,11 @@ describe("the QA live-view panel stays wired (issue #88)", () => {
     // never arrive through the connection the checks use. Frames are
     // broadcast-only (never buffered or sequenced - either would break the
     // replay buffer or the panel's dedupe), and the stream is started and
-    // stopped beside the session teardown in all four browser flows.
+    // stopped beside the session teardown in all five browser flows (the
+    // four deterministic ones plus the investigator, issue #102).
     expect(qa).toContain("private startFrameStream(");
-    expect(qa.split("stopFrames = this.startFrameStream").length - 1).toBe(4);
-    expect(qa.split("stopFrames();").length - 1).toBe(4);
+    expect(qa.split("stopFrames = this.startFrameStream").length - 1).toBe(5);
+    expect(qa.split("stopFrames();").length - 1).toBe(5);
     const start = qa.indexOf("private emitLive(");
     const block = qa.slice(start, start + 2600);
     expect(block).toContain('ev.kind === "frame"');
@@ -1580,5 +1582,29 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain('id="publicAutopilot"');
     expect(idx).toContain("renderAutopilotRun(res.autopilot)");
     expect(idx).toContain("autopilot: useAutopilot");
+  });
+});
+
+describe("the agentic investigation stays wired (issue #102)", () => {
+  const qa = read("src/qa-agent.ts");
+  const api = read("src/api.ts");
+  const schemas = read("src/agent-tool-schemas.ts");
+  const inv = read("src/investigate.ts");
+
+  it("the model drives hand-rolled CDP tools, not the LOADER path", () => {
+    expect(qa).toContain("qaInvestigate");
+    expect(qa).toContain("investigateToolSpecs()");
+    expect(qa).toContain("pageStateExpression()");
+    // The investigation is credential-free: it must never touch the
+    // dashboard key (qaUxAudit's seeding pattern stays out of it).
+    expect(inv).toContain("LOADER");
+    expect(inv).toContain("INVESTIGATE_MAX_CALLS");
+  });
+
+  it("is reachable from the route, the tool schema, and the dispatch", () => {
+    expect(api).toContain('"/api/dashboard/qa/investigate"');
+    expect(api).toContain("qaInvestigate(question, url, runId)");
+    expect(schemas).toContain('"qa.investigate"');
+    expect(qa).toContain('case "qa.investigate"');
   });
 });
