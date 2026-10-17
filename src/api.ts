@@ -864,6 +864,10 @@ export function createApp() {
         toEmail: string,
         runId?: string,
       ): Promise<{ ok: boolean; emailed: boolean; results: unknown[]; error?: string }>;
+      qaA2AProbe(
+        apiKey: string,
+        rpc?: string,
+      ): Promise<{ ok: boolean; results: unknown[] }>;
       testEmailAttachmentUI(
         apiKey: string,
         toEmail: string,
@@ -1678,6 +1682,21 @@ export function createApp() {
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaA2ATestEmail(key, toEmail, body.runId as string | undefined);
     return jsonOr500(c, result, "qa/a2a-test");
+  });
+
+  // The A2A probes without the email (issue #152): the Endpoints
+  // view's data source. Body { rpc } tests one surface; empty = all.
+  app.post("/api/dashboard/qa/a2a-probe", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const presented = c.req.header("X-API-Key") || "";
+    const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const key = presented || auth || undefined;
+    if (!key) {
+      return c.json({ error: "API key required" }, 401);
+    }
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaA2AProbe(key, body.rpc as string | undefined);
+    return jsonOr500(c, result, "qa/a2a-probe");
   });
 
   app.post("/api/dashboard/qa/browser-profile", requireAuth, async (c) => {
