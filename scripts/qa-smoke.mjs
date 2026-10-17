@@ -841,10 +841,16 @@ async function runSections() {
         operation: "slack.post",
         text: `Post-deploy check (${new Date().toISOString()}): slack.post over A2A is live.`,
       });
-      const pd = replyData(p.json);
-      const postOk = p.status === 200 && pd?.ok === true;
-      console.log(`      ${postOk ? "ok  " : "BAD "} slack.post write (via=${pd?.via || "?"})`);
-      if (!postOk) bad.push(`slack.post: ${pd?.error || `status=${p.status}`}`);
+      // Over HTTP the reply Message carries only its text part - the
+      // structured outcome travels as a separate artifact event the
+      // non-streamed response does not include (issue #201). The
+      // verdict therefore lives in the reply TEXT ("Posted to
+      // Slack..." vs "Slack post failed: ..."), and the text is what
+      // the failure reports, so the reason is never lost again.
+      const pText = replyText(p.json);
+      const postOk = p.status === 200 && pText.includes("Posted to Slack");
+      console.log(`      ${postOk ? "ok  " : "BAD "} slack.post write (${pText.slice(0, 90) || `status=${p.status}`})`);
+      if (!postOk) bad.push(`slack.post: ${pText.slice(0, 200) || `status=${p.status}`}`);
     }
     record(
       "agent A2A operations answer (all agents)",
