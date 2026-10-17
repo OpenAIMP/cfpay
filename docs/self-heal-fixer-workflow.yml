@@ -1,0 +1,85 @@
+# Self-heal fixer — GitHub Actions edition (issue #195).
+#
+# INSTALL (owner, via the GitHub web UI — the assistant's integration
+# cannot write workflow files):
+#   1. Add the repository secret ANTHROPIC_API_KEY (Settings → Secrets
+#      and variables → Actions).
+#   2. Create .github/workflows/self-heal-fixer.yml with exactly this
+#      content (this file is the versioned template; the live copy
+#      lives under .github/workflows/).
+#
+# Two fixers watch the same [QA self-heal] issues — this one and the
+# Muse cron fixer. They coordinate through the issue itself: before
+# working, a fixer posts a claim comment; the other side skips a
+# claimed issue (claims go stale after 2 hours) and anything with a
+# fix PR or an open self-heal/<issue#>- branch. First to claim wins.
+
+name: Self-heal Fixer
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  fix:
+    name: Attempt a self-heal fix
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'issues' || startsWith(github.event.issue.title, '[QA self-heal]')
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run the fixer agent
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 60"
+          prompt: |
+            You are the GitHub Actions self-heal fixer for this repository (issue #195).
+            A second fixer (in Muse) watches the same issues; coordinate through
+            the issues themselves, as described below. Work at most ONE issue.
+
+            1. Find candidates: open issues whose title starts with "[QA self-heal] ",
+               oldest first (use `gh issue list --state open --limit 100 --json number,title,createdAt`).
+               When this run was triggered by an issue event, start with that issue.
+            2. Skip an issue when ANY of these hold:
+               - a comment on it contains "Fix PR:";
+               - an open PR exists whose head branch starts with "self-heal/<issue#>-"
+                 (`gh pr list --state open --json headRefName`);
+               - a comment containing "Fix claimed by" was posted within the last 2 hours.
+            3. Claim before working: post a comment "Fix claimed by GitHub Actions fixer."
+               (`gh issue comment <n> --body "..."`). Then re-check once: if another claim
+               predates yours, stand down.
+            4. Triage from the issue body (failure detail + QAAgent diagnosis):
+               - ENVIRONMENTAL (browser capacity, Workers AI neuron exhaustion / AiError 4006,
+                 provider transients): comment "Triaged: ENVIRONMENTAL — <reason>. No code
+                 change will fix this; the issue auto-closes when the section passes." Stop.
+               - NEEDS-OWNER (a dashboard step, a secret, a policy decision): comment
+                 "Triaged: NEEDS-OWNER — <exactly what the owner must do>." Stop.
+               - CODE (a repo defect): proceed.
+            5. Fix (CODE only): reproduce the root cause from the code; state it in one
+               sentence; make the MINIMAL fix on branch "self-heal/<issue#>-<short-slug>".
+               Gates, all green before pushing: `npx tsc --noEmit`, `npm test`,
+               `node --check` for any plain-JS file. Push the branch and open a PR titled
+               "Self-heal fix for #<issue#>: <summary>" whose body gives the root cause,
+               the fix, and the gate results. Comment on the issue: "Fix PR: <url>".
+            6. NEVER merge a PR. The human merge is the designed gate; after it, the
+               next deploy's post-deploy QA auto-closes the issue when the section passes.
