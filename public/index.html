@@ -1775,6 +1775,7 @@ async function loadStats() {
       const container = document.getElementById('publicMessages');
       const msg = (typeof preset === 'string' ? preset : input.value).trim();
       if (!msg) return;
+      if (window.deskShowView) deskShowView('trading');
       input.value = '';
       const autopilotEl = document.getElementById('publicAutopilot');
       const useAutopilot = !!(autopilotEl && autopilotEl.checked);
@@ -1812,10 +1813,13 @@ async function loadStats() {
             container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
               + renderAutopilotRun(res.autopilot) + '</div>';
           }
-          // Inline the trace with the answer so a claim can be traced to a result.
+          // The full trace lives in the Logs view (issue #133); the chat
+          // carries a one-line summary + jump link, so a claim can still
+          // be traced to its result in one click.
           const answerIdx = pubData.push({ question: msg, model: res.model || null, finishReason: res.finishReason || null, trace }) - 1;
+          deskLogPush();
           container.innerHTML += '<div class="chat-msg assistant" style="background:transparent;border:0;padding:0;">'
-            + renderToolTrace(trace, answerIdx) + '</div>';
+            + deskTraceLink(answerIdx) + '</div>';
           // The answer may have created a trade proposal; surface it.
           loadPublicTrades();
         }
