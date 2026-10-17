@@ -460,6 +460,7 @@ function deskShowView(name) {
   if (name === 'tools') deskSyncToolsView();
   if (name === 'logs') deskRenderLogs();
   if (name === 'endpoints') deskRunA2ATests(true);
+  if (name === 'trading') deskSyncQuestionsClone();
   deskUpdateApprovalNotice();
 }
 
@@ -572,7 +573,7 @@ function deskInitViews() {
   shell.className = 'desk-shell';
   const navBtn = (k, label) => '<button class="btn desk-nav-btn' + (k === 'trading' ? ' active' : '') + '" data-view="' + k + '" onclick="deskShowView(\'' + k + '\')">' + label + '</button>';
   shell.innerHTML = '<nav class="desk-nav">'
-    + navBtn('trading', 'Trading') + navBtn('questions', 'Questions') + navBtn('watchlist', 'Watchlist') + navBtn('portfolio', 'Portfolio') + navBtn('chain', 'Option Chain') + navBtn('tools', 'Tools') + navBtn('logs', 'Logs') + navBtn('endpoints', 'Endpoints') + navBtn('status', 'Status')
+    + navBtn('trading', 'Trading') + navBtn('hunt', 'Opportunity Hunt') + navBtn('questions', 'Questions') + navBtn('watchlist', 'Watchlist') + navBtn('portfolio', 'Portfolio') + navBtn('chain', 'Option Chain') + navBtn('tools', 'Tools') + navBtn('logs', 'Logs') + navBtn('endpoints', 'Endpoints') + navBtn('status', 'Status')
     + '</nav><div class="desk-views">'
     + '<section class="desk-view" data-view="trading"></section>'
     + '<section class="desk-view" data-view="questions" style="display:none;"></section>'
@@ -581,8 +582,8 @@ function deskInitViews() {
     + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">MCP tools <span id="deskToolsCount" style="color:var(--muted);font-size:0.8rem;"></span></h3>'
     + '<input type="text" placeholder="Filter tools..." oninput="deskFilterTools(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.5rem;color:var(--text);font-size:0.85rem;box-sizing:border-box;margin-bottom:0.6rem;">'
     + '<div id="deskToolsList"><span style="color:var(--muted);font-size:0.8rem;">Loading the catalogue...</span></div></div></section>'
-    + '<section class="desk-view" data-view="watchlist" style="display:none;">'
-    + '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;"><h3 style="font-size:1rem;">Watchlist</h3><button class="btn" style="padding:0.25rem 0.6rem;" onclick="deskLoadQuotes()">Refresh</button></div><div id="deskWatchHost" style="margin-top:0.5rem;"></div></div></section>'
+    + '<section class="desk-view" data-view="watchlist" style="display:none;"></section>'
+    + '<section class="desk-view" data-view="hunt" style="display:none;"></section>'
     + '<section class="desk-view" data-view="chain" style="display:none;"></section>'
     + '<section class="desk-view" data-view="portfolio" style="display:none;"></section>'
     + '<section class="desk-view" data-view="logs" style="display:none;">'
@@ -611,17 +612,16 @@ function deskInitViews() {
   move('publicDesk', 'trading');
   move('publicQuestionCard', 'questions');
   move('publicConnectedBox', 'status');
-  // Watchlist strip out of the intro card into its own view (issue #152).
-  const watch = document.getElementById('deskWatch');
-  const watchHost = document.getElementById('deskWatchHost');
-  if (watch && watchHost) watchHost.appendChild(watch);
-  // Portfolio card and the trading explainer card become views too.
   const moveCardOf = (id, view) => {
     const anchor = document.getElementById(id);
     const card = anchor && anchor.closest('.card');
     const host = shell.querySelector('section.desk-view[data-view="' + view + '"]');
     if (card && host) host.appendChild(card);
   };
+  // The whole watchlist card moves into its view (issue #166): #152
+  // moved only the strip, leaving the empty card shell on Trading.
+  moveCardOf('deskWatch', 'watchlist');
+  // Portfolio card and the trading explainer card become views too.
   moveCardOf('deskPortfolio', 'portfolio');
   moveCardOf('publicTradingTitle', 'status');
   // Opportunity hunt card (issue #135): right next to the composer
@@ -641,7 +641,16 @@ function deskInitViews() {
       + '<button class="btn" onclick="runOpportunityHunt()">Run hunt</button></div>'
       + '<div id="huntResult"></div><div id="huntHistory"></div>';
     if (chatCard) chatCard.after(card); else rail.appendChild(card);
+    // The hunt is a nav view of its own now (issue #166).
+    const huntHost = shell.querySelector('section.desk-view[data-view="hunt"]');
+    if (huntHost) huntHost.appendChild(card);
   }
+
+  // The capabilities button leaves the Ask card (issue #166): the
+  // catalogue already lives in the Tools view, mirrored from the
+  // (hidden) floating card, which stays as the mirror's source.
+  const capsBtn = document.getElementById('publicCapsBtn');
+  if (capsBtn) capsBtn.remove();
 
   // Chain CSV download (issue #152), beside Load chain.
   const chainBtn = document.querySelector('button[onclick="deskLoadChain()"]');
@@ -666,15 +675,31 @@ function deskInitViews() {
   moveCardTo('deskRuns', logsDuo);
   const tradesCard = document.getElementById('publicTradesCard');
   if (tradesCard && logsDuo) logsDuo.appendChild(tradesCard);
-  // Composer + hunt side by side, equally sized (issue #159).
+  // Main page = the composer + the strategy questions, side by side
+  // (issue #166). The Questions view keeps the original card; Trading
+  // gets a live clone (the library renders once into #publicQuestions
+  // and deskSyncQuestionsClone mirrors it - groups are native
+  // <details>, buttons call askQuestion(id), so a copy stays fully
+  // functional; the clone's context <select> loses its id so the
+  // original remains the one getElementById finds).
   const mainCol = document.querySelector('#publicDesk .desk-main');
-  const huntCardEl = document.getElementById('huntCard');
-  if (mainCol && chatCard && huntCardEl) {
+  if (mainCol && chatCard) {
+    const qClone = document.createElement('div');
+    qClone.className = 'card';
+    qClone.id = 'deskQuestionsClone';
+    qClone.innerHTML = '<h3 style="font-size:1.1rem;margin-bottom:0.35rem;">Strategy questions</h3>'
+      + '<p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.5rem;">One click sends the prompt to the chat beside it.</p>'
+      + '<div id="deskQuestionsCloneHost" style="max-height:32rem;overflow-y:auto;"></div>';
     const duo = document.createElement('div');
     duo.className = 'desk-duo';
     mainCol.insertBefore(duo, chatCard);
     duo.appendChild(chatCard);
-    duo.appendChild(huntCardEl);
+    duo.appendChild(qClone);
+    deskSyncQuestionsClone();
+    const qSrc = document.getElementById('publicQuestions');
+    if (qSrc && window.MutationObserver) {
+      new MutationObserver(() => deskSyncQuestionsClone()).observe(qSrc, { childList: true, subtree: true });
+    }
   }
 
   // Pending-approvals notification (issue #161): a badge on the Logs
@@ -1046,3 +1071,18 @@ async function refreshNotifications() {
 }
 
 notifyInit();
+
+// Mirror the strategy-questions library into the Trading clone
+// (issue #166). The original stays in the Questions view.
+function deskSyncQuestionsClone() {
+  const src = document.getElementById('publicQuestions');
+  const host = document.getElementById('deskQuestionsCloneHost');
+  if (!src || !host) return;
+  if (host.innerHTML !== src.innerHTML) {
+    host.innerHTML = src.innerHTML;
+    const sel = host.querySelector('#publicContext');
+    if (sel) sel.removeAttribute('id');
+    const lbl = host.querySelector('label[for="publicContext"]');
+    if (lbl) lbl.removeAttribute('for');
+  }
+}
