@@ -1633,6 +1633,18 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("deskShowView('trading')");
   });
 
+  it("the opportunity hunt is wired end to end (issue #135)", () => {
+    const agent = read("src/agent.ts");
+    const api = read("src/api.ts");
+    const pdata = read("public/public-data.js");
+    expect(agent).toContain("runOpportunityHunt");
+    expect(agent).toContain("sizePlan(candidates, spots, request)");
+    expect(api).toContain('"/api/public/opportunity-hunt"');
+    expect(api).toContain('"/api/public/opportunity-hunts/:id/report"');
+    expect(pdata).toContain("runOpportunityHunt()");
+    expect(pdata).toContain("huntCard");
+  });
+
   it("the Public tab's colors resolve through design tokens (issue #133)", () => {
     const idx = read("public/index.html");
     const pdata = read("public/public-data.js");
