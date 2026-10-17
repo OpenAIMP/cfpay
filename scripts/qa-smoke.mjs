@@ -122,8 +122,54 @@ async function investigateFailures() {
   }
 }
 
+let summarySent = false;
+async function sendSummaryEmail() {
+  // One short email per deploy listing every section's PASS/FAIL/SKIP,
+  // sent through the dashboard's send-email route (no browser needed),
+  // so a check that was skipped - including an email check itself - is
+  // reported somewhere the owner actually reads. Best-effort: it never
+  // changes the run's exit code.
+  if (summarySent) return;
+  summarySent = true;
+  if (!TEST_EMAIL || !API_KEY) return;
+  if (String(process.env.QA_RUN_SUMMARY || "").toLowerCase() === "false") return;
+  const ran = results.filter((r) => !r.skipped).length;
+  const skipped = results.filter((r) => r.skipped).length;
+  const passed = results.filter((r) => r.ok && !r.skipped).length;
+  const subject =
+    `Post-deploy QA: ${passed}/${ran} passed` +
+    (skipped ? `, ${skipped} skipped` : "") +
+    (failed ? `, ${failed} FAILED` : "") +
+    ` - ${new Date().toISOString().slice(0, 10)}`;
+  const body = [
+    `Post-deploy QA against ${BASE_URL} - ${new Date().toISOString()}`,
+    "",
+    ...results.map(
+      (r) =>
+        `${r.skipped ? "SKIP" : r.ok ? "PASS" : "FAIL"}  ${r.name}${r.detail ? ` - ${r.detail}` : ""}`,
+    ),
+    "",
+    "A SKIP means the check did not run (usually browser capacity during a merge train), never that it passed. This summary is sent on every deploy precisely so a skipped or failed email is itself reported.",
+  ].join("\n");
+  try {
+    const { status, json } = await post("/api/dashboard/send-email", {
+      to: TEST_EMAIL,
+      subject,
+      body,
+    });
+    console.log(
+      json && (json.ok === true || json.emailId)
+        ? `  [SUMMARY] emailed to ${TEST_EMAIL}`
+        : `  [SUMMARY] send did not complete (status=${status})`,
+    );
+  } catch (err) {
+    console.log(`  [SUMMARY] send failed: ${err.message}`);
+  }
+}
+
 async function finish() {
   await investigateFailures();
+  await sendSummaryEmail();
   const ran = results.filter((r) => !r.skipped).length;
   const skipped = results.filter((r) => r.skipped).length;
   const passed = ran - failed;
@@ -479,28 +525,42 @@ async function main() {
     }
   }
 
-  // 13. PDF pipeline test email: print the canonical test page and
-  // email it as a PDF attachment - the opportunity-hunt report's path
-  // (issue #135), covered on every deploy. Browser-bound (printToPDF),
-  // so capacity refusals skip like the other browser sections.
+  // 13. Autopilot hunt report PDF email: run a REAL opportunity hunt
+  // (an autopilot workflow - plan, execute, verify, synthesize, then
+  // deterministic sizing) and email its report as a PDF, the path the
+  // desk's Email PDF report button uses (QAAgent prints, EmailAgent
+  // sends, Slack mirrors). 409 = Public not connected -> skip; the
+  // print step's capacity refusal also skips.
   if (!RUN_PDF) {
-    skip("PDF pipeline test email", 'QA_RUN_PDF_CHECK is "false"');
+    skip("Autopilot hunt report PDF email", 'QA_RUN_PDF_CHECK is "false"');
   } else if (!TEST_EMAIL) {
-    skip("PDF pipeline test email", "QA_TEST_EMAIL is not set");
+    skip("Autopilot hunt report PDF email", "QA_TEST_EMAIL is not set");
   } else {
     try {
-      const { status, json } = await post("/api/dashboard/qa/print-test", { toEmail: TEST_EMAIL });
-      if (isCapacityRefusal(json?.error)) {
-        skip("PDF pipeline test email", CAPACITY_WHY);
-      } else {
+      const huntRes = await post("/api/public/opportunity-hunt", { budget: 10000, symbols: "SPY" });
+      if (huntRes.status === 409) {
+        skip("Autopilot hunt report PDF email", "Public.com is not connected");
+      } else if (huntRes.status !== 200 || !huntRes.json?.hunt?.id) {
         record(
-          "PDF pipeline test email",
-          status === 200 && json?.emailed === true,
-          json?.error || `status=${status}`,
+          "Autopilot hunt report PDF email",
+          false,
+          `hunt status=${huntRes.status} ${(huntRes.json?.error || "").slice(0, 160)}`,
         );
+      } else {
+        const mailRes = await post(`/api/public/opportunity-hunts/${huntRes.json.hunt.id}/email`, { toEmail: TEST_EMAIL });
+        if (isCapacityRefusal(mailRes.json?.error)) {
+          skip("Autopilot hunt report PDF email", CAPACITY_WHY);
+        } else {
+          record(
+            "Autopilot hunt report PDF email",
+            mailRes.status === 200 && mailRes.json?.emailed === true,
+            mailRes.json?.error ||
+              `status=${mailRes.status}, slack=${mailRes.json?.slackConfigured ? `${mailRes.json.slackPosted ?? 0} file(s)` : "not-configured"}`,
+          );
+        }
       }
     } catch (err) {
-      record("PDF pipeline test email", false, err.message);
+      record("Autopilot hunt report PDF email", false, err.message);
     }
   }
 
