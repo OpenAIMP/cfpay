@@ -1384,6 +1384,18 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(qa).toContain("expectedButtonBg");
   });
 
+  it("discovers dashboard tabs from the DOM (issue #102)", () => {
+    const qaMod = read("src/qa-agent.ts");
+    const cov = read("src/tab-coverage.ts");
+    expect(cov).toContain("knownTabExpectations");
+    expect(cov).toContain("mergeDiscoveredTabs");
+    expect(qaMod).toContain("mergeDiscoveredTabs(tabsToTest, discovered)");
+    expect(qaMod).toContain("genericTabProbeExpression");
+    // The emailed report must respect the email agent's cap now that
+    // discovery can find more tabs than it can attach.
+    expect(qaMod).toContain("attachments.length = 5");
+  });
+
   it("measures pages at multiple viewports (issue #102)", () => {
     const specMod = read("src/ux-audit-spec.ts");
     expect(specMod).toContain("viewportListOf");
