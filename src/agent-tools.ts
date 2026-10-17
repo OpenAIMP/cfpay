@@ -30,11 +30,13 @@ import { SlackAgent } from "./slack-agent";
 import { QAAgent } from "./qa-agent";
 import { ChatAgent } from "./chat-agent";
 import { SearchAgent } from "./search-agent";
+import { OrchestratorAgent } from "./orchestrator-agent";
 import {
   paymentAgentToolSchema,
   slackAgentToolSchema,
   chatAgentToolSchema,
   searchAgentToolSchema,
+  orchestratorAgentToolSchema,
   qaAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -199,4 +201,20 @@ export const searchAgentTool = agentTool<AgentToolInput>(SearchAgent, {
   ].join(" "),
   displayName: "Search Agent",
   inputSchema: asZod<AgentToolInput>(searchAgentToolSchema),
+});
+
+/**
+ * Dispatch the orchestrator (issue #180): hand it a goal and it
+ * plans steps across the other agents, runs them, and merges one
+ * report. Every step goes through the owning agent's own handler,
+ * so no agent's gates are bypassed.
+ */
+export const orchestratorAgentTool = agentTool<AgentToolInput>(OrchestratorAgent, {
+  description: [
+    "Dispatch the orchestrator agent to plan and execute a goal that spans several agents.",
+    "Use orchestrator.run with a goal; it returns the finished job with per-step outcomes and one merged report. Jobs involving browser QA can take minutes.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Orchestrator Agent",
+  inputSchema: asZod<AgentToolInput>(orchestratorAgentToolSchema),
 });

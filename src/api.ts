@@ -820,6 +820,15 @@ export function createApp() {
     }
   }
 
+  async function getOrchestratorAgent(c: any) {
+    const stub = await getAgentByName(c.env.ORCHESTRATOR_AGENT as any, "orchestrator");
+    return stub as unknown as {
+      orchestrateRun(goal: string): Promise<unknown>;
+      orchestrateJobs(limit?: number): Promise<unknown>;
+      orchestrateJob(id: string): Promise<unknown>;
+    };
+  }
+
   async function getSearchAgent(c: any) {
     const stub = await getAgentByName(c.env.SEARCH_AGENT as any, "search");
     return stub as unknown as {
@@ -1721,6 +1730,22 @@ export function createApp() {
 
   // The A2A probes without the email (issue #152): the Endpoints
   // view's data source. Body { rpc } tests one surface; empty = all.
+  // Multi-agent orchestration (issue #180): run a goal, list jobs.
+  app.post("/api/dashboard/orchestrate", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { goal?: string };
+    const goal = (body.goal || "").trim();
+    if (!goal) return c.json({ error: "goal is required" }, 400);
+    const orchestrator = await getOrchestratorAgent(c);
+    const job = await orchestrator.orchestrateRun(goal);
+    return c.json(job as Record<string, unknown>);
+  });
+
+  app.get("/api/dashboard/orchestrate/jobs", requireAuth, async (c) => {
+    const orchestrator = await getOrchestratorAgent(c);
+    const jobs = await orchestrator.orchestrateJobs(20);
+    return c.json({ jobs });
+  });
+
   // Knowledge search (issue #170): the dashboard face of SearchAgent.
   // mode "ask" returns the grounded answer; "query" the raw chunks.
   app.post("/api/dashboard/search", requireAuth, async (c) => {

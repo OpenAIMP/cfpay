@@ -47,6 +47,10 @@
       {
         "name": "SEARCH_AGENT",
         "class_name": "SearchAgent"
+      },
+      {
+        "name": "ORCHESTRATOR_AGENT",
+        "class_name": "OrchestratorAgent"
       }
     ]
   },
@@ -67,7 +71,8 @@
   { "tag": "v7", "new_sqlite_classes": ["QAAgent"] },
     { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] },
     { "tag": "v9", "new_sqlite_classes": ["VoiceAgent"] },
-    { "tag": "v10", "new_sqlite_classes": ["SearchAgent"] }
+    { "tag": "v10", "new_sqlite_classes": ["SearchAgent"] },
+    { "tag": "v11", "new_sqlite_classes": ["OrchestratorAgent"] }
   ],
   "workflows": [
     {

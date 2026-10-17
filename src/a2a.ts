@@ -67,6 +67,9 @@ export const A2A_SLACK_CARD_PATH = "/a2a/slack/agent-card.json";
 export const A2A_QA_RPC_PATH = "/a2a/qa";
 export const A2A_QA_CARD_PATH = "/a2a/qa/agent-card.json";
 
+export const A2A_ORCHESTRATOR_RPC_PATH = "/a2a/orchestrator";
+export const A2A_ORCHESTRATOR_CARD_PATH = "/a2a/orchestrator/agent-card.json";
+
 export const A2A_SEARCH_RPC_PATH = "/a2a/search";
 export const A2A_SEARCH_CARD_PATH = "/a2a/search/agent-card.json";
 
@@ -532,6 +535,42 @@ export function voiceCard(origin: string): AgentCard {
         examples: [
           "Compare NVDA and AMD for a covered call.",
           "What is in my portfolio?",
+        ],
+      },
+    ],
+  };
+}
+/**
+ * Card for the orchestrator (issue #180): the coordination layer.
+ * It plans a goal into steps across the other agents, dispatches
+ * each step through that agent's own A2A handler (so every gate -
+ * payment claims, trade approvals, QA read-only - applies
+ * unchanged), supervises results, and merges one report. It does
+ * no domain work itself and holds no other agent's credentials.
+ */
+export function orchestratorCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Orchestrator Agent",
+    description:
+      "Multi-agent orchestration: give it a goal and it plans steps across the email, payments, webhook, Slack, QA, chat, voice, search, and host agents, runs independent steps in parallel, retries a failed step once before reporting it by name, and returns one merged report. Jobs persist and are listable. Dispatch goes through each agent's own A2A handler, so no agent's gates are bypassed.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_ORCHESTRATOR_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "multi-agent-orchestration",
+        name: "Multi-agent orchestration",
+        description:
+          "orchestrator.run plans and executes a goal across the other agents; orchestrator.jobs lists recent jobs. Steps run only operations from the published catalog, through each agent's own handler and gates. Long jobs (browser QA steps) take minutes.",
+        tags: ["orchestration", "agents", "planning"],
+        examples: [
+          "Summarize the state of every agent and post it to Slack",
+          "QA-check the dashboard and search the knowledge base for the approval policy",
         ],
       },
     ],

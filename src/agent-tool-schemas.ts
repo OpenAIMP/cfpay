@@ -171,3 +171,17 @@ export const searchAgentToolSchema = {
   },
   required: ["operation"],
 } as const;
+
+/** Orchestrator operations (issue #180): plan and run a goal across the other agents. */
+export const orchestratorAgentToolSchema = {
+  type: "object",
+  properties: {
+    operation: {
+      type: "string",
+      enum: ["orchestrator.summary", "orchestrator.run", "orchestrator.jobs"],
+      description: "Which orchestrator operation to perform.",
+    },
+    goal: { type: "string", description: "The goal to plan and execute. Required for orchestrator.run." },
+  },
+  required: ["operation"],
+} as const;

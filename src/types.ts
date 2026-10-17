@@ -33,6 +33,7 @@ export interface Env {
   QA_AGENT: DurableObjectNamespace;
   VOICE_AGENT: DurableObjectNamespace;
   SEARCH_AGENT: DurableObjectNamespace;
+  ORCHESTRATOR_AGENT: DurableObjectNamespace;
   AI_SEARCH: AiSearchNamespace;
   AI_SEARCH_INSTANCE?: string;
   /** Owns the webhook event log and the GitHub delivery registry. */

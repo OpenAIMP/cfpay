@@ -4,6 +4,7 @@ import {
   chatAgentToolSchema,
   qaAgentToolSchema,
   searchAgentToolSchema,
+  orchestratorAgentToolSchema,
   slackAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -12,6 +13,7 @@ import { PaymentsAgent } from "./payments-agent";
 import { SlackAgent } from "./slack-agent";
 import { QAAgent } from "./qa-agent";
 import { SearchAgent } from "./search-agent";
+import { OrchestratorAgent } from "./orchestrator-agent";
 import { ChatAgent } from "./chat-agent";
 import { WebhookAgent } from "./webhook-agent";
 import { Agent, callable } from "agents";
@@ -38,6 +40,7 @@ import {
   emailAgentTool,
   chatAgentTool,
   searchAgentTool,
+  orchestratorAgentTool,
   qaAgentTool,
   slackAgentTool,
   webhookAgentTool,
@@ -104,6 +107,7 @@ const AGENT_TOOL_DISPATCH = {
   slackAgent: { cls: SlackAgent, displayName: "Slack Agent" },
   qaAgent: { cls: QAAgent, displayName: "QA Agent" },
   searchAgent: { cls: SearchAgent, displayName: "Search Agent" },
+  orchestratorAgent: { cls: OrchestratorAgent, displayName: "Orchestrator Agent" },
   chatAgent: { cls: ChatAgent, displayName: "Chat Agent" },
 } as const;
 
@@ -129,6 +133,7 @@ const agentToolInputSchema = {
   slack: slackAgentToolSchema,
   qa: qaAgentToolSchema,
   search: searchAgentToolSchema,
+  orchestrator: orchestratorAgentToolSchema,
   chat: chatAgentToolSchema,
 } as const;
 const DEFAULT_STATE: AgentState = {
@@ -217,15 +222,10 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
   }
 
   /**
-   * The child capability agents, as this agent's own tool set.
-   *
-   * Deliberately the same four tools the custom tool loop advertises, so a model reaching
-   * them through Think and a model reaching them through the dashboard's loop see the same
-   * surface. Two lists maintained separately is how one of them silently loses a tool.
-   *
-   * Payments is excluded here, matching AGENT_TOOL_ALLOW_PAYMENTS being unset: a payments
-   * tool lets the model choose to run a paid request, which is authority rather than
-   * convenience and belongs behind an explicit opt-in.
+   * The child capability agents, as this agent's own tool set - the same
+   * surface the custom tool loop advertises in its specs, so a model
+   * reaching them through Think and one reaching them through the
+   * dashboard's loop see the same tools.
    */
   override getTools(): ToolSet {
     return {
@@ -235,6 +235,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
       qaAgent: qaAgentTool,
       chatAgent: chatAgentTool,
       searchAgent: searchAgentTool,
+      orchestratorAgent: orchestratorAgentTool,
     };
   }
 
@@ -2370,15 +2371,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
-   * Run one capability agent as a tool.
-   *
-   * Dispatches the child through the framework's runAgentTool and returns its summary,
-   * so the model sees a normal tool result. The child gets its own chat turn with its own
-   * tools and messages, and the framework owns the run registry and cancellation.
-   *
-   * `input` is the tool's arguments in the shape the child's schema declares. The child's
-   * own operation handling validates them, so a malformed argument fails there with a
-   * readable error rather than being silently coerced here.
+   * Run one capability agent as a tool, through the framework's
+   * runAgentTool. The child validates its own arguments (a malformed
+   * one fails there with a readable error) and returns a summary the
+   * model sees as a normal tool result.
    */
   private async dispatchAgentTool(
     target: { cls: any; displayName: string },
@@ -2528,6 +2524,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
         description:
           "Dispatch the search agent (AI Search): search.query = chunks, search.ask = grounded answer.",
         parameters: agentToolInputSchema.search,
+      },
+    });
+
+    specs.push({
+      type: "function",
+      function: {
+        name: "orchestratorAgent",
+        description:
+          "Dispatch the orchestrator: orchestrator.run plans a goal across the other agents and returns one merged report.",
+        parameters: agentToolInputSchema.orchestrator,
       },
     });
 
