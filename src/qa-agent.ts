@@ -77,11 +77,7 @@ export const UX_RULES = {
   minTargetPx: 44,
 };
 
-/**
- * A per-target rule profile for the generalized audit (issue #94):
- * every field optional, merging over UX_RULES; the ignore list is how
- * a target declares legitimate exceptions so findings stay signal.
- */
+/** Per-target rule profile for the generalized audit (issue #94). */
 /**
  * The in-page UX probe for qaUxAudit: one evaluate measuring
  * everything the audit's rules need from the rendered view, returned
@@ -320,12 +316,9 @@ function summarizeUxProbes(
 }
 
 /**
- * The slice of the CDP connection this agent uses.
- *
- * `connectBrowser` is declared to return CdpConnection, but the browser handle
- * was previously typed `any`, which is how a `close().catch(...)` on a void
- * method compiled cleanly and then threw at runtime. Naming the shape keeps that
- * mistake visible to the compiler.
+ * The slice of the CDP connection this agent uses. Naming the shape
+ * keeps void-close mistakes visible to the compiler (a `close().catch`
+ * on the real void method once compiled clean and threw at runtime).
  */
 interface CdpLike {
   send(method: string, params?: unknown, options?: { sessionId?: string }): Promise<unknown>;
@@ -376,20 +369,16 @@ export class QAAgent extends Think<Env> {
   private lastRunAt = "";
 
   /**
-   * Live-view run buffers (issue #88), in memory only: a run's watcher and
-   * the run itself live in this same instance, and if the instance restarts
-   * the run is gone anyway. Bounded per run and across runs so a forgotten
-   * watcher cannot grow this without limit.
+   * Live-view run buffers (issue #88), in memory only and bounded
+   * per run and across runs.
    */
   private liveRuns = new Map<string, { seq: number; events: QALiveEvent[]; startedAt: number }>();
 
   /* ---------------------------- Think surface ---------------------------- */
 
   /**
-   * Used only when a host dispatches this agent through agentTool(). A QA check is a
-   * deterministic browser run, not a conversation, so this model is never in the
-   * pass/fail path - it exists because Think requires it and because a dispatched run
-   * may need to phrase a finding.
+   * Used only when a host dispatches this agent through agentTool();
+   * the model is never in the pass/fail path (checks are deterministic).
    */
   override getModel(): string {
     return defaultModelId();
@@ -448,10 +437,8 @@ export class QAAgent extends Think<Env> {
     try {
       return (await connectBrowser(env.BROWSER)) as CdpLike;
     } catch (err) {
-      // One automatic retry on a capacity refusal. The Free plan allows one new
-      // browser instance every 20 seconds, so a refusal is often a slot that is
-      // about to free up — failing outright forces the user to wait minutes and
-      // retry manually for no reason. Non-capacity errors are not retried.
+      // One automatic retry (20s) on a capacity refusal; see
+      // isCapacityRefusal. Non-capacity errors fail fast.
       if (isCapacityRefusal(err)) {
         await new Promise((r) => setTimeout(r, 20000));
         try {
@@ -636,13 +623,10 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
-   * Live frame stream for a watched run (issue #88): capture a frame
-   * about once a second and broadcast it. This is capture polling, NOT
-   * Page.startScreencast - the Agents SDK's CDP client discards protocol
-   * events, so screencast frames can never arrive through it; a
-   * hand-rolled event-capable CDP client is the tracked route to true
-   * screencast (issue #102). Best-effort: slow/failed captures are
-   * silent and never touch verdicts. Returns the stop function.
+   * Live frame stream (issue #88): ~1fps capture polling, NOT
+   * Page.startScreencast - the SDK's CDP client discards protocol
+   * events (issue #102). Best-effort; never touches verdicts.
+   * Returns the stop function.
    */
   private startFrameStream(
     cdp: CdpLike,
@@ -1370,6 +1354,37 @@ export class QAAgent extends Think<Env> {
       return { active: false, error: describeBrowserFailure(err) };
     } finally {
       closeConnectionQuietly(conn);
+    }
+  }
+
+  /** Render standalone HTML to a PDF (issue #135): Page.printToPDF on a data: URL. */
+  @callable()
+  async qaPrintPdf(html: string): Promise<{ ok: boolean; pdfBase64?: string; error?: string }> {
+    const env = this.env as Env;
+    if (!env.BROWSER) return { ok: false, error: "Browser binding not configured" };
+    if (!html || html.length > 500_000) return { ok: false, error: "HTML missing or over the 500 KB print cap." };
+    let pdfBrowser: CdpLike | null = null;
+    try {
+      const cdp = await this.openBrowserSession(env);
+      pdfBrowser = cdp;
+      const { targetId } = (await cdp.send("Target.createTarget", { url: "about:blank" })) as { targetId: string };
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+        const bytes = new TextEncoder().encode(html);
+        let bin = "";
+        bytes.forEach((b) => { bin += String.fromCharCode(b); });
+        await cdp.send("Page.navigate", { url: "data:text/html;base64," + btoa(bin) }, { sessionId });
+        await new Promise((r) => setTimeout(r, 1500));
+        const printed = (await cdp.send("Page.printToPDF", { printBackground: true }, { sessionId })) as { data?: string };
+        if (!printed?.data) return { ok: false, error: "printToPDF returned no data." };
+        return { ok: true, pdfBase64: printed.data };
+      } finally {
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    } catch (err) {
+      return { ok: false, error: describeBrowserFailure(err) };
+    } finally {
+      closeConnectionQuietly(pdfBrowser);
     }
   }
 
@@ -2640,11 +2655,9 @@ export class QAAgent extends Think<Env> {
 
   /**
    * RPC: verify the payment endpoint's guards, without ever paying
-   * (no signing, no funds). Asserts: no PAYMENT-SIGNATURE -> 402 with a
-   * well-formed challenge (x402 v2 carries it base64 in the
-   * PAYMENT-REQUIRED header; v1 in the body - both read); an invalid
-   * signature still refuses; nothing is processed. Does NOT prove a
-   * valid payment settles - stated in the result.
+   * (no signing, no funds): no signature -> 402 + a well-formed
+   * challenge (v2 base64 header, v1 body - both read); an invalid
+   * signature still refuses; nothing is processed.
    */
   @callable()
   async qaPaymentFlow(
@@ -2849,12 +2862,9 @@ export class QAAgent extends Think<Env> {
   /* --------------------------------- A2A ---------------------------------- */
 
   /**
-   * Aggregate view for the A2A executor.
-   *
-   * Deliberately thin: a QA run produces a screenshot, and a screenshot is megabytes of
-   * base64. Returning one from a status call would be a payload nobody asked for, so this
-   * reports only whether the last check passed and when. A caller that wants the image
-   * calls qa.check and gets it in the data artifact.
+   * Aggregate view for the A2A executor. Deliberately thin: reports
+   * only whether the last check passed and when - screenshots are
+   * megabytes of base64 nobody asked a status call for.
    */
   @callable()
   async a2aSnapshot(): Promise<{ lastOk: boolean | null; lastUrl: string; lastRunAt: string }> {
@@ -2934,11 +2944,9 @@ export class QAAgent extends Think<Env> {
       }
 
       case "qa.ux_audit": {
-        // Issue #94, step 3: the generalized audit as a service operation, so a
-        // host model or an external A2A caller can audit a web app without the
-        // dashboard. The spec is the caller's: target credentials ride in
-        // spec.auth (their own session values), pass through to the browser
-        // session, and are never stored or logged here.
+        // Issue #94 step 3: the generalized audit as a service
+        // operation; caller credentials ride in spec.auth and are
+        // never stored or logged here.
         const spec = (args.spec ?? null) as UxAuditSpec | null;
         const specPages = Array.isArray(spec?.pages) ? spec.pages : [];
         if (!spec || specPages.length === 0) {
