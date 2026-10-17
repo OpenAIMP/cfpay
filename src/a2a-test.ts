@@ -31,6 +31,8 @@ export interface A2ARow {
   rpc: string;
   cardOk: boolean;
   cardName?: string;
+  cardDescription?: string;
+  cardSkills?: { id: string; name: string; tags?: string[] }[];
   unauthStatus: number;
   dispatchOk: boolean;
   reply?: string;
@@ -61,10 +63,22 @@ export async function testA2AEndpoint(
   // 1. The agent card is public and must be served.
   let cardOk = false;
   let cardName: string | undefined;
+  let cardDescription: string | undefined;
+  let cardSkills: A2ARow["cardSkills"];
   try {
     const res = await fetchWithTimeout(doFetch, origin + ep.card, {});
-    const json = (await res.json().catch(() => null)) as { name?: string } | null;
+    const json = (await res.json().catch(() => null)) as {
+      name?: string;
+      description?: string;
+      skills?: { id?: string; name?: string; tags?: string[] }[];
+    } | null;
     cardName = typeof json?.name === "string" ? json.name : undefined;
+    cardDescription = typeof json?.description === "string" ? json.description : undefined;
+    if (Array.isArray(json?.skills)) {
+      cardSkills = json.skills
+        .filter((s) => s && typeof s.name === "string")
+        .map((s) => ({ id: String(s.id ?? ""), name: s.name as string, tags: Array.isArray(s.tags) ? s.tags.map(String) : undefined }));
+    }
     cardOk = res.status === 200 && !!cardName;
     if (!cardOk) problems.push(`card: status ${res.status}${cardName ? "" : ", no name"}`);
   } catch (err) {
@@ -125,6 +139,8 @@ export async function testA2AEndpoint(
     rpc: ep.rpc,
     cardOk,
     cardName,
+    cardDescription,
+    cardSkills,
     unauthStatus,
     dispatchOk,
     reply,
