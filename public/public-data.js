@@ -403,3 +403,25 @@ async function emailDeskSnapshot() {
     await qaLiveFinish(!!(res && res.emailed));
   } catch (e) { if (result) result.innerHTML = '<div class="status-msg error">Error: ' + e.message + '</div>'; await qaLiveFinish(false); }
 }
+
+// Persistent browser profile (issue #102): one signed-in Browser Run
+// session reused across runs (10-minute idle cap). The button toggles
+// start/stop; the span shows the state after each action.
+async function toggleBrowserProfile() {
+  const span = document.getElementById('qaProfileState');
+  const setText = (t) => { if (span) span.textContent = t; };
+  try {
+    const st = await api('/api/dashboard/qa/browser-profile', 'POST', { action: 'status' });
+    if (st.active) {
+      setText('Stopping...');
+      const res = await api('/api/dashboard/qa/browser-profile', 'POST', { action: 'stop' });
+      setText(res.active ? 'Still active' : 'Profile stopped');
+    } else {
+      setText('Starting (signs the profile in)...');
+      const runId = qaLiveBegin('Browser Profile');
+      const res = await api('/api/dashboard/qa/browser-profile', 'POST', { action: 'start', runId });
+      setText(res.active ? 'Profile active - audits/investigations can reuse it' : ('Failed: ' + (res.error || 'unknown')));
+      await qaLiveFinish(!!res.active);
+    }
+  } catch (e) { setText('Error: ' + e.message); }
+}
