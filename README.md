@@ -200,7 +200,7 @@ The split above, stated as plainly as it can be:
 
 ## Post-deploy QA (automated testing)
 
-Every push to `main` deploys the Worker and then runs `scripts/qa-smoke.mjs` against live production (the **Post-deploy QA** job in `.github/workflows/deploy.yml`). A green deploy only proves the upload worked; this job proves the app works. The exit code is the contract — any FAIL fails the job, and a check that cannot run reports SKIP with the reason, never a silent pass.
+Every push to `main` deploys the Worker and then runs `scripts/qa-smoke.mjs` against live production (the **Post-deploy QA** job in `.github/workflows/deploy.yml`). A green deploy only proves the upload worked; this job proves the app works. The exit code is the contract — any FAIL fails the job, and a check that cannot run reports SKIP with the reason, never a silent pass. Browser-bound checks refused by Browser Rendering capacity are not skipped on the spot: they are deferred, the suite waits (`QA_CAPACITY_WAIT_MS`, default 90000) for sessions from earlier runs to drain, and retries them once — a SKIP is recorded only if the retry is refused too. The closing summary email is sent as formatted HTML (status-chip table) with a plain-text fallback.
 
 What it checks:
 
