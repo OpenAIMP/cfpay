@@ -72,21 +72,19 @@ export function plannerPrompt(goal: string): string {
   ].join("\n");
 }
 
-/** Extract and validate a plan from the model's reply. Null when unusable. */
-export function parsePlan(raw: string): PlanStep[] | null {
-  if (!raw) return null;
-  const start = raw.indexOf("[");
-  const end = raw.lastIndexOf("]");
-  if (start < 0 || end <= start) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 8) return null;
+/** Supervisor bounds (issue #185): revisions per job, and total steps across the original plan plus revisions. */
+export const MAX_REVISIONS = 3;
+export const MAX_TOTAL_STEPS = 12;
+
+/**
+ * Validate raw step objects against the catalog. Dependencies may
+ * reference steps in the same set or ids in `externalIds` (steps
+ * already executed, for supervisor revisions). Null when unusable.
+ */
+export function validateSteps(parsed: unknown, externalIds: Set<string>, cap: number): PlanStep[] | null {
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > cap) return null;
   const steps: PlanStep[] = [];
-  const ids = new Set<string>();
+  const ids = new Set<string>(externalIds);
   for (const item of parsed) {
     const s = item as Partial<PlanStep>;
     if (!s || typeof s.id !== "string" || typeof s.agent !== "string" || typeof s.operation !== "string") return null;
@@ -105,10 +103,9 @@ export function parsePlan(raw: string): PlanStep[] | null {
   for (const s of steps) {
     for (const dep of s.dependsOn ?? []) if (!ids.has(dep)) return null;
   }
-  // Cycle check via repeated relaxation.
-  const done = new Set<string>();
+  const done = new Set<string>(externalIds);
   let progress = true;
-  while (progress && done.size < steps.length) {
+  while (progress && done.size < ids.size) {
     progress = false;
     for (const s of steps) {
       if (!done.has(s.id) && (s.dependsOn ?? []).every((d) => done.has(d))) {
@@ -117,7 +114,67 @@ export function parsePlan(raw: string): PlanStep[] | null {
       }
     }
   }
-  return done.size === steps.length ? steps : null;
+  return done.size === ids.size ? steps : null;
+}
+
+/** Extract and validate a plan from the model's reply. Null when unusable. */
+export function parsePlan(raw: string): PlanStep[] | null {
+  if (!raw) return null;
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+  if (start < 0 || end <= start) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  return validateSteps(parsed, new Set(), 8);
+}
+
+export type SupervisorVerdict =
+  | { action: "continue" }
+  | { action: "stop"; reason: string }
+  | { action: "revise"; steps: PlanStep[] };
+
+/** The between-waves review prompt (supervise mode, issue #185). */
+export function supervisorPrompt(goal: string, outcomesText: string, executedIds: string[]): string {
+  const lines = OPERATION_CATALOG.map((e) => `- ${e.agent}: ${e.operations.join(", ")}`);
+  return [
+    "You supervise a multi-agent job in progress. Review the results so far against the goal and return ONE JSON object:",
+    '{"action": "continue"} - the remaining plan is right; keep going.',
+    '{"action": "stop", "reason": "..."} - the goal is met, or cannot be met; stop. Remaining steps are recorded as skipped with your reason.',
+    '{"action": "revise", "steps": [ ... ]} - replace ALL remaining steps with this new step list (same step shape as planning). New steps may depend on executed step ids: ' + executedIds.join(", ") + ". Never reuse an executed id.",
+    "",
+    "Available operations:",
+    ...lines,
+    "",
+    `Goal: ${goal}`,
+    "",
+    "Results so far:",
+    outcomesText,
+  ].join("\n");
+}
+
+/** Parse and validate a supervisor verdict. Null = unreadable (the caller treats it as continue). */
+export function parseSupervisorReply(raw: string, executedIds: Set<string>): SupervisorVerdict | null {
+  if (!raw) return null;
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let parsed: { action?: string; reason?: string; steps?: unknown };
+  try {
+    parsed = JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (parsed.action === "continue") return { action: "continue" };
+  if (parsed.action === "stop") return { action: "stop", reason: String(parsed.reason || "supervisor stopped the job").slice(0, 200) };
+  if (parsed.action === "revise") {
+    const steps = validateSteps(parsed.steps, executedIds, MAX_TOTAL_STEPS);
+    return steps ? { action: "revise", steps } : null;
+  }
+  return null;
 }
 
 /** Group steps into dependency waves; steps in one wave run in parallel. */

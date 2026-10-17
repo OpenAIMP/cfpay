@@ -3,8 +3,10 @@ import {
   OPERATION_CATALOG,
   outcomeFromReply,
   parsePlan,
+  parseSupervisorReply,
   plannerPrompt,
   summarizeOutcomes,
+  supervisorPrompt,
   topoWaves,
   type PlanStep,
 } from "../src/orchestrate";
@@ -64,5 +66,26 @@ describe("orchestration planning core", () => {
     for (const e of OPERATION_CATALOG) expect(prompt).toContain(e.operations[0]);
     expect(prompt).toContain("Goal: check everything");
     expect(summarizeOutcomes("g", [{ stepId: "s1", agent: "qa", operation: "qa.summary", ok: true, reply: "fine" }])).toContain("1/1 steps succeeded");
+  });
+});
+
+describe("supervisor verdicts (issue #185)", () => {
+  const executed = new Set(["s1"]);
+  it("parses continue and stop verdicts", () => {
+    expect(parseSupervisorReply('{"action":"continue"}', executed)).toEqual({ action: "continue" });
+    expect(parseSupervisorReply('{"action":"stop","reason":"goal met"}', executed)).toEqual({ action: "stop", reason: "goal met" });
+  });
+  it("parses a revision that depends on an executed step", () => {
+    const v = parseSupervisorReply(
+      JSON.stringify({ action: "revise", steps: [{ id: "s2", agent: "slack", operation: "slack.post", args: { text: "report" }, dependsOn: ["s1"] }] }),
+      executed,
+    );
+    expect(v?.action).toBe("revise");
+  });
+  it("rejects revisions reusing an executed id or leaving the catalog", () => {
+    expect(parseSupervisorReply(JSON.stringify({ action: "revise", steps: [{ id: "s1", agent: "qa", operation: "qa.summary" }] }), executed)).toBeNull();
+    expect(parseSupervisorReply(JSON.stringify({ action: "revise", steps: [{ id: "s9", agent: "qa", operation: "qa.destroy" }] }), executed)).toBeNull();
+    expect(parseSupervisorReply("not json", executed)).toBeNull();
+    expect(supervisorPrompt("g", "results", ["s1"])).toContain("s1");
   });
 });
