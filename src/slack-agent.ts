@@ -16,12 +16,15 @@
  *    as this workspace, so exposing it over A2A would make every credential holder an
  *    impersonator. Callers ask for the ACT of posting, not for the credential.
  *
- * 2. POSTING IS INTERNAL ONLY. `postMessage` and `notifyViaWebhook` are @callable() so
- *    the Worker can use them, and reachable over A2A, but they are deliberately NOT
- *    exposed as A2A operations. Posting into someone's Slack is not a read, and the A2A
- *    gate is a single shared bearer token: one credential would otherwise be enough to
- *    speak in this workspace. The read operations are open; the writes have no A2A path
- *    at all, which is a stronger guarantee than a check inside the handler.
+ * 2. POSTING OVER A2A IS ALLOWED - BY THE OWNER'S EXPLICIT DECISION (2026-10-17,
+ *    issue #188), reversing this file's original policy. Originally `postMessage` and
+ *    `notifyViaWebhook` were internal-only and slack.post / slack.notify / slack.send
+ *    were refused by name over A2A, on the reasoning that one shared bearer credential
+ *    should not be enough to speak in this workspace. The owner weighed that and
+ *    reversed it: the same credential already authorizes email.send over A2A, so
+ *    posting to the owner's own Slack is the same trust class. slack.post with a
+ *    channel argument posts via the bot token; without one it posts via the incoming
+ *    webhook. Decision 1 stands unchanged: the token itself is never returned.
  *
  * It does not call back into the monolith, for the same reason the webhook agent does
  * not: cfmail's sendOutboundEmail reaches EmailAgent, so a callback while cfmail awaited
@@ -339,12 +342,10 @@ export class SlackAgent extends Think<Env, SlackState> {
   }
 
   /**
-   * Route one A2A message.
-   *
-   * Read operations only. There is no case here for posting, and that absence is the
-   * control: an external caller cannot reach a Slack write even if it holds the bearer
-   * credential, because no operation maps to one. A switch that is missing a case cannot
-   * be talked into it.
+   * Route one A2A message. Reads plus posting: slack.post / slack.notify /
+   * slack.send post for an authenticated caller (owner's decision,
+   * issue #188 - see the header). The bot token itself is never
+   * returned by any operation.
    */
   async handleA2AMessage(
     message: any,
@@ -395,19 +396,30 @@ export class SlackAgent extends Think<Env, SlackState> {
         return { text: `Returned ${trimmed.length} message(s).`, data: { messages: trimmed } };
       }
 
-      // Any post-like operation is refused BY NAME, so a caller gets a clear answer
-      // rather than "unknown operation", and so the refusal is visible in the code as a
-      // deliberate absence.
+      // Posting over A2A, allowed by the owner's explicit decision
+      // (issue #188; this case refused by name before that). With a
+      // channel argument the post goes through the bot token;
+      // without one it goes through the incoming webhook - the same
+      // two mechanisms internal callers use.
       case "slack.post":
       case "slack.notify":
-      case "slack.send":
-        return {
-          text:
-            "Refused: posting to Slack is not available over A2A. It is reachable only " +
-            "inside this Worker, because a shared bearer credential must not be enough to " +
-            "speak in this workspace.",
-          data: { ok: false, error: "not_available_over_a2a" },
-        };
+      case "slack.send": {
+        const postText = String(args.text || args.message || "").trim();
+        if (!postText) {
+          return { text: "slack.post needs a text argument.", data: { ok: false, error: "missing_text" } };
+        }
+        const channel = String(args.channel || "").trim();
+        if (channel) {
+          const r = await this.postMessage(channel, postText);
+          return r.ok
+            ? { text: `Posted to Slack channel ${channel} via the bot.`, data: { ok: true, via: "bot", channel } }
+            : { text: `Slack post failed: ${r.error}`, data: { ok: false, error: r.error } };
+        }
+        const r = await this.notifyViaWebhook(postText);
+        return r.ok
+          ? { text: "Posted to Slack via the incoming webhook.", data: { ok: true, via: "webhook" } }
+          : { text: `Slack post failed: ${r.error} Pass a channel argument to post via the bot instead.`, data: { ok: false, error: r.error } };
+      }
 
       default:
         return {

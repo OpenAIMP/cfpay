@@ -725,19 +725,16 @@ describe("the email migration cannot double-count or absorb Slack", () => {
     expect(agent).toMatch(/@callable\(\)\s*async getEmailTotals\s*\(/);
   });
 });
-describe("the Slack boundary is enforced by absence, not by a check", () => {
+describe("the Slack A2A boundary (owner's decision, issue #188)", () => {
   const sagent = readCode("src/slack-agent.ts");
 
-  it("exposes no A2A path to posting", () => {
-    // The control is the missing switch case. A guard that a check exists would be
-    // weaker: a check can be removed or bypassed, an absent operation cannot be.
+  it("exposes posting over A2A: channel posts via the bot, no channel via the webhook", () => {
+    // Posting over A2A was refused by name until the owner enabled
+    // it (issue #188). This guard pins the NEW behavior so the
+    // mapping cannot silently disappear again.
     expect(sagent).toContain('case "slack.list"');
-    for (const forbidden of ["slack.post", "slack.notify", "slack.send"]) {
-      const postCase = new RegExp(
-        'case "' + forbidden + '":[\\s\\S]{0,200}?await this\\.(postMessage|notifyViaWebhook)',
-      );
-      expect(sagent, forbidden + " must not map to a write").not.toMatch(postCase);
-    }
+    expect(sagent).toMatch(/case "slack\.post":[\s\S]{0,900}?await this\.postMessage/);
+    expect(sagent).toMatch(/case "slack\.post":[\s\S]{0,900}?await this\.notifyViaWebhook/);
   });
 
   it("never returns the bot token from an operation", () => {
