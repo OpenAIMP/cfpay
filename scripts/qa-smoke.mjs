@@ -352,6 +352,62 @@ async function main() {
     record("trading desk data endpoints respond", false, err.message);
   }
 
+  // 10. A2A dispatch (issue #102 step 3): the QA agent's A2A endpoint
+  //     refuses the unauthenticated, and an authenticated JSON-RPC
+  //     message/send carrying a data part dispatches the operation and
+  //     returns its result in the task artifact. qa.summary proves the
+  //     round-trip cheaply; qa.ux_audit against the fixture proves a
+  //     real browser operation travels the same path.
+  try {
+    const a2aSend = async (data, withAuth) => {
+      const res = await fetch(`${BASE_URL}/a2a/qa`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(withAuth ? { Authorization: `Bearer ${API_KEY}` } : {}),
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: `smoke-${data.operation}`,
+          method: "message/send",
+          params: {
+            message: {
+              kind: "message",
+              role: "user",
+              messageId: `smoke-${Date.now()}`,
+              parts: [{ kind: "data", data }],
+            },
+          },
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      return { status: res.status, json, blob: JSON.stringify(json || {}) };
+    };
+
+    const noAuth = await a2aSend({ operation: "qa.summary" }, false);
+    record("A2A refuses unauthenticated dispatch", noAuth.status === 401, `status=${noAuth.status}`);
+
+    const summary = await a2aSend({ operation: "qa.summary" }, true);
+    record(
+      "A2A qa.summary dispatch round-trips",
+      summary.status === 200 && summary.blob.includes("QA status.") && summary.blob.includes("completed"),
+      `status=${summary.status}`,
+    );
+
+    const audit = await a2aSend({ operation: "qa.ux_audit", spec: { pages: [`${BASE_URL}/qa-fixture.html`] } }, true);
+    if (isCapacityRefusal(audit.blob) && !audit.blob.includes("planted-faint")) {
+      skip("A2A qa.ux_audit dispatch returns findings", CAPACITY_WHY);
+    } else {
+      record(
+        "A2A qa.ux_audit dispatch returns findings",
+        audit.status === 200 && audit.blob.includes("planted-faint") && audit.blob.includes("Contrast"),
+        `status=${audit.status}`,
+      );
+    }
+  } catch (err) {
+    record("A2A dispatch", false, err.message);
+  }
+
   await finish();
 }
 
