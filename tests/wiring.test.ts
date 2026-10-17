@@ -1679,6 +1679,15 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("grid-template-columns:minmax(0,2fr) minmax(0,3fr)");
   });
 
+  it("the Endpoints view displays each agent's card (issue #177)", () => {
+    const pdata = read("public/public-data.js");
+    const a2aTest = read("src/a2a-test.ts");
+    expect(a2aTest).toContain("cardDescription");
+    expect(a2aTest).toContain("cardSkills");
+    expect(pdata).toContain("a2aCards");
+    expect(pdata).toContain("deskA2ACardHtml");
+  });
+
   it("the voice agent is wired (issue #168)", () => {
     const voice = read("src/voice-agent.ts");
     const a2a = read("src/a2a.ts");
