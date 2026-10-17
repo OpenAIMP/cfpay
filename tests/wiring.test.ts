@@ -1540,6 +1540,22 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("questionGroupChips(g)");
   });
 
+  it("the reactive loop ends with a no-tools synthesis, not a dead end", () => {
+    // On budget exhaustion the loop makes one final tool-less call so the
+    // model answers from the evidence already gathered (finishReason
+    // "budget_synthesis"); the canned message is only the fallback. The
+    // old behaviour - 10 turns, then "I stopped after N tool calls" -
+    // stranded comparison questions that had all the data they needed.
+    expect(agent).toContain("budget_synthesis");
+    expect(agent).toContain("budgetSynthesis(this.env.AI");
+    expect(read("src/models.ts")).toContain("You have no tool calls left");
+    // Pruning keeps the three most recent results whole and shortens
+    // older ones to 1,500 chars; the original 400-char cut made option
+    // chains useless mid-comparison and fed the re-pull loop.
+    expect(agent).toContain("const keep = 3;");
+    expect(agent).toContain("m.content.length > 1500");
+  });
+
   it("the chat route branches on the autopilot flag", () => {
     expect(api).toContain("body.autopilot");
     expect(api).toContain("agent.runAutopilot(");
