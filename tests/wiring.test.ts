@@ -1392,6 +1392,8 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(smoke).toContain("/api/dashboard/qa/investigate");
     expect(smoke).toContain("/a2a/qa");
     expect(smoke).toContain("qa.ux_audit dispatch returns findings");
+    expect(smoke).toContain("/api/dashboard/qa/desk-snapshot");
+    expect(smoke).toContain("Autopilot Trading Desk snapshot email");
     expect(smoke).toContain("investigateFailures");
   });
 
