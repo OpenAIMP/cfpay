@@ -1657,6 +1657,15 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(smoke).toContain("/api/dashboard/send-email");
   });
 
+  it("the notification center is wired (issue #163)", () => {
+    const pdata = read("public/public-data.js");
+    expect(pdata).toContain("notifyInit");
+    expect(pdata).toContain("notifyBadge");
+    expect(pdata).toContain("toggleNotifyPanel");
+    expect(pdata).toContain("refreshNotifications");
+    expect(pdata).toContain("cfmail_notify_seen");
+  });
+
   it("pending approvals notify the user (issue #161)", () => {
     const pdata = read("public/public-data.js");
     const host = read("src/agent.ts");
