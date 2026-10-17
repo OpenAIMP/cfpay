@@ -300,7 +300,7 @@ async function deskToggleRun(id) {
   try { const res = await api('/api/public/autopilot-runs/' + encodeURIComponent(id) + '/session'); box.innerHTML = deskRenderSession(res.messages); }
   catch (err) { deskErr(box, err); }
 }
-function deskRefreshAll() { deskLoadQuotes(); deskLoadPortfolio(); deskLoadRuns(); deskLoadHunts(); }
+function deskRefreshAll() { deskLoadQuotes(); deskLoadPortfolio(); deskLoadRuns(); deskLoadHunts(); deskUpdateApprovalNotice(); }
 
 
 // --- Answer trace + raw-data downloads (moved from the page; pubData and
@@ -460,6 +460,7 @@ function deskShowView(name) {
   if (name === 'tools') deskSyncToolsView();
   if (name === 'logs') deskRenderLogs();
   if (name === 'endpoints') deskRunA2ATests(true);
+  deskUpdateApprovalNotice();
 }
 
 function deskTraceLink(idx) {
@@ -562,6 +563,7 @@ function deskInitViews() {
     + '.desk-logs-duo{display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start;margin-bottom:1rem;}'
     + '.desk-logs-duo>.card{margin-bottom:0;}'
     + '.desk-rail:empty{display:none;}'
+    + '.desk-nav-badge{background:var(--amber);color:var(--on-accent);border-radius:999px;padding:0 0.42rem;font-size:0.7rem;font-weight:700;margin-left:0.4rem;}'
     + '#publicDesk:has(> .desk-rail:empty){grid-template-columns:minmax(0,1fr);}'
     + '@media (max-width:900px){.desk-duo,.desk-logs-duo{grid-template-columns:1fr;}}@media (max-width:760px){.desk-shell{flex-direction:column;}.desk-nav{flex-direction:row;flex-wrap:wrap;position:static;}}';
   document.head.appendChild(style);
@@ -674,6 +676,34 @@ function deskInitViews() {
     duo.appendChild(chatCard);
     duo.appendChild(huntCardEl);
   }
+
+  // Pending-approvals notification (issue #161): a badge on the Logs
+  // nav button + a banner on Trading that routes to the Logs page.
+  const logsBtn = shell.querySelector('.desk-nav-btn[data-view="logs"]');
+  if (logsBtn) {
+    const badge = document.createElement('span');
+    badge.id = 'deskLogsBadge';
+    badge.className = 'desk-nav-badge';
+    badge.style.display = 'none';
+    logsBtn.appendChild(badge);
+  }
+  const tradingSection = shell.querySelector('section.desk-view[data-view="trading"]');
+  const deskEl = document.getElementById('publicDesk');
+  if (tradingSection && deskEl) {
+    const notice = document.createElement('div');
+    notice.id = 'deskApprovalNotice';
+    notice.className = 'card';
+    notice.style.cssText = 'display:none;border-left:3px solid var(--amber);padding:0.7rem 1rem;margin-bottom:1rem;';
+    notice.innerHTML = '<strong>\u23f3 <span id="deskApprovalNoticeText"></span></strong>'
+      + '<button class="btn" style="padding:0.25rem 0.6rem;margin-left:0.5rem;" onclick="deskShowView(\'logs\')">Review on the Logs page</button>';
+    tradingSection.insertBefore(notice, deskEl);
+  }
+  // Proposals can be created from other surfaces too (host chat, A2A):
+  // refresh the notice periodically while the Public tab is open.
+  setInterval(() => {
+    const panel = document.getElementById('public');
+    if (panel && panel.classList.contains('active')) deskUpdateApprovalNotice();
+  }, 60000);
 
   // The per-answer model/tools meta line is a log line, not trading UI.
   const meta = document.getElementById('publicTools');
@@ -865,4 +895,35 @@ async function deskRunA2ATests(force, rpc) {
   }
   deskA2ARunning = false;
   deskRenderA2ATests();
+}
+
+// ---------------------------------------------------------------------------
+// Pending trade approvals notification (issue #161): the approvals queue
+// lives on the Logs view, so pending proposals announce themselves -
+// a badge on the Logs nav button and a banner on Trading.
+
+async function deskUpdateApprovalNotice() {
+  const badge = document.getElementById('deskLogsBadge');
+  const notice = document.getElementById('deskApprovalNotice');
+  if (!badge && !notice) return;
+  let pending = -1;
+  try {
+    const res = await api('/api/public/trades');
+    const proposals = (res && res.proposals) || [];
+    pending = proposals.filter((x) => x.status === 'pending').length;
+  } catch (e) {
+    return; // A failed read leaves the current surfaces untouched.
+  }
+  if (badge) {
+    badge.style.display = pending > 0 ? '' : 'none';
+    badge.textContent = String(pending);
+  }
+  if (notice) {
+    notice.style.display = pending > 0 ? '' : 'none';
+    const txt = document.getElementById('deskApprovalNoticeText');
+    if (txt) {
+      txt.textContent = pending + ' trade approval' + (pending === 1 ? '' : 's') + ' pending - ' +
+        (pending === 1 ? 'it expires' : 'they expire') + ' in 24 hours.';
+    }
+  }
 }
