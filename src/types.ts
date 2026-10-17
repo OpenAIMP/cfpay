@@ -78,6 +78,7 @@ export interface Env {
   SLACK_WEBHOOK_SECRET?: string;
   // Outgoing webhook URLs
   SLACK_WEBHOOK_URL?: string;
+  SLACK_QA_CHANNEL_ID?: string;
   // Outbound x402 payments (agent spending). Both must be configured before the
   // agent will send funds; see CfmailAgentSQLite.payExternalEndpoint.
   // Static bearer token accepted by /mcp. A GitHub token is also accepted and
