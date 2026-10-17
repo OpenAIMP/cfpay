@@ -2045,6 +2045,266 @@ export class QAAgent extends Think<Env> {
     }
   }
 
+
+  /**
+   * RPC: email a snapshot of the Autopilot Trading Desk (2026-10-17, at
+   * Mubasher's direction) - a SEPARATE email from the QA report, which
+   * is unchanged. Opens the dashboard on the Public tab, waits for the
+   * desk to load, and captures five screenshots of the trading
+   * workflow: desk overview, trading chat, autopilot runs, the
+   * portfolio/chain rail, and trade approvals (or the trading-status
+   * card when no proposal exists and the approvals card is hidden).
+   */
+  @callable()
+  async qaDeskSnapshotEmail(
+    apiKey: string,
+    toEmail: string,
+    runId?: string,
+  ): Promise<{ ok: boolean; emailed: boolean; shots: string[]; error?: string }> {
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return { ok: false, emailed: false, shots: [], error: "Browser binding not configured" };
+    }
+    if (!apiKey) {
+      return { ok: false, emailed: false, shots: [], error: "API key required" };
+    }
+    if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
+      return { ok: false, emailed: false, shots: [], error: "Valid toEmail required" };
+    }
+    const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    this.emitLive(runId, { kind: "step", label: "Capturing Autopilot Trading Desk snapshots" });
+
+    const shotSpecs: { name: string; anchor: string; fallbackAnchor?: string; label: string }[] = [
+      { name: "overview", anchor: "publicDesk", label: "Desk overview - watchlist and status" },
+      { name: "chat", anchor: "publicChatCard", label: "Trading chat and Ask composer" },
+      { name: "runs", anchor: "deskRuns", label: "Autopilot runs" },
+      { name: "portfolio", anchor: "deskPortfolio", label: "Portfolio and option chain rail" },
+      {
+        name: "approvals",
+        anchor: "publicTradesCard",
+        fallbackAnchor: "publicTradingTitle",
+        label: "Trade approvals and trading status",
+      },
+    ];
+
+    let browser: CdpLike | null = null;
+    const attachments: { filename: string; type: string; content: string }[] = [];
+    const shotNames: string[] = [];
+    let deskSummary = "";
+    try {
+      const cdp = await this.openBrowserSession(env);
+      browser = cdp;
+      const { targetId } = (await cdp.send("Target.createTarget", {
+        url: "about:blank",
+      })) as { targetId: string };
+      let stopFrames: () => void = () => {};
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+        stopFrames = this.startFrameStream(cdp, sessionId, runId);
+        await cdp
+          .send(
+            "Emulation.setDeviceMetricsOverride",
+            { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false },
+            { sessionId },
+          )
+          .catch(() => {});
+
+        await cdp.send("Page.navigate", { url: origin }, { sessionId });
+        await new Promise((r) => setTimeout(r, 3000));
+        await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `localStorage.setItem(${JSON.stringify(
+              DASHBOARD_API_KEY_STORAGE_KEY,
+            )}, ${JSON.stringify(apiKey)})`,
+          },
+          { sessionId },
+        );
+        await cdp.send("Page.reload", {}, { sessionId });
+        await new Promise((r) => setTimeout(r, 4000));
+
+        const loginCheck = (await cdp
+          .send(
+            "Runtime.evaluate",
+            {
+              expression: `!!document.getElementById('login') && getComputedStyle(document.getElementById('login')).display !== 'none'`,
+              returnByValue: true,
+            },
+            { sessionId },
+          )
+          .catch(() => null)) as { result?: { value?: boolean } } | null;
+        if (loginCheck?.result?.value === true) {
+          return {
+            ok: false,
+            emailed: false,
+            shots: [],
+            error: "Dashboard showed the login page; the API key was not accepted.",
+          };
+        }
+
+        // Open the Public tab and give the desk time to load its panels.
+        await cdp.send(
+          "Runtime.evaluate",
+          {
+            expression: `(() => { const el = document.querySelector('[data-tab="public"]'); if (el) el.click(); return !!el; })()`,
+            returnByValue: true,
+          },
+          { sessionId },
+        );
+        // Poll until the desk is visible and the watchlist has rendered
+        // (or the wait budget ends - a disconnected desk still snapshots).
+        const deadline = Date.now() + 15000;
+        for (;;) {
+          const ready = (await cdp
+            .send(
+              "Runtime.evaluate",
+              {
+                expression: `(() => { const d = document.getElementById('publicDesk'); if (!d || getComputedStyle(d).display === 'none') return false; const w = document.getElementById('deskWatch'); return !!w && !/Loading/.test(w.innerText || ''); })()`,
+                returnByValue: true,
+              },
+              { sessionId },
+            )
+            .catch(() => null)) as { result?: { value?: boolean } } | null;
+          if (ready?.result?.value === true) break;
+          if (Date.now() > deadline) break;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+
+        const summary = (await cdp
+          .send(
+            "Runtime.evaluate",
+            {
+              expression: `JSON.stringify({
+                connected: !!document.getElementById('publicDesk') && getComputedStyle(document.getElementById('publicDesk')).display !== 'none',
+                watch: (document.getElementById('deskWatch') ? document.getElementById('deskWatch').innerText : '').replace(/\\s+/g, ' ').slice(0, 280),
+                portfolio: (document.getElementById('deskPortfolio') ? document.getElementById('deskPortfolio').innerText : '').replace(/\\s+/g, ' ').slice(0, 280),
+                runs: (document.getElementById('deskRuns') ? document.getElementById('deskRuns').innerText : '').replace(/\\s+/g, ' ').slice(0, 280)
+              })`,
+              returnByValue: true,
+            },
+            { sessionId },
+          )
+          .catch(() => null)) as { result?: { value?: string } } | null;
+        deskSummary = summary?.result?.value ?? "";
+
+        const dateStr = new Date().toISOString().slice(0, 10);
+        for (const spec of shotSpecs) {
+          const scrollExpr = `(() => {
+            let el = document.getElementById(${JSON.stringify(spec.anchor)});
+            if ((!el || el.offsetParent === null) && ${JSON.stringify(spec.fallbackAnchor ?? "")}) {
+              el = document.getElementById(${JSON.stringify(spec.fallbackAnchor ?? "")});
+            }
+            if (el) { el.scrollIntoView({ block: "start" }); window.scrollBy(0, -70); return true; }
+            return false;
+          })()`;
+          await cdp
+            .send("Runtime.evaluate", { expression: scrollExpr, returnByValue: true }, { sessionId })
+            .catch(() => null);
+          await new Promise((r) => setTimeout(r, 700));
+          try {
+            const { data } = (await cdp.send(
+              "Page.captureScreenshot",
+              { format: "png" },
+              { sessionId },
+            )) as { data?: string };
+            if (data) {
+              attachments.push({
+                filename: `desk-${spec.name}-${dateStr}.png`,
+                type: "image/png",
+                content: data,
+              });
+              shotNames.push(spec.name);
+              this.emitLive(runId, {
+                kind: "screenshot",
+                label: `Desk: ${spec.label}`,
+                image: `data:image/png;base64,${data}`,
+              });
+            }
+          } catch {
+            // A missed view is noted in the manifest, never fatal.
+          }
+        }
+      } finally {
+        stopFrames();
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        emailed: false,
+        shots: shotNames,
+        error: describeBrowserFailure(err),
+      };
+    } finally {
+      closeConnectionQuietly(browser);
+    }
+
+    if (attachments.length === 0) {
+      return { ok: false, emailed: false, shots: [], error: "No desk screenshots could be captured." };
+    }
+
+    let desk: { connected?: boolean; watch?: string; portfolio?: string; runs?: string } = {};
+    try {
+      desk = JSON.parse(deskSummary || "{}");
+    } catch {
+      desk = {};
+    }
+    const manifest = shotSpecs
+      .filter((s) => shotNames.includes(s.name))
+      .map((s) => `- desk-${s.name}: ${s.label}`)
+      .join("\n");
+    const body = [
+      `Autopilot Trading Desk Snapshot - ${new Date().toISOString()}`,
+      ``,
+      `Public.com connection: ${desk.connected ? "connected" : "NOT connected (desk panels hidden)"}`,
+      ``,
+      `Watchlist: ${desk.watch || "n/a"}`,
+      ``,
+      `Portfolio: ${desk.portfolio || "n/a"}`,
+      ``,
+      `Autopilot runs: ${desk.runs || "n/a"}`,
+      ``,
+      `Attached screenshots (${attachments.length}):`,
+      manifest,
+      ``,
+      `Dashboard: ${origin}`,
+      ``,
+      `Generated by QAAgent`,
+    ].join("\n");
+
+    try {
+      const { emailAgentStub } = await import("./email-tool");
+      const emailAgent = emailAgentStub(this.env as Env);
+      if (!emailAgent) {
+        return { ok: false, emailed: false, shots: shotNames, error: "The email agent is unavailable." };
+      }
+      this.emitLive(runId, { kind: "step", label: "Emailing desk snapshots", detail: toEmail });
+      const sendResult = await emailAgent.sendThroughAgent({
+        to: toEmail,
+        subject: `Autopilot Trading Desk Snapshot - ${new Date().toISOString().slice(0, 10)}`,
+        body,
+        attachments,
+      });
+      if (!sendResult?.ok) {
+        return {
+          ok: false,
+          emailed: false,
+          shots: shotNames,
+          error: sendResult?.error || "The email agent refused the send.",
+        };
+      }
+      this.emitLive(runId, { kind: "result", label: "Desk snapshot emailed", ok: true, detail: toEmail });
+      return { ok: true, emailed: true, shots: shotNames };
+    } catch (err) {
+      return {
+        ok: false,
+        emailed: false,
+        shots: shotNames,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   /**
    * RPC: run the full dashboard QA suite in order and return an aggregate
    * result. Each check runs sequentially and manages its own browser session
