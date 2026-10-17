@@ -426,7 +426,7 @@ export function slackCard(origin: string): AgentCard {
   return {
     name: "CFmail Slack Agent",
     description:
-      "Owns the Slack bot token, the Slack message history, and the ability to post. Reads are available over A2A; posting is not, because a shared bearer credential must not be enough to speak in this workspace. The bot token is never returned by any operation.",
+      "Owns the Slack bot token, the Slack message history, and the ability to post. Reads and posting (slack.post) are available over A2A - posting was enabled by the owner's explicit decision (issue #188); the same credential already authorizes email.send. The bot token itself is never returned by any operation.",
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_SLACK_RPC_PATH,
@@ -440,7 +440,7 @@ export function slackCard(origin: string): AgentCard {
         id: "slack-channel",
         name: "Slack channel",
         description:
-          "Report on Slack connectivity and message history. Posting is deliberately not offered: slack.post, slack.notify and slack.send are refused by name. The credential is never disclosed, only whether one is configured and where it came from.",
+          "Report on Slack connectivity and message history, and post to Slack (slack.post: with a channel argument via the bot token, without one via the incoming webhook). The credential is never disclosed, only whether one is configured and where it came from.",
         tags: ["slack", "read-only", "no-credential-disclosure"],
         examples: [
           "Is Slack connected?",
