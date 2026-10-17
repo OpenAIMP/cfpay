@@ -741,7 +741,7 @@ async function emailHuntReport(id) {
   try {
     const res = await api('/api/public/opportunity-hunts/' + id + '/email', 'POST', { toEmail });
     if (res.error) throw new Error(res.error);
-    if (st) st.textContent = res.emailed ? 'PDF report sent to ' + toEmail + '.' : 'The send did not complete.';
+    if (st) st.textContent = res.emailed ? 'PDF report sent to ' + toEmail + '.' + (res.slackPosted ? ' Also posted to Slack.' : '') : 'The send did not complete.';
   } catch (e) {
     if (st) st.textContent = 'Failed: ' + (e.message || e);
   }

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { postFilesToSlack } from "./slack-files";
 import { safeStringify } from "./browser-lifecycle";
 import Stripe from "stripe";
 import type { Env, PaymentClaim, StripeConfig } from "./types";
@@ -443,7 +444,25 @@ export function createApp() {
         },
       ],
     });
-    return c.json({ emailed: result.ok, error: result.error });
+    // The same PDF also goes to Slack (bot file upload; the incoming
+    // webhook cannot carry files). Best-effort, reported in the result.
+    const slack = result.ok
+      ? await postFilesToSlack(
+          c.env,
+          "Opportunity hunt report (PDF attached)",
+          [{
+            filename: `opportunity-hunt-${hunt.createdAt.slice(0, 10)}.pdf`,
+            contentB64: printed.pdfBase64,
+            title: `opportunity-hunt-${hunt.createdAt.slice(0, 10)}.pdf`,
+          }],
+        )
+      : { configured: false, posted: 0 };
+    return c.json({
+      emailed: result.ok,
+      error: result.error,
+      slackPosted: slack.posted,
+      slackConfigured: slack.configured,
+    });
   });
 
   // Trading desk data reads (issue #112 part 2): the desk's panels call

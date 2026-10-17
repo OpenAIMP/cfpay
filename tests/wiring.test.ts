@@ -1634,6 +1634,16 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("deskShowView('trading')");
   });
 
+  it("screenshots and the hunt PDF mirror to Slack via the bot file API", () => {
+    const qa = read("src/qa-agent.ts");
+    const api = read("src/api.ts");
+    const files = read("src/slack-files.ts");
+    expect(files).toContain("files.getUploadURLExternal");
+    expect(files).toContain("SLACK_QA_CHANNEL_ID");
+    expect(qa).toContain("postFilesToSlack");
+    expect(api).toContain("postFilesToSlack");
+  });
+
   it("the PDF pipeline test is wired into post-deploy QA", () => {
     const qa = read("src/qa-agent.ts");
     const api = read("src/api.ts");
