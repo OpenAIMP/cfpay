@@ -126,6 +126,7 @@ async function get(path) {
 // the CI log carries a diagnosis and not just a red X. Runs once,
 // best-effort, and never changes the exit code.
 let investigated = false;
+let lastDiagnosis = "";
 async function investigateFailures() {
   if (investigated) return;
   investigated = true;
@@ -139,6 +140,7 @@ async function investigateFailures() {
       ". Investigate the site, find the likely cause, and report what is broken and what evidence supports it.";
     const { status, json } = await post("/api/dashboard/qa/investigate", { question, url: BASE_URL, profile: true });
     if (status === 200 && json && json.answer) {
+      lastDiagnosis = String(json.answer);
       console.log(`  [INVESTIGATE] ${String(json.answer).split("\n").join("\n  ")}`);
     } else if (json && json.error) {
       console.log(`  [INVESTIGATE] no diagnosis: ${String(json.error).slice(0, 300)}`);
@@ -231,8 +233,103 @@ async function sendSummaryEmail() {
   }
 }
 
+// Self-healing QA loop, phase 1 (issue #193): a gated failure files
+// ONE GitHub issue per failing section - carrying the detail, the
+// run link, and the investigator's diagnosis - comments on repeats
+// instead of duplicating, and auto-closes an issue when its section
+// demonstrably passes again. Runs on the GitHub Actions context
+// (GITHUB_TOKEN + run env); silently inert outside it. Best-effort:
+// never changes the exit code. QA_SELF_HEAL=false disables.
+async function fileSelfHealIssues() {
+  if (String(process.env.QA_SELF_HEAL || "").toLowerCase() === "false") return;
+  const token = process.env.GITHUB_TOKEN || "";
+  const repo = process.env.GITHUB_REPOSITORY || "";
+  if (!token || !repo) return;
+  const runUrl = process.env.GITHUB_RUN_ID
+    ? `${process.env.GITHUB_SERVER_URL || "https://github.com"}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`
+    : "";
+  const api = `https://api.github.com/repos/${repo}`;
+  const gh = async (method, path, body) => {
+    const res = await fetch(`${api}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "cfpay-qa-smoke",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const json = await res.json().catch(() => null);
+    return { status: res.status, json };
+  };
+  try {
+    const list = await gh("GET", "/issues?state=open&per_page=100");
+    if (list.status !== 200 || !Array.isArray(list.json)) {
+      console.log(`  [SELF-HEAL] could not list issues (status=${list.status})`);
+      return;
+    }
+    const mine = list.json.filter(
+      (i) => !i.pull_request && String(i.title || "").startsWith("[QA self-heal] "),
+    );
+    const failures = results.filter((r) => !r.ok && !r.skipped);
+    const failingNames = new Set(failures.map((f) => f.name));
+    const diag = lastDiagnosis
+      ? `\n\nInvestigator diagnosis (QAAgent, this run):\n\n${lastDiagnosis.slice(0, 4000)}`
+      : "\n\n(The investigator produced no diagnosis for this run.)";
+    for (const f of failures) {
+      const title = `[QA self-heal] ${f.name}`;
+      const existing = mine.find((i) => i.title === title);
+      const detail = `Section: **${f.name}**\nDetail: ${f.detail || "(none)"}\nWhen: ${new Date().toISOString()}${runUrl ? `\nRun: ${runUrl}` : ""}`;
+      if (existing) {
+        const c = await gh("POST", `/issues/${existing.number}/comments`, {
+          body: `Still failing - a new occurrence from the latest deploy.${"\n\n"}${detail}${diag}`,
+        });
+        console.log(
+          c.status === 201
+            ? `  [SELF-HEAL] updated #${existing.number} for "${f.name}"`
+            : `  [SELF-HEAL] could not comment on #${existing.number} (status=${c.status})`,
+        );
+      } else {
+        const created = await gh("POST", "/issues", {
+          title,
+          body:
+            `Filed automatically by the post-deploy QA smoke (self-healing loop, phase 1 - issue #193).\n\n${detail}${diag}` +
+            `\n\nWhat happens next: a human (or a future phase-2 fixer) diagnoses from the above, branches, and opens a fix PR referencing this issue. This issue auto-closes when the section passes again on a deploy.`,
+        });
+        if (created.status === 201) {
+          console.log(`  [SELF-HEAL] filed #${created.json.number} for "${f.name}"`);
+        } else if (created.status === 403) {
+          console.log("  [SELF-HEAL] could not file (403 - the qa-smoke job's GITHUB_TOKEN needs issues: write)");
+        } else {
+          console.log(`  [SELF-HEAL] could not file for "${f.name}" (status=${created.status})`);
+        }
+      }
+    }
+    // Loop closure: an open self-heal issue whose section ran GREEN
+    // in this run is commented and closed. A skipped section proves
+    // nothing and closes nothing.
+    for (const issue of mine) {
+      const name = issue.title.slice("[QA self-heal] ".length);
+      if (failingNames.has(name)) continue;
+      const r = results.find((x) => x.name === name);
+      if (r && r.ok && !r.skipped) {
+        await gh("POST", `/issues/${issue.number}/comments`, {
+          body: `Passing again as of the latest deploy${runUrl ? ` (${runUrl})` : ""} - closing.`,
+        });
+        const closed = await gh("PATCH", `/issues/${issue.number}`, { state: "closed", state_reason: "completed" });
+        console.log(`  [SELF-HEAL] closed #${issue.number} ("${name}" passes again, status=${closed.status})`);
+      }
+    }
+  } catch (err) {
+    console.log(`  [SELF-HEAL] failed to run: ${err.message}`);
+  }
+}
+
 async function finish() {
   await investigateFailures();
+  await fileSelfHealIssues();
   await sendSummaryEmail();
   const ran = results.filter((r) => !r.skipped).length;
   const skipped = results.filter((r) => r.skipped).length;
