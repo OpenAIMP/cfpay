@@ -147,6 +147,46 @@ Update `PAY_TO_ADDRESS` with your MetaMask wallet address on Base.
 3. Onboard `cfmail.openaimp.com` for [Email Sending](https://dash.cloudflare.com/?to=/:account/email-service/sending)
 4. Create routing rule: `agent@cfmail.openaimp.com` → Send to Worker → `cfmail-agent`
 
+## Public.com Autopilot Trading Desk
+
+The Public tab is an analysis and execution desk over a connected Public.com account. The Public.com MCP server is the only source of market and account facts (and the only execution venue); everything the user reads as prose is the agent's analysis over that data - Public.com itself emits no verdicts or recommendations.
+
+### Capabilities
+
+- **Reactive Q&A** - questions answered by a bounded tool loop over the live MCP catalogue (quotes, option chains, portfolio, account and order reads), under an evidence-only answer contract: a figure the tools did not return is reported as `n/a`, never estimated.
+- **Autopilot pipeline** - a goal-oriented run for multi-part questions: Goal -> Planner -> Task Queue -> Executor -> Verifier, at most one replan aimed at the verifier's named gaps, then a synthesis written from the verified evidence. Runs persist per-run (newest 20) with a Sessions transcript each.
+- **Trading desk** - watchlist quotes, portfolio positions, and an option-chain viewer served by read endpoints with **no model in the numbers path**; clicking a contract drafts a prefilled question. A classified library of 71 questions (tier / outlook / premium) seeds the composer, and every exchange keeps its raw tool data downloadable (JSON/CSV per call) so model prose and Public.com data stay separable.
+- **Trade approvals** - with `PUBLIC_ALLOW_TRADING` on, an order-placing tool call never executes in the model turn. It is recorded as a proposal (tool + exact arguments + originating question) and a workflow waits up to 24h for a human decision; only an approval executes, exactly the call shown.
+- **Opportunity hunt** (issue #135) - a budget-bounded scan for premium-selling trades: the pipeline gathers live chain evidence and proposes candidates; deterministic code verifies and sizes them (below), and the resulting plan renders as an HTML report or an emailed PDF. Report-only - the hunt has no path to an order.
+
+### Separation of concerns
+
+| Component | Owns | Never does |
+|---|---|---|
+| **Model** (Workers AI; desk picker, default GPT-OSS 120B) | Planning, tool selection, reading evidence, candidate discovery, theses, probability estimates, prose | Hold credentials, execute orders, source a number, size a position |
+| **Host agent** (`CfmailAgentSQLite`) | The Public token, the tool loop and its budgets, run/proposal state (one SQL table per run type), the answer contracts | Let a model turn place an order; store runs inside the shared state blob |
+| **Deterministic modules** (`src/models.ts`, `src/public-autopilot.ts`, `src/opportunity-hunt.ts`, `src/public-data.ts`) | Context budgeting and pruning, the pipeline's step/budget/replan bounds, hunt risk math and caps, mapping semantic arguments onto the tools' live input schemas | Invent data - inputs are tool results and the live spot only |
+| **API layer** (`src/api.ts`) | Dashboard auth on every route, cross-agent orchestration (e.g. hunt report: host data -> QAAgent prints the PDF -> EmailAgent sends it) | Business logic that belongs to an agent |
+| **Trade workflow** (`src/trade-workflow.ts`) | The only execution path: wait-for-approval, the decision record, claim-to-`executing` persisted *before* calling Public (no double placement), credentials re-read at execution time | Execute without a recorded human approval |
+| **QAAgent** | Browser verification of the product itself: dashboard checks, UX audits, failure investigation, desk snapshots, PDF printing | Anything in the trading path |
+| **EmailAgent** | The only sender; attachment validation, caps, and base64-to-binary decoding | Send on a model's say-so outside a user- or system-initiated flow |
+| **Dashboard UI** | Presentation, the approvals queue, raw-data downloads | Hold a number's provenance - figures render from tool data or the plan store |
+
+### Split of duties
+
+| Decision or action | Model | Deterministic code | Human |
+|---|---|---|---|
+| What to investigate; the plan's steps | Proposes | Bounds (max steps, per-step tool budgets, one replan) | Asks the question |
+| Tool calls | Chooses tool + semantic intent | Maps arguments onto the live schema; refuses unmapped required parameters | - |
+| Figures in an answer | Phrases them | Supplies them - tool results only, `n/a` otherwise | - |
+| Whether evidence supports the goal | Verifier judges, names gaps | Enforces the replan bound; the answer is synthesized from verified evidence only | - |
+| Candidate trades (hunt) | Discovers them; writes thesis + invalidation; estimates probability from deltas | **Verifies** moneyness against a fresh live spot, structure (defined-risk only), and expiry | Sets the budget - a planning constraint, never a spend authorization |
+| Position sizing (hunt) | - | Computes per-contract risk from the legs; ranks by expected value per dollar of risk; allocates under the caps (per-trade <= 2% of budget by default, per-underlying <= 25%, total <= budget) | - |
+| Placing an order | Never | Executes the approved call exactly as proposed, once, after the workflow's claim | Approves or rejects in the Trade approvals card |
+| QA verdicts | Narrates investigations | Deterministic pass/fail checks; capacity refusals degrade to skips, never passes | - |
+
+Invariants that follow from the split: no number in any answer or plan originates from the model; no order executes inside a model turn; a budget bounds a *plan*, and only a human approval moves money; the Public access token is used by the tool transport only - it never appears in prompts, run records, or reports.
+
 ## Post-deploy QA (automated testing)
 
 Every push to `main` deploys the Worker and then runs `scripts/qa-smoke.mjs` against live production (the **Post-deploy QA** job in `.github/workflows/deploy.yml`). A green deploy only proves the upload worked; this job proves the app works. The exit code is the contract — any FAIL fails the job, and a check that cannot run reports SKIP with the reason, never a silent pass.
@@ -229,6 +269,8 @@ Run any watched check from the QA tab — **Verify Tab Data** is the longest —
 The stream is capture polling (about 1 fps), not `Page.startScreencast` — the Agents SDK's CDP client discards protocol events, so screencast frames cannot reach the agent through the connection the checks use. True screencast is tracked in issue #102.
 
 #### Testing the Public.com autopilot
+
+What the autopilot is and who does what: see **Public.com Autopilot Trading Desk** above.
 
 The Public tab's **Autopilot** toggle runs a question as a goal instead of a single reactive chat turn: a planner decomposes it into steps (max 6), each step executes with its own tool budget and writes a finding into the run's evidence, a verifier judges the evidence against the goal (complete / incomplete, a confidence score, and the gaps by name), and at most one replan (max 3 follow-up steps aimed at the gaps) runs before the answer is synthesized from the verified evidence. Runs persist in agent state (newest 20), and each run also records a transcript into the agent's Sessions store under `autopilot-<runId>`. Order-placing calls inside steps still become approval-gated trade proposals — autopilot never executes a trade. It costs several times the Workers AI calls of a plain question, so use it for multi-part goals, not lookups.
 
