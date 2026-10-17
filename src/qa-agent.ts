@@ -1,12 +1,9 @@
-/**
- * QAAgent - autonomous QA agent (issue #42 Think migration): drives a
- * real browser to load pages and report pass/fail. Extends Think, so
- * it is a valid agentTool() child; reachable via @callable() RPC, the
- * A2A operation at /a2a/qa, and host-agent dispatch.
- */
+/** QAAgent: drives a real browser to check pages and report pass/fail. */
 import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, sha256Hex, summarizeBaselines, summarizeEvidence, viewportListOf } from "./ux-audit-spec";
 import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mergeDiscoveredTabs } from "./tab-coverage";
 import { openProfileConnection, profileRowClear, profileRowGet, profileRowSet, profileSessionAlive } from "./browser-profile";
+import { composeA2AEmail, runA2AEndpointTests } from "./a2a-test";
+import type { A2ARow } from "./a2a-test";
 import type { BaselineResult, PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 import { callable } from "agents";
@@ -54,20 +51,10 @@ export interface QALiveEvent {
   image?: string;
 }
 
-/**
- * The localStorage key the dashboard reads its API key from. Must
- * match public/index.html (`cfmail_api_key`): QAAgent previously
- * seeded a key the dashboard never reads, so "authenticated" checks
- * silently asserted against the login page. Guarded in wiring tests.
- */
+/** The localStorage key the dashboard reads its API key from (must match index.html). */
 export const DASHBOARD_API_KEY_STORAGE_KEY = "cfmail_api_key";
 
-/**
- * The design rules the UX audit enforces (issue #91). The guidelines are
- * data, versioned here, so "conforms to the design guidelines" means
- * conformance to these written values — and changing a guideline is a
- * reviewed code change, not a prompt edit.
- */
+/** The UX audit's design rules (issue #91): data, so changing one is a reviewed code change. */
 export const UX_RULES = {
   /** WCAG AA minimum contrast ratio for normal text. */
   contrastNormal: 4.5,
@@ -326,16 +313,8 @@ interface CdpLike {
   close(): void;
 }
 
-/**
- * Turn a browser-layer failure into a message that names the likely
- * cause - the raw text for a session-limit refusal points at
- * wrangler.jsonc, which sends you to the wrong file.
- */
-/**
- * True when the error is the "did not return a WebSocket" refusal from
- * connectBrowser, which is how Browser Rendering reports that it could not
- * allocate a session (concurrency or quota) rather than a missing binding.
- */
+/** Name a browser failure's likely cause (the raw refusal text misleads). */
+/** True for the "did not return a WebSocket" capacity refusal. */
 function isCapacityRefusal(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return /did not return a WebSocket/i.test(message);
@@ -392,11 +371,7 @@ export class QAAgent extends Think<Env> {
     ].join(" ");
   }
 
-  /**
-   * No tools of its own: this agent IS the tool. It exposes capabilities through
-   * @callable() methods and A2A, which does not require an AI SDK tool set.
-   * (Browser CDP is used directly in runBrowserCheckCDP below for deterministic checks.)
-   */
+  /** No tools of its own: this agent IS the tool (capabilities via @callable + A2A). */
   override getTools() {
     // EmailAgent as a tool: QAAgent can dispatch email sends via the Think framework.
     // This makes the email capability available for LLM-driven dispatch.
@@ -622,12 +597,7 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-  /**
-   * Live frame stream (issue #88): ~1fps capture polling, NOT
-   * Page.startScreencast - the SDK's CDP client discards protocol
-   * events (issue #102). Best-effort; never touches verdicts.
-   * Returns the stop function.
-   */
+  /** Live frame stream (issue #88): ~1fps capture polling; returns the stop fn. */
   private startFrameStream(
     cdp: CdpLike,
     sessionId: string,
@@ -668,12 +638,7 @@ export class QAAgent extends Think<Env> {
     };
   }
 
-  /**
-   * RPC (over the agent socket): the live events for a run after `sinceSeq`.
-   * The panel polls this as a catch-up/backstop to the broadcast stream, so
-   * a watcher that connected late — or whose socket hiccuped — still sees
-   * the whole run in order.
-   */
+  /** RPC: a run's live events after `sinceSeq` (the panel's poll backstop). */
   @callable()
   async qaLiveSnapshot(
     runId: string,
@@ -1355,6 +1320,38 @@ export class QAAgent extends Think<Env> {
     } finally {
       closeConnectionQuietly(conn);
     }
+  }
+
+  /**
+   * A2A endpoint test email: probe every agent's A2A surface over HTTP
+   * (card served, 401 without auth, snapshot reply with auth - all
+   * read-only; see src/a2a-test.ts) and email the results.
+   */
+  @callable()
+  async qaA2ATestEmail(
+    apiKey: string,
+    toEmail: string,
+    runId?: string,
+  ): Promise<{ ok: boolean; emailed: boolean; results: A2ARow[]; error?: string }> {
+    const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const rows = await runA2AEndpointTests(origin, apiKey);
+    const { subject, body, allOk } = composeA2AEmail(rows);
+    this.emitLive(runId, {
+      kind: "result",
+      label: "A2A endpoint tests",
+      ok: allOk,
+      detail: `${rows.filter((r) => r.ok).length}/${rows.length} surfaces responding`,
+    });
+    const { emailAgentStub } = await import("./email-tool");
+    const emailAgent = emailAgentStub(this.env as Env);
+    if (!emailAgent) return { ok: allOk, emailed: false, results: rows, error: "Email agent unavailable" };
+    const sendResult = await emailAgent.sendThroughAgent({ to: toEmail, subject, body });
+    return {
+      ok: allOk,
+      emailed: !!sendResult?.ok,
+      results: rows,
+      error: sendResult?.ok ? undefined : sendResult?.error || "The email agent refused the send.",
+    };
   }
 
   /** Render standalone HTML to a PDF (issue #135): Page.printToPDF on a data: URL. */
