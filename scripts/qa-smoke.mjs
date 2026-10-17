@@ -108,6 +108,8 @@ async function investigateFailures() {
     const { status, json } = await post("/api/dashboard/qa/investigate", { question, url: BASE_URL, profile: true });
     if (status === 200 && json && json.answer) {
       console.log(`  [INVESTIGATE] ${String(json.answer).split("\n").join("\n  ")}`);
+    } else if (json && json.error) {
+      console.log(`  [INVESTIGATE] no diagnosis: ${String(json.error).slice(0, 300)}`);
     } else {
       console.log(`  [INVESTIGATE] no diagnosis (status=${status})`);
     }
@@ -389,20 +391,30 @@ async function main() {
     const noAuth = await a2aSend({ operation: "qa.summary" }, false);
     record("A2A refuses unauthenticated dispatch", noAuth.status === 401, `status=${noAuth.status}`);
 
+    // The transport's message/send result is the agent's reply Message
+    // (kind: "message" with the text part), not a Task - assert that
+    // real shape, not the shape one might assume from the spec diagram.
     const summary = await a2aSend({ operation: "qa.summary" }, true);
+    const summaryParts = summary.json?.result?.parts || [];
     record(
       "A2A qa.summary dispatch round-trips",
-      summary.status === 200 && summary.blob.includes("QA status.") && summary.blob.includes("completed"),
+      summary.status === 200 &&
+        summary.json?.result?.kind === "message" &&
+        summaryParts.some((p) => p.kind === "text" && String(p.text || "").includes("QA status.")),
       `status=${summary.status}`,
     );
 
+    // The reply Message carries the dispatch's text summary (the failing
+    // check names); the structured artifact does not cross message/send,
+    // so assert on the text: the fixture must report failing checks and
+    // name the contrast rule among them.
     const audit = await a2aSend({ operation: "qa.ux_audit", spec: { pages: [`${BASE_URL}/qa-fixture.html`] } }, true);
-    if (isCapacityRefusal(audit.blob) && !audit.blob.includes("planted-faint")) {
+    if (isCapacityRefusal(audit.blob)) {
       skip("A2A qa.ux_audit dispatch returns findings", CAPACITY_WHY);
     } else {
       record(
         "A2A qa.ux_audit dispatch returns findings",
-        audit.status === 200 && audit.blob.includes("planted-faint") && audit.blob.includes("Contrast"),
+        audit.status === 200 && audit.blob.includes("found failing checks") && audit.blob.includes("Contrast (WCAG AA)"),
         `status=${audit.status}`,
       );
     }
