@@ -30,12 +30,14 @@ import { SlackAgent } from "./slack-agent";
 import { QAAgent } from "./qa-agent";
 import { ChatAgent } from "./chat-agent";
 import { SearchAgent } from "./search-agent";
+import { VoiceAgent } from "./voice-agent";
 import { OrchestratorAgent } from "./orchestrator-agent";
 import {
   paymentAgentToolSchema,
   slackAgentToolSchema,
   chatAgentToolSchema,
   searchAgentToolSchema,
+  voiceAgentToolSchema,
   orchestratorAgentToolSchema,
   qaAgentToolSchema,
   webhookAgentToolSchema,
@@ -201,6 +203,21 @@ export const searchAgentTool = agentTool<AgentToolInput>(SearchAgent, {
   ].join(" "),
   displayName: "Search Agent",
   inputSchema: asZod<AgentToolInput>(searchAgentToolSchema),
+});
+
+/**
+ * Dispatch the voice agent (issues #168/#173): the spoken channel to
+ * the desk. voice.ask runs one question through the desk pipeline
+ * and returns the speakable answer text; nothing is executed - the
+ * pipeline's approval gates apply exactly as for typed questions.
+ */
+export const voiceAgentTool = agentTool<AgentToolInput>(VoiceAgent, {
+  description: [
+    "Dispatch the voice agent to report the voice conversation state (voice.snapshot) or to run one question through the desk pipeline and return its speakable answer (voice.ask).",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Voice Agent",
+  inputSchema: asZod<AgentToolInput>(voiceAgentToolSchema),
 });
 
 /**

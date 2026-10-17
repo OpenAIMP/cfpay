@@ -172,6 +172,20 @@ export const searchAgentToolSchema = {
   required: ["operation"],
 } as const;
 
+/** Voice capability operations (issues #168/#173): the spoken desk channel's state and one-question dispatch. */
+export const voiceAgentToolSchema = {
+  type: "object",
+  properties: {
+    operation: {
+      type: "string",
+      enum: ["voice.snapshot", "voice.ask"],
+      description: "Which voice operation to perform.",
+    },
+    question: { type: "string", description: "The question to ask the desk. Required for voice.ask." },
+  },
+  required: ["operation"],
+} as const;
+
 /** Orchestrator operations (issue #180): plan and run a goal across the other agents. */
 export const orchestratorAgentToolSchema = {
   type: "object",
