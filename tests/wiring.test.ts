@@ -1633,6 +1633,25 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("deskShowView('trading')");
   });
 
+  it("the Public tab's colors resolve through design tokens (issue #133)", () => {
+    const idx = read("public/index.html");
+    const pdata = read("public/public-data.js");
+    expect(idx).toContain("--amber: #b45309");
+    expect(idx).toContain("--gold: #d8a13c");
+    expect(idx).toContain("--verified: #16a34a");
+    expect(idx).toContain("--overlay: rgba(0,0,0,0.45)");
+    // No raw theme literals left in the Public surfaces: the amber /
+    // gold / verified colors and the overlay are token references now.
+    // (Issue numbers in comments - #102, #112 - are not colors.)
+    expect(pdata).not.toContain("#b45309");
+    expect(pdata).not.toContain("#d8a13c");
+    expect(pdata).not.toContain("#16a34a");
+    const panel = idx.slice(idx.indexOf('id="public"'), idx.indexOf('id="qa"'));
+    expect(panel).not.toContain("#b45309");
+    expect(panel).not.toContain("rgba(0,0,0,0.45)");
+    expect(panel).toContain("var(--amber)");
+  });
+
   it("question group headers carry classification chips", () => {
     // The chips helper lives in the asset; the inline summary line calls
     // it, so the classification shows on the collapsed group header.
