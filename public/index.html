@@ -1790,7 +1790,7 @@ async function loadStats() {
         const t = document.getElementById('publicThinking');
         if (t) t.remove();
         if (res.error) {
-          container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(res.error) + '</div>';
+          container.innerHTML += '<div class="chat-msg assistant">' + escapeHtml(deskApiErrorText(res)) + '</div>';
         } else {
           container.innerHTML += '<div class="chat-msg assistant">' + renderMarkdownSafe(res.answer || '(no answer)') + '</div>';
           const trace = Array.isArray(res.trace) ? res.trace : [];
