@@ -43,6 +43,12 @@ export interface UxAuditSpec {
     /** Sent on every request of the session (mode: headers). */
     headers?: Record<string, string>;
   };
+  /**
+   * Capture console errors, failed requests, and Web Vitals per page
+   * (issue #102 evidence pack). Default true; false skips the injected
+   * collector and its findings entirely.
+   */
+  evidence?: boolean;
   /** Audit a page once this selector exists; default: readyState complete. */
   settleSelector?: string;
   settleTimeoutMs?: number;
@@ -103,3 +109,168 @@ export function crawlUrlKey(raw: string, origin: string): string | null {
   return u.href;
 }
 
+/** One page's harvested evidence (issue #102). */
+export interface PageEvidence {
+  view: string;
+  console: { level: string; text: string }[];
+  requests: { url: string; status: number }[];
+  vitals: { lcp: number; cls: number; fcp: number };
+}
+
+/**
+ * The evidence collector, injected with
+ * Page.addScriptToEvaluateOnNewDocument so it is installed before any
+ * page script runs: it wraps console.error/warn, window error events,
+ * fetch/XHR (for failed requests), and PerformanceObserver (LCP / CLS /
+ * FCP) into window.__qaEvidence. The SDK's CDP client drops protocol
+ * events, so subscribing to Runtime.consoleAPICalled or Network events
+ * can never deliver this data - in-page collection + evaluate harvest
+ * is the working route. Written without template literals.
+ */
+export function evidenceCollectorScript(): string {
+  return `(() => {
+    if (window.__qaEvidence) return;
+    const ev = { console: [], requests: [], vitals: { lcp: 0, cls: 0, fcp: 0 } };
+    window.__qaEvidence = ev;
+    const push = (arr, item) => { if (arr.length < 50) arr.push(item); };
+    const origError = console.error ? console.error.bind(console) : null;
+    console.error = function () {
+      push(ev.console, { level: "error", text: Array.from(arguments).map(String).join(" ").slice(0, 200) });
+      if (origError) origError.apply(null, arguments);
+    };
+    const origWarn = console.warn ? console.warn.bind(console) : null;
+    console.warn = function () {
+      push(ev.console, { level: "warn", text: Array.from(arguments).map(String).join(" ").slice(0, 200) });
+      if (origWarn) origWarn.apply(null, arguments);
+    };
+    window.addEventListener("error", (e) => {
+      push(ev.console, { level: "error", text: String((e && e.message) || "window error").slice(0, 200) });
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      const r = e ? e.reason : null;
+      push(ev.console, { level: "error", text: ("unhandled rejection: " + String((r && r.message) || r)).slice(0, 200) });
+    });
+    if (window.fetch) {
+      const origFetch = window.fetch.bind(window);
+      window.fetch = function () {
+        const a = arguments;
+        const u = a[0] && a[0].url ? a[0].url : String(a[0]);
+        return origFetch.apply(null, a).then((res) => {
+          if (res && res.status >= 400) push(ev.requests, { url: String(u).slice(0, 160), status: res.status });
+          return res;
+        }, (err) => {
+          push(ev.requests, { url: String(u).slice(0, 160), status: 0 });
+          throw err;
+        });
+      };
+    }
+    if (window.XMLHttpRequest) {
+      const origOpen = XMLHttpRequest.prototype.open;
+      const origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (m, u) { this.__qaUrl = u; return origOpen.apply(this, arguments); };
+      XMLHttpRequest.prototype.send = function () {
+        const self = this;
+        this.addEventListener("load", () => { if (self.status >= 400) push(ev.requests, { url: String(self.__qaUrl || "").slice(0, 160), status: self.status }); });
+        this.addEventListener("error", () => { push(ev.requests, { url: String(self.__qaUrl || "").slice(0, 160), status: 0 }); });
+        return origSend.apply(this, arguments);
+      };
+    }
+    try {
+      const po = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          if (e.entryType === "largest-contentful-paint") ev.vitals.lcp = Math.round(e.startTime);
+          else if (e.entryType === "layout-shift" && !e.hadRecentInput) ev.vitals.cls = Math.round((ev.vitals.cls + e.value) * 1000) / 1000;
+          else if (e.entryType === "paint" && e.name === "first-contentful-paint") ev.vitals.fcp = Math.round(e.startTime);
+        }
+      });
+      po.observe({ type: "largest-contentful-paint", buffered: true });
+      po.observe({ type: "layout-shift", buffered: true });
+      po.observe({ type: "paint", buffered: true });
+    } catch (err) { /* vitals stay zero on engines without the API */ }
+  })()`;
+}
+
+/** Sanitize one page's harvested evidence JSON into a PageEvidence. */
+export function parsePageEvidence(view: string, raw: unknown): PageEvidence {
+  const empty: PageEvidence = { view, console: [], requests: [], vitals: { lcp: 0, cls: 0, fcp: 0 } };
+  if (!raw || typeof raw !== "object") return empty;
+  const r = raw as any;
+  const cons = Array.isArray(r.console)
+    ? r.console
+        .filter((c: any) => c && typeof c.text === "string")
+        .slice(0, 20)
+        .map((c: any) => ({ level: typeof c.level === "string" ? c.level : "error", text: c.text.slice(0, 200) }))
+    : [];
+  const reqs = Array.isArray(r.requests)
+    ? r.requests
+        .filter((x: any) => x && typeof x.url === "string")
+        .slice(0, 20)
+        .map((x: any) => ({ url: x.url.slice(0, 160), status: Number(x.status) || 0 }))
+    : [];
+  const v = r.vitals && typeof r.vitals === "object" ? r.vitals : {};
+  return {
+    view,
+    console: cons,
+    requests: reqs,
+    vitals: { lcp: Number(v.lcp) || 0, cls: Number(v.cls) || 0, fcp: Number(v.fcp) || 0 },
+  };
+}
+
+/**
+ * Aggregate per-page evidence into findings: console errors and failed
+ * requests gate; Web Vitals are reported (worst page per metric), not
+ * gated - headless timings vary too much to fail a run on their own.
+ */
+export function summarizeEvidence(
+  pages: PageEvidence[],
+): { name: string; passed: boolean; detail: string }[] {
+  if (pages.length === 0) return [];
+  const findings: { name: string; passed: boolean; detail: string }[] = [];
+
+  const errors: string[] = [];
+  let warnCount = 0;
+  for (const p of pages) {
+    for (const c of p.console) {
+      if (c.level === "error") errors.push(`${p.view}: ${c.text}`);
+      else warnCount++;
+    }
+  }
+  findings.push({
+    name: "Console errors",
+    passed: errors.length === 0,
+    detail:
+      errors.length === 0
+        ? `No console errors on ${pages.length} page(s)${warnCount ? ` (${warnCount} warning(s))` : ""}.`
+        : `${errors.length} console error(s): ${errors.slice(0, 4).join(" | ").slice(0, 380)}`,
+  });
+
+  const failed: string[] = [];
+  for (const p of pages) {
+    for (const r of p.requests) {
+      failed.push(`${r.url} (${r.status === 0 ? "network error" : "HTTP " + r.status})`);
+    }
+  }
+  findings.push({
+    name: "Failed requests",
+    passed: failed.length === 0,
+    detail:
+      failed.length === 0
+        ? `No failed requests on ${pages.length} page(s).`
+        : `${failed.length} failed request(s): ${failed.slice(0, 4).join(" | ").slice(0, 380)}`,
+  });
+
+  const worst = (key: "lcp" | "cls" | "fcp") =>
+    pages.reduce((a, p) => (p.vitals[key] > a.vitals[key] ? p : a), pages[0]);
+  const wl = worst("lcp");
+  const wc = worst("cls");
+  const wf = worst("fcp");
+  const anyVitals = pages.some((p) => p.vitals.lcp > 0 || p.vitals.fcp > 0 || p.vitals.cls > 0);
+  findings.push({
+    name: "Web Vitals",
+    passed: true,
+    detail: anyVitals
+      ? `Worst LCP ${(wl.vitals.lcp / 1000).toFixed(2)}s (${wl.view}), worst CLS ${wc.vitals.cls.toFixed(3)} (${wc.view}), worst FCP ${(wf.vitals.fcp / 1000).toFixed(2)}s (${wf.view}). Informational - not gated.`
+      : "No vitals captured (pages may not expose the Performance APIs). Informational - not gated.",
+  });
+  return findings;
+}

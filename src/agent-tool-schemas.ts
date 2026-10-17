@@ -118,6 +118,7 @@ export const qaAgentToolSchema = {
           description: "Target-app auth, if the pages need it. Values are the caller's own; they are passed through, never stored.",
         },
         settleSelector: { type: "string", description: "Audit each page once this selector exists." },
+        evidence: { type: "boolean", description: "Capture console errors, failed requests, and Web Vitals per page (default true)." },
         settleTimeoutMs: { type: "integer", description: "Settle timeout per page in ms (clamped)." },
         rules: { type: "object", description: "Optional rule profile: contrastNormal, contrastLarge, minTargetPx, ignoreSelectors, expectedButtonBg." },
       },

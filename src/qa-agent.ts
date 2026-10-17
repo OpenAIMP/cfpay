@@ -9,8 +9,8 @@
  * agentTool(). It is reachable three ways: a direct @callable() RPC, an A2A operation
  * at /a2a/qa, and a dispatch from a host agent's tool list.
  */
-import { crawlUrlKey, pageEntriesOf } from "./ux-audit-spec";
-import type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
+import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, summarizeEvidence } from "./ux-audit-spec";
+import type { PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 import { callable } from "agents";
 import { emailAgentTool } from "./agent-tools";
@@ -911,9 +911,8 @@ export class QAAgent extends Think<Env> {
         await cdp.send("Page.reload", {}, { sessionId });
         await new Promise((r) => setTimeout(r, 4000));
 
-        // Fail loudly if we are looking at the login page. Without this the
-        // per-tab checks below would report "container missing", which is true
-        // but buries the actual cause.
+        // Fail loudly on the login page: otherwise the per-tab checks
+        // report "container missing" and bury the actual cause.
         const authState = (await cdp.send(
           "Runtime.evaluate",
           {
@@ -1502,6 +1501,8 @@ export class QAAgent extends Think<Env> {
 
     let browser: CdpLike | null = null;
     const probes: { view: string; data: any }[] = [];
+    const evidencePages: PageEvidence[] = [];
+    const evidenceOn = spec.evidence !== false;
     const failures: string[] = [];
     try {
       const cdp = await this.openBrowserSession(env);
@@ -1519,6 +1520,12 @@ export class QAAgent extends Think<Env> {
           await cdp
             .send("Network.setExtraHTTPHeaders", { headers: spec.auth.headers }, { sessionId })
             .catch(() => {});
+        }
+
+        if (evidenceOn) {
+          // Install the evidence collector before any navigation.
+          await cdp.send("Page.enable", {}, { sessionId }).catch(() => {});
+          await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: evidenceCollectorScript() }, { sessionId }).catch(() => {});
         }
 
         let seeded = false;
@@ -1617,6 +1624,15 @@ export class QAAgent extends Think<Env> {
             }
             probes.push({ view: label, data: ux.result.value });
 
+            if (evidenceOn) {
+              const evRaw = (await cdp.send("Runtime.evaluate", { expression: `JSON.stringify(window.__qaEvidence || null)`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: string } } | null;
+              try {
+                evidencePages.push(parsePageEvidence(label, JSON.parse(evRaw?.result?.value || "null")));
+              } catch {
+                evidencePages.push(parsePageEvidence(label, null));
+              }
+            }
+
             try {
               const { data } = (await cdp.send(
                 "Page.captureScreenshot",
@@ -1683,6 +1699,9 @@ export class QAAgent extends Think<Env> {
     for (const f of summarizeUxProbes(probes, rules)) {
       addFinding(f.name, f.passed, f.detail);
     }
+    if (evidenceOn) {
+      for (const f of summarizeEvidence(evidencePages)) addFinding(f.name, f.passed, f.detail);
+    }
     return {
       ok: findings.every((f) => f.passed),
       checks: findings,
@@ -1692,14 +1711,9 @@ export class QAAgent extends Think<Env> {
 
 
   /**
-   * RPC: model-driven browser investigation (issue #102). The model
-   * drives a real browser through hand-rolled CDP tools (navigate /
-   * click / type / evaluate / page_state / screenshot) and reports what
-   * it found. This is the agentic layer over the deterministic checks:
-   * it decides what to open and click, including following up on a
-   * failure a scripted check could only report. Credential-free by
-   * design - it never receives the dashboard key or a spec's auth, so
-   * it investigates what a visitor can reach.
+   * RPC: model-driven browser investigation (issue #102): the model
+   * drives a real browser through hand-rolled CDP tools and reports
+   * what it found. Credential-free - it never receives any auth.
    */
   @callable()
   async qaInvestigate(
@@ -1974,8 +1988,7 @@ export class QAAgent extends Think<Env> {
           error: "The email agent is unavailable, so the report was not sent.",
         };
       }
-      // Capture dashboard screenshot for attachment, on the SAME session opened
-      // above rather than a second one.
+      // Dashboard screenshot for the attachment, on the SAME session.
       const dashResult = await this.runBrowserCheck(
         env.SELF_ORIGIN ?? "https://pay.openaimp.com",
         ["PaymentAgent", "Dashboard", "Payments", "Emails"],
@@ -2047,13 +2060,9 @@ export class QAAgent extends Think<Env> {
 
 
   /**
-   * RPC: email a snapshot of the Autopilot Trading Desk (2026-10-17, at
-   * Mubasher's direction) - a SEPARATE email from the QA report, which
-   * is unchanged. Opens the dashboard on the Public tab, waits for the
-   * desk to load, and captures five screenshots of the trading
-   * workflow: desk overview, trading chat, autopilot runs, the
-   * portfolio/chain rail, and trade approvals (or the trading-status
-   * card when no proposal exists and the approvals card is hidden).
+   * RPC: email five screenshots of the Autopilot Trading Desk (a
+   * separate email from the QA report, which is unchanged): overview,
+   * chat, autopilot runs, portfolio/chain rail, trade approvals.
    */
   @callable()
   async qaDeskSnapshotEmail(
@@ -2079,12 +2088,7 @@ export class QAAgent extends Think<Env> {
       { name: "chat", anchor: "publicChatCard", label: "Trading chat and Ask composer" },
       { name: "runs", anchor: "deskRuns", label: "Autopilot runs" },
       { name: "portfolio", anchor: "deskPortfolio", label: "Portfolio and option chain rail" },
-      {
-        name: "approvals",
-        anchor: "publicTradesCard",
-        fallbackAnchor: "publicTradingTitle",
-        label: "Trade approvals and trading status",
-      },
+      { name: "approvals", anchor: "publicTradesCard", fallbackAnchor: "publicTradingTitle", label: "Trade approvals and trading status" },
     ];
 
     let browser: CdpLike | null = null;
@@ -2123,16 +2127,7 @@ export class QAAgent extends Think<Env> {
         await cdp.send("Page.reload", {}, { sessionId });
         await new Promise((r) => setTimeout(r, 4000));
 
-        const loginCheck = (await cdp
-          .send(
-            "Runtime.evaluate",
-            {
-              expression: `!!document.getElementById('login') && getComputedStyle(document.getElementById('login')).display !== 'none'`,
-              returnByValue: true,
-            },
-            { sessionId },
-          )
-          .catch(() => null)) as { result?: { value?: boolean } } | null;
+        const loginCheck = (await cdp.send("Runtime.evaluate", { expression: `!!document.getElementById('login') && getComputedStyle(document.getElementById('login')).display !== 'none'`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: boolean } } | null;
         if (loginCheck?.result?.value === true) {
           return {
             ok: false,
@@ -2202,11 +2197,7 @@ export class QAAgent extends Think<Env> {
             .catch(() => null);
           await new Promise((r) => setTimeout(r, 700));
           try {
-            const { data } = (await cdp.send(
-              "Page.captureScreenshot",
-              { format: "png" },
-              { sessionId },
-            )) as { data?: string };
+            const { data } = (await cdp.send("Page.captureScreenshot", { format: "png" }, { sessionId })) as { data?: string };
             if (data) {
               attachments.push({
                 filename: `desk-${spec.name}-${dateStr}.png`,
