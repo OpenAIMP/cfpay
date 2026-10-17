@@ -859,6 +859,11 @@ export function createApp() {
       qaPrintPdf(
         html: string,
       ): Promise<{ ok: boolean; pdfBase64?: string; error?: string }>;
+      qaA2ATestEmail(
+        apiKey: string,
+        toEmail: string,
+        runId?: string,
+      ): Promise<{ ok: boolean; emailed: boolean; results: unknown[]; error?: string }>;
       testEmailAttachmentUI(
         apiKey: string,
         toEmail: string,
@@ -1658,6 +1663,23 @@ export function createApp() {
   });
 
   // Persistent browser profile (issue #102): start | status | stop.
+  app.post("/api/dashboard/qa/a2a-test", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const toEmail = body.toEmail as string;
+    if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
+      return c.json({ error: "Valid toEmail required" }, 400);
+    }
+    const presented = c.req.header("X-API-Key") || "";
+    const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const key = presented || auth || undefined;
+    if (!key) {
+      return c.json({ error: "API key required" }, 401);
+    }
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaA2ATestEmail(key, toEmail, body.runId as string | undefined);
+    return jsonOr500(c, result, "qa/a2a-test");
+  });
+
   app.post("/api/dashboard/qa/browser-profile", requireAuth, async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const action = typeof body.action === "string" ? body.action : "status";

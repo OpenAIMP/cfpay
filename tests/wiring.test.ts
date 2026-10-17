@@ -1634,6 +1634,19 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("deskShowView('trading')");
   });
 
+  it("the A2A endpoint test email is wired (all agents, read-only probes)", () => {
+    const qa = read("src/qa-agent.ts");
+    const api = read("src/api.ts");
+    const idx = read("public/index.html");
+    const pdata = read("public/public-data.js");
+    const smoke = read("scripts/qa-smoke.mjs");
+    expect(qa).toContain("qaA2ATestEmail");
+    expect(api).toContain('"/api/dashboard/qa/a2a-test"');
+    expect(idx).toContain('onclick="emailA2ATest()"');
+    expect(pdata).toContain("emailA2ATest()");
+    expect(smoke).toContain("A2A endpoint test email");
+  });
+
   it("desk view moves are section-scoped, never nav buttons (issue #133 fix)", () => {
     const pdata = read("public/public-data.js");
     // Nav buttons and view sections share data-view values; an

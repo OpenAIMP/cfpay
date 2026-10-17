@@ -25,6 +25,8 @@ const RUN_REPORT =
   String(process.env.QA_RUN_REPORT_CHECK || "").toLowerCase() !== "false";
 const RUN_DESK =
   String(process.env.QA_RUN_DESK_CHECK || "").toLowerCase() !== "false";
+const RUN_A2A =
+  String(process.env.QA_RUN_A2A_CHECK || "").toLowerCase() !== "false";
 
 const results = [];
 let failed = 0;
@@ -447,6 +449,31 @@ async function main() {
       }
     } catch (err) {
       record("Autopilot Trading Desk snapshot email", false, err.message);
+    }
+  }
+
+  // 12. A2A test email: QAAgent probes EVERY agent's A2A endpoint
+  // (card, 401-without-auth, authenticated snapshot dispatch - all
+  // read-only) and emails the results. No browser involved, so no
+  // capacity skip: a failure here is a real endpoint failure.
+  if (!RUN_A2A) {
+    skip("A2A endpoint test email", 'QA_RUN_A2A_CHECK is "false"');
+  } else if (!TEST_EMAIL) {
+    skip("A2A endpoint test email", "QA_TEST_EMAIL is not set");
+  } else {
+    try {
+      const { status, json } = await post("/api/dashboard/qa/a2a-test", { toEmail: TEST_EMAIL });
+      const rows = (json && json.results) || [];
+      const passed = rows.filter((r) => r.ok).length;
+      record(
+        "A2A endpoint test email",
+        status === 200 && !!json && json.emailed === true && json.ok === true,
+        json && json.emailed
+          ? `${passed}/${rows.length} surfaces responding`
+          : `status=${status} emailed=${json && json.emailed} error=${(json && json.error) || "none"}`,
+      );
+    } catch (err) {
+      record("A2A endpoint test email", false, err.message);
     }
   }
 
