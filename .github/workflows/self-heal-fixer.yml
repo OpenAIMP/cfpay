@@ -57,7 +57,7 @@ jobs:
           OWNER="${{ github.repository_owner }}"
           NAME="${{ github.event.repository.name }}"
           REPO_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { id } }" --jq '.data.repository.id')
-          BOT_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { suggestedActors(first: 20) { nodes { id login } } } }" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id' | head -1)
+          BOT_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { suggestedActors(first: 20) { nodes { id login } } } }" --jq '.data.repository.suggestedActors.nodes[]? | select(.login == "copilot-swe-agent") | .id' 2>/dev/null | head -1 || true)
           if [ -z "${BOT_ID}" ]; then
             gh issue comment "${ISSUE_NUMBER}" --body "Self-heal fixer (Actions/Copilot): Copilot coding agent is not available on this repository, so no assignment was made. The Muse fixer remains on this queue."
             exit 0
@@ -79,7 +79,7 @@ jobs:
           OWNER="${{ github.repository_owner }}"
           NAME="${{ github.event.repository.name }}"
           REPO_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { id } }" --jq '.data.repository.id')
-          BOT_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { suggestedActors(first: 20) { nodes { id login } } } }" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id' | head -1)
+          BOT_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { suggestedActors(first: 20) { nodes { id login } } } }" --jq '.data.repository.suggestedActors.nodes[]? | select(.login == "copilot-swe-agent") | .id' 2>/dev/null | head -1 || true)
           if [ -z "${BOT_ID}" ]; then
             echo "Copilot coding agent not available; nothing to sweep."
             exit 0
