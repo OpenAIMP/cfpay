@@ -597,7 +597,8 @@ function deskInitViews() {
     + '<span style="display:flex;gap:0.4rem;align-items:center;"><span id="a2aTestStamp" style="color:var(--muted);font-size:0.75rem;"></span>'
     + '<button class="btn" style="padding:0.25rem 0.6rem;" onclick="deskRunA2ATests(true)">Test all now</button></span></div>'
     + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin:0.4rem 0;">Every agent\'s A2A surface, probed the way an external caller would: card served, 401 without auth, snapshot reply with auth. Read-only. Runs automatically when you open this view; the same probes go out in the A2A test email.</p>'
-    + '<div id="a2aTestTable"><span style="color:var(--muted);font-size:0.8rem;">Not tested yet.</span></div></div></section>'
+    + '<div id="a2aTestTable"><span style="color:var(--muted);font-size:0.8rem;">Not tested yet.</span></div></div>'
+    + '<div id="a2aCards"></div></section>'
     + '<section class="desk-view" data-view="status" style="display:none;"></section>'
     + '</div>';
   const intro = panel.querySelector(':scope > .card');
@@ -908,9 +909,35 @@ function deskA2ARowHtml(r) {
     + '<td><button class="btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="deskRunA2ATests(true, \'' + escapeHtml(r.rpc) + '\')">Test now</button></td></tr>';
 }
 
+function deskA2ACardHtml(r) {
+  const skills = (r.cardSkills || []).map((s) =>
+    '<div style="margin-top:0.45rem;"><strong style="font-size:0.82rem;">' + escapeHtml(s.name) + '</strong>'
+    + (s.tags && s.tags.length ? ' <span style="color:var(--muted);font-size:0.72rem;">' + s.tags.map(escapeHtml).join(' · ') + '</span>' : '')
+    + '</div>').join('');
+  return '<div class="card" style="margin-bottom:1rem;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">'
+    + '<h3 style="font-size:1rem;margin:0;">' + escapeHtml(r.cardName || r.agent) + '</h3>'
+    + '<span style="display:flex;gap:0.35rem;align-items:center;"><span style="color:var(--muted);font-size:0.72rem;">' + escapeHtml(r.rpc) + '</span>'
+    + (r.ok
+      ? '<span style="background:var(--verified);color:var(--on-accent);border-radius:4px;padding:0.05rem 0.4rem;font-size:0.72rem;">live</span>'
+      : '<span class="badge-failed">check</span>')
+    + '</span></div>'
+    + (r.cardDescription ? '<p style="color:var(--muted);font-size:0.82rem;line-height:1.55;margin:0.45rem 0 0;">' + escapeHtml(r.cardDescription) + '</p>' : '')
+    + (skills ? '<div style="border-top:1px solid var(--border);margin-top:0.6rem;padding-top:0.2rem;">' + skills + '</div>' : '')
+    + '</div>';
+}
+
+function deskRenderA2ACards() {
+  const host = document.getElementById('a2aCards');
+  if (!host) return;
+  host.innerHTML = deskA2ARows.length
+    ? '<h3 style="font-size:1rem;margin:0 0 0.6rem;">Agent cards</h3>' + deskA2ARows.map(deskA2ACardHtml).join('')
+    : '';
+}
+
 function deskRenderA2ATests() {
   const host = document.getElementById('a2aTestTable');
   if (!host) return;
+  deskRenderA2ACards();
   if (!deskA2ARows.length) {
     host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">' + (deskA2ARunning ? 'Testing...' : 'Not tested yet.') + '</span>';
     return;
