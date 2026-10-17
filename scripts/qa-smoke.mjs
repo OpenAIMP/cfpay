@@ -23,6 +23,8 @@ const RUN_ATTACHMENT =
 // Same default for the report email (section 8): included unless disabled.
 const RUN_REPORT =
   String(process.env.QA_RUN_REPORT_CHECK || "").toLowerCase() !== "false";
+const RUN_DESK =
+  String(process.env.QA_RUN_DESK_CHECK || "").toLowerCase() !== "false";
 
 const results = [];
 let failed = 0;
@@ -406,6 +408,34 @@ async function main() {
     }
   } catch (err) {
     record("A2A dispatch", false, err.message);
+  }
+
+  // 11. Autopilot Trading Desk snapshot email (PR #134): the second
+  //     standing email - five screenshots of the whole desk (overview,
+  //     trading chat, runs, portfolio/chain, trade approvals) to the
+  //     same QA_TEST_EMAIL as the report. Runs by default;
+  //     QA_RUN_DESK_CHECK=false disables it.
+  if (!RUN_DESK) {
+    skip("Autopilot Trading Desk snapshot email", 'QA_RUN_DESK_CHECK is "false"');
+  } else if (!TEST_EMAIL) {
+    skip("Autopilot Trading Desk snapshot email", "QA_TEST_EMAIL is not set");
+  } else {
+    try {
+      const { status, json } = await post("/api/dashboard/qa/desk-snapshot", {
+        toEmail: TEST_EMAIL,
+      });
+      if (isCapacityRefusal(json?.error)) {
+        skip("Autopilot Trading Desk snapshot email", CAPACITY_WHY);
+      } else {
+        record(
+          "Autopilot Trading Desk snapshot email",
+          status === 200 && json?.emailed === true && (json?.shots || []).length === 5,
+          json?.error || `status=${status}, shots=${(json?.shots || []).length}`,
+        );
+      }
+    } catch (err) {
+      record("Autopilot Trading Desk snapshot email", false, err.message);
+    }
   }
 
   await finish();
