@@ -1701,6 +1701,8 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("deskOrchSamples");
     expect(pdata).toContain("deskOrchSupervise");
     expect(read("src/orchestrator-agent.ts")).toContain("supervise");
+    expect(read("src/orchestrator-agent.ts")).toContain("orchestrate_op_stats");
+    expect(read("src/orchestrator-agent.ts")).toContain("readMemoryBrief");
     expect(pdata).toContain("Summarize the state of qa, search, and slack");
     expect(pdata).toContain("data-view=\"orchestrate\"");
   });
