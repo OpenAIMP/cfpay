@@ -10,6 +10,7 @@
  * at /a2a/qa, and a dispatch from a host agent's tool list.
  */
 import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, summarizeEvidence, viewportListOf } from "./ux-audit-spec";
+import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mergeDiscoveredTabs } from "./tab-coverage";
 import type { PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 import { callable } from "agents";
@@ -824,32 +825,7 @@ export class QAAgent extends Think<Env> {
 
     const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
 
-    // `containerId` is the element the dashboard writes rows into; `emptyText`
-    // is that tab's empty state. Both come from public/index.html.
-    const tabsToTest: {
-      name: string;
-      tab: string;
-      containerId: string;
-      emptyText: string;
-      rowSelector?: string;
-    }[] = [
-      { name: "Emails", tab: "emails", containerId: "emailList", emptyText: "No emails yet" },
-      { name: "Payments", tab: "payments", containerId: "paymentList", emptyText: "No payments yet" },
-      { name: "Webhooks", tab: "webhooks", containerId: "webhookList", emptyText: "No webhook events yet" },
-      // The Public tab's data surface for this check is the strategy
-      // questions library: server-served, rendered as <details> groups
-      // (not .card rows), and independent of the Public.com connection —
-      // the desk endpoints themselves are covered by the post-deploy
-      // suite's desk section. The screenshot is the point: the report
-      // gains the trading view as its fifth attachment.
-      {
-        name: "Public",
-        tab: "public",
-        containerId: "publicQuestions",
-        emptyText: "No questions available",
-        rowSelector: "details",
-      },
-    ];
+    let tabsToTest = knownTabExpectations();
 
     // Live view (issue #88): when a dashboard run is watching, capture the
     // per-tab screenshots the panel displays even when the caller did not
@@ -913,19 +889,7 @@ export class QAAgent extends Think<Env> {
 
         // Fail loudly on the login page: otherwise the per-tab checks
         // report "container missing" and bury the actual cause.
-        const authState = (await cdp.send(
-          "Runtime.evaluate",
-          {
-            expression: `JSON.stringify({
-              loginShown: !!document.getElementById('login') &&
-                getComputedStyle(document.getElementById('login')).display !== 'none',
-              appShown: !!document.getElementById('app') &&
-                getComputedStyle(document.getElementById('app')).display !== 'none'
-            })`,
-            returnByValue: true,
-          },
-          { sessionId },
-        )) as { result?: { value?: string } };
+        const authState = (await cdp.send("Runtime.evaluate", { expression: `JSON.stringify({ loginShown: !!document.getElementById('login') && getComputedStyle(document.getElementById('login')).display !== 'none', appShown: !!document.getElementById('app') && getComputedStyle(document.getElementById('app')).display !== 'none' })`, returnByValue: true }, { sessionId })) as { result?: { value?: string } };
 
         let loginShown = false;
         try {
@@ -945,6 +909,17 @@ export class QAAgent extends Think<Env> {
           return { ok: false, tabs: results, error: detail };
         }
 
+        // DOM tab discovery (issue #102): every tab the dashboard
+        // renders joins the run - known tabs with their expectations,
+        // the rest verified generically - so new tabs gain coverage
+        // without a code change here.
+        const disc = (await cdp.send("Runtime.evaluate", { expression: `Array.from(document.querySelectorAll("[data-tab]")).map((el) => el.getAttribute("data-tab"))`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: string[] } } | null;
+        const discovered = Array.isArray(disc?.result?.value) ? disc.result.value : [];
+        tabsToTest = mergeDiscoveredTabs(tabsToTest, discovered);
+        if (tabsToTest.length > 4) {
+          this.emitLive(runId, { kind: "step", label: `Discovered ${tabsToTest.length} tabs in the DOM`, detail: tabsToTest.map((t) => t.name).join(", ") });
+        }
+
         this.emitLive(runId, { kind: "step", label: "Signed in — starting tab checks" });
 
         for (const tab of tabsToTest) {
@@ -952,19 +927,7 @@ export class QAAgent extends Think<Env> {
             this.emitLive(runId, { kind: "step", label: `Checking ${tab.name} tab` });
             // Click the tab. Assert the click landed: a renamed or removed tab
             // must not be reported as a data failure.
-            const clicked = (await cdp.send(
-              "Runtime.evaluate",
-              {
-                expression: `(() => {
-                  const el = document.querySelector('[data-tab=${JSON.stringify(tab.tab)}]');
-                  if (!el) return false;
-                  el.click();
-                  return el.classList.contains('active');
-                })()`,
-                returnByValue: true,
-              },
-              { sessionId },
-            )) as { result?: { value?: boolean } };
+            const clicked = (await cdp.send("Runtime.evaluate", { expression: `(() => { const el = document.querySelector('[data-tab=${JSON.stringify(tab.tab)}]'); if (!el) return false; el.click(); return el.classList.contains('active'); })()`, returnByValue: true }, { sessionId })) as { result?: { value?: boolean } };
 
             if (clicked.result?.value !== true) {
               pushResult({
@@ -975,6 +938,11 @@ export class QAAgent extends Think<Env> {
               continue;
             }
 
+            if (tab.generic) {
+              const gp = (await cdp.send("Runtime.evaluate", { expression: genericTabProbeExpression(tab.tab), awaitPromise: true, returnByValue: true }, { sessionId })) as { result?: { value?: any } };
+              const verdict = genericTabVerdict(tab, gp.result?.value);
+              pushResult({ name: tab.name, passed: verdict.passed, detail: verdict.detail });
+            } else {
             // In-page wait for the tab's loader to settle, rather than a fixed
             // sleep: loadEmails/loadPayments/loadWebhooks are async, and a fixed
             // wait either flakes or wastes time.
@@ -1041,6 +1009,7 @@ export class QAAgent extends Think<Env> {
                 passed: true,
                 detail: `Rendered ${state.rows} row(s) from '#${tab.containerId}'.`,
               });
+            }
             }
 
             // Optional: keep a picture of the tab as it rendered, for the
@@ -1166,19 +1135,7 @@ export class QAAgent extends Think<Env> {
 
         // Same loud failure as the tab check: auditing the login page would
         // produce confident, meaningless findings.
-        const authState = (await cdp.send(
-          "Runtime.evaluate",
-          {
-            expression: `JSON.stringify({
-              loginShown: !!document.getElementById('login') &&
-                getComputedStyle(document.getElementById('login')).display !== 'none',
-              appShown: !!document.getElementById('app') &&
-                getComputedStyle(document.getElementById('app')).display !== 'none'
-            })`,
-            returnByValue: true,
-          },
-          { sessionId },
-        )) as { result?: { value?: string } };
+        const authState = (await cdp.send("Runtime.evaluate", { expression: `JSON.stringify({ loginShown: !!document.getElementById('login') && getComputedStyle(document.getElementById('login')).display !== 'none', appShown: !!document.getElementById('app') && getComputedStyle(document.getElementById('app')).display !== 'none' })`, returnByValue: true }, { sessionId })) as { result?: { value?: string } };
 
         let loginShown = false;
         try {
@@ -1987,8 +1944,9 @@ export class QAAgent extends Think<Env> {
         });
       }
       // One screenshot per tab, captured by qaDashboardTabs during the
-      // click-through above (raw base64 from CDP, no prefix to strip). The
-      // recipient asked for every snap, not just the dashboard home.
+      // click-through above (raw base64 from CDP, no prefix to strip).
+      // DOM discovery can find more tabs than the email agent's
+      // 5-attachment cap allows: attach in order and note the rest.
       for (const tab of tabResult.tabs) {
         if (tab.screenshot) {
           attachments.push({
@@ -1998,11 +1956,19 @@ export class QAAgent extends Think<Env> {
           });
         }
       }
+      let omittedShots = 0;
+      if (attachments.length > 5) {
+        omittedShots = attachments.length - 5;
+        attachments.length = 5;
+      }
+      const finalBody = omittedShots > 0
+        ? body + `\n\nNote: ${omittedShots} further tab screenshot(s) were captured but not attached (the email agent caps attachments at 5).`
+        : body;
       this.emitLive(runId, { kind: "step", label: "Emailing the report", detail: toEmail });
       const sendResult = await emailAgent.sendThroughAgent({
         to: toEmail,
         subject: `QA Report: Dashboard ${tabResult.ok ? "PASS" : "FAIL"} - ${new Date().toISOString().slice(0, 10)}`,
-        body,
+        body: finalBody,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
       // sendThroughAgent RETURNS a refusal rather than throwing, so ignoring the
