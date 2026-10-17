@@ -1688,6 +1688,22 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("deskA2ACardHtml");
   });
 
+  it("the orchestrator agent is wired (issue #180)", () => {
+    const agent = read("src/orchestrator-agent.ts");
+    const idx = read("src/index.ts");
+    const a2a = read("src/a2a.ts");
+    const pdata = read("public/public-data.js");
+    const core = read("src/orchestrate.ts");
+    expect(agent).toContain("extends Think");
+    expect(agent).toContain("handleA2A");
+    expect(idx).toContain("OrchestratorAgent");
+    expect(a2a).toContain("orchestratorCard");
+    expect(a2a).toContain('"/a2a/orchestrator"');
+    expect(core).toContain("OPERATION_CATALOG");
+    expect(pdata).toContain("deskOrchestrateRun");
+    expect(pdata).toContain("data-view=\"orchestrate\"");
+  });
+
   it("the search agent is wired (issue #170)", () => {
     const agent = read("src/search-agent.ts");
     const idx = read("src/index.ts");
