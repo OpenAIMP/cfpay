@@ -91,6 +91,7 @@ jobs:
           OUTBOUND_MAX_AMOUNT_ATOMIC: ${{ secrets.OUTBOUND_MAX_AMOUNT_ATOMIC }}
           WEBHOOK_NOTIFY_EMAIL: ${{ secrets.WEBHOOK_NOTIFY_EMAIL }}
           PUBLIC_ALLOW_TRADING: ${{ secrets.PUBLIC_ALLOW_TRADING }}
+          SLACK_QA_CHANNEL_ID: ${{ secrets.SLACK_QA_CHANNEL_ID }}          
         run: |
           printf '%s' "$PAYMENT_PRIVATE_KEY" | npx wrangler@4 secret put PAYMENT_PRIVATE_KEY
           printf '%s' "$EMAIL_SECRET" | npx wrangler@4 secret put EMAIL_SECRET
@@ -105,6 +106,7 @@ jobs:
           printf '%s' "$STRIPE_WEBHOOK_SECRET" | npx wrangler@4 secret put STRIPE_WEBHOOK_SECRET
           printf '%s' "$SLACK_WEBHOOK_SECRET" | npx wrangler@4 secret put SLACK_WEBHOOK_SECRET
           printf '%s' "$WEBHOOK_NOTIFY_EMAIL" | npx wrangler@4 secret put WEBHOOK_NOTIFY_EMAIL
+          printf '%s' "$SLACK_QA_CHANNEL_ID" | npx wrangler@4 secret put SLACK_QA_CHANNEL_ID          
 
           # Optional. Guarded so an unset GitHub secret cannot overwrite a value
           # already configured on the Worker. The URL is passed on stdin, not as
