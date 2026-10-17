@@ -1651,7 +1651,8 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     // autopilot workflow's own output) per the owner's direction.
     expect(qa).not.toContain("qaPrintTestEmail");
     expect(smoke).toContain("Autopilot hunt report PDF email");
-    expect(smoke).toContain("/api/public/opportunity-hunt");
+    expect(smoke).toContain("/api/dashboard/qa/autopilot-hunt-test");
+    expect(qa).toContain("qaAutopilotHuntTest");
     expect(smoke).toContain("sendSummaryEmail");
     expect(smoke).toContain("/api/dashboard/send-email");
   });

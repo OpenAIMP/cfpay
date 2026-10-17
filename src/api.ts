@@ -887,6 +887,11 @@ export function createApp() {
         apiKey: string,
         rpc?: string,
       ): Promise<{ ok: boolean; results: unknown[] }>;
+      qaAutopilotHuntTest(
+        apiKey: string,
+        toEmail: string,
+        runId?: string,
+      ): Promise<{ ok: boolean; emailed: boolean; skipped?: string; huntId?: string; error?: string }>;
       testEmailAttachmentUI(
         apiKey: string,
         toEmail: string,
@@ -1716,6 +1721,25 @@ export function createApp() {
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaA2AProbe(key, body.rpc as string | undefined);
     return jsonOr500(c, result, "qa/a2a-probe");
+  });
+
+  // QAAgent tests the autopilot agent's workflow: a real hunt,
+  // then its report PDF by email (single-responsibility per agent).
+  app.post("/api/dashboard/qa/autopilot-hunt-test", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const toEmail = body.toEmail as string;
+    if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
+      return c.json({ error: "Valid toEmail required" }, 400);
+    }
+    const presented = c.req.header("X-API-Key") || "";
+    const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const key = presented || auth || undefined;
+    if (!key) {
+      return c.json({ error: "API key required" }, 401);
+    }
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaAutopilotHuntTest(key, toEmail, body.runId as string | undefined);
+    return jsonOr500(c, result, "qa/autopilot-hunt-test");
   });
 
   app.post("/api/dashboard/qa/browser-profile", requireAuth, async (c) => {

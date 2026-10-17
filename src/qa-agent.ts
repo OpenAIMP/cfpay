@@ -429,9 +429,7 @@ export class QAAgent extends Think<Env> {
       return { ok: false, url, textLength: 0, error: "Browser binding not configured" };
     }
 
-    // A caller that already holds a session passes it in. Opening a second one
-    // here is what exhausted the browser concurrency limit and produced the
-    // misleading "did not return a WebSocket" error.
+    // A caller that holds a session passes it in (a second one exhausts concurrency).
     const ownsConnection = !sharedConnection;
 
     try {
@@ -451,9 +449,7 @@ export class QAAgent extends Think<Env> {
 
         this.emitLive(liveRunId, { kind: "step", label: "Loading page", detail: url });
 
-        // Navigate FIRST. localStorage is origin-scoped: seeding it on the
-        // about:blank target (opaque origin) before navigating meant the
-        // dashboard never saw the key and always showed the login page.
+        // Navigate FIRST: seeding on about:blank's opaque origin hides the key.
         await cdp.send("Page.navigate", { url }, { sessionId });
         // Wait for the navigation to commit so the evaluate below runs on the
         // dashboard's origin, not about:blank.
@@ -749,8 +745,7 @@ export class QAAgent extends Think<Env> {
           return { ok: false, tabs: results, error: detail };
         }
 
-        // DOM tab discovery (issue #102): every rendered tab joins
-        // the run; unknown tabs are verified generically.
+        // DOM tab discovery (issue #102): every rendered tab joins the run.
         const disc = (await cdp.send("Runtime.evaluate", { expression: `Array.from(document.querySelectorAll("[data-tab]")).map((el) => el.getAttribute("data-tab"))`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: string[] } } | null;
         const discovered = Array.isArray(disc?.result?.value) ? disc.result.value : [];
         tabsToTest = mergeDiscoveredTabs(tabsToTest, discovered);
@@ -1314,6 +1309,47 @@ export class QAAgent extends Think<Env> {
     }
     const rows = await runA2AEndpointTests(origin, apiKey);
     return { ok: rows.every((r) => r.ok), results: rows };
+  }
+
+  /** Test the autopilot workflow end to end: a real hunt, then its PDF by email. */
+  @callable()
+  async qaAutopilotHuntTest(
+    apiKey: string,
+    toEmail: string,
+    runId?: string,
+  ): Promise<{ ok: boolean; emailed: boolean; skipped?: string; huntId?: string; trades?: number; slackPosted?: number; slackConfigured?: boolean; error?: string }> {
+    const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const headers = { "Content-Type": "application/json", "X-API-Key": apiKey };
+    const post = async (path: string, body: unknown) => {
+      const res = await fetch(origin + path, { method: "POST", headers, body: JSON.stringify(body) });
+      return { status: res.status, json: (await res.json().catch(() => null)) as any };
+    };
+    this.emitLive(runId, { kind: "step", label: "Running an autopilot opportunity hunt (test)" });
+    const huntRes = await post("/api/public/opportunity-hunt", { budget: 10000, symbols: "SPY" });
+    if (huntRes.status === 409) {
+      return { ok: false, emailed: false, skipped: "Public.com is not connected" };
+    }
+    const huntId = huntRes.json?.hunt?.id as string | undefined;
+    if (huntRes.status !== 200 || !huntId) {
+      return {
+        ok: false,
+        emailed: false,
+        error: `Hunt failed (status ${huntRes.status}): ${String(huntRes.json?.error || "unknown").slice(0, 200)}`,
+      };
+    }
+    this.emitLive(runId, { kind: "step", label: "Emailing the hunt report PDF", detail: huntId });
+    const mailRes = await post(`/api/public/opportunity-hunts/${huntId}/email`, { toEmail });
+    const emailed = mailRes.status === 200 && mailRes.json?.emailed === true;
+    this.emitLive(runId, { kind: "result", label: "Autopilot hunt test", ok: emailed, detail: huntId });
+    return {
+      ok: emailed,
+      emailed,
+      huntId,
+      trades: huntRes.json?.hunt?.plan?.trades?.length,
+      slackPosted: mailRes.json?.slackPosted,
+      slackConfigured: mailRes.json?.slackConfigured,
+      error: emailed ? undefined : String(mailRes.json?.error || `Email failed (status ${mailRes.status})`).slice(0, 200),
+    };
   }
 
   /** Render standalone HTML to a PDF (issue #135): Page.printToPDF on a data: URL. */
