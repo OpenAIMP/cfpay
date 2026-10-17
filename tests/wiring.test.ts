@@ -1644,13 +1644,16 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(api).toContain("postFilesToSlack");
   });
 
-  it("the PDF pipeline test is wired into post-deploy QA", () => {
+  it("post-deploy PDF coverage is a real autopilot hunt, plus a summary email", () => {
     const qa = read("src/qa-agent.ts");
-    const api = read("src/api.ts");
     const smoke = read("scripts/qa-smoke.mjs");
-    expect(qa).toContain("qaPrintTestEmail");
-    expect(api).toContain('"/api/dashboard/qa/print-test"');
-    expect(smoke).toContain("PDF pipeline test email");
+    // The synthetic print test was replaced by a real hunt (the
+    // autopilot workflow's own output) per the owner's direction.
+    expect(qa).not.toContain("qaPrintTestEmail");
+    expect(smoke).toContain("Autopilot hunt report PDF email");
+    expect(smoke).toContain("/api/public/opportunity-hunt");
+    expect(smoke).toContain("sendSummaryEmail");
+    expect(smoke).toContain("/api/dashboard/send-email");
   });
 
   it("the desk layout refinements are wired (issue #152)", () => {
