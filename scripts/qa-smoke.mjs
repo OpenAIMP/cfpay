@@ -27,6 +27,8 @@ const RUN_DESK =
   String(process.env.QA_RUN_DESK_CHECK || "").toLowerCase() !== "false";
 const RUN_A2A =
   String(process.env.QA_RUN_A2A_CHECK || "").toLowerCase() !== "false";
+const RUN_PDF =
+  String(process.env.QA_RUN_PDF_CHECK || "").toLowerCase() !== "false";
 
 const results = [];
 let failed = 0;
@@ -474,6 +476,31 @@ async function main() {
       );
     } catch (err) {
       record("A2A endpoint test email", false, err.message);
+    }
+  }
+
+  // 13. PDF pipeline test email: print the canonical test page and
+  // email it as a PDF attachment - the opportunity-hunt report's path
+  // (issue #135), covered on every deploy. Browser-bound (printToPDF),
+  // so capacity refusals skip like the other browser sections.
+  if (!RUN_PDF) {
+    skip("PDF pipeline test email", 'QA_RUN_PDF_CHECK is "false"');
+  } else if (!TEST_EMAIL) {
+    skip("PDF pipeline test email", "QA_TEST_EMAIL is not set");
+  } else {
+    try {
+      const { status, json } = await post("/api/dashboard/qa/print-test", { toEmail: TEST_EMAIL });
+      if (isCapacityRefusal(json?.error)) {
+        skip("PDF pipeline test email", CAPACITY_WHY);
+      } else {
+        record(
+          "PDF pipeline test email",
+          status === 200 && json?.emailed === true,
+          json?.error || `status=${status}`,
+        );
+      }
+    } catch (err) {
+      record("PDF pipeline test email", false, err.message);
     }
   }
 
