@@ -1701,6 +1701,8 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(a2a).toContain('"/a2a/orchestrator"');
     expect(core).toContain("OPERATION_CATALOG");
     expect(pdata).toContain("deskOrchestrateRun");
+    expect(pdata).toContain("deskOrchSamples");
+    expect(pdata).toContain("Summarize the state of qa, search, and slack");
     expect(pdata).toContain("data-view=\"orchestrate\"");
   });
 

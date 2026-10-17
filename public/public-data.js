@@ -605,6 +605,7 @@ function deskInitViews() {
     + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin:0 0 0.5rem;">Give the orchestrator a goal. It plans steps across the other agents, runs independent steps in parallel, retries a failed step once, and merges one report. Jobs are saved; browser-QA steps can take minutes.</p>'
     + '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;"><input id="deskOrchGoal" type="text" placeholder="e.g. Summarize every agent\'s state and post it to Slack" style="flex:1;min-width:14rem;">'
     + '<button class="btn" onclick="deskOrchestrateRun()">Run goal</button></div>'
+    + '<div id="deskOrchSamples" style="margin-top:0.55rem;display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center;"><span style="color:var(--muted);font-size:0.75rem;">Try:</span></div>'
     + '<div id="deskOrchResult" style="margin-top:0.6rem;"></div></div>'
     + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Jobs</h3><div id="deskOrchJobs"><span style="color:var(--muted);font-size:0.8rem;">No jobs loaded yet.</span></div></div></section>'
     + '<section class="desk-view" data-view="status" style="display:none;"></section>'
@@ -1295,6 +1296,7 @@ function deskOrchJobHtml(job, open) {
 }
 
 async function deskLoadOrchestrateJobs() {
+  deskOrchSamplesInit();
   const host = document.getElementById('deskOrchJobs');
   if (!host) return;
   try {
@@ -1306,3 +1308,31 @@ async function deskLoadOrchestrateJobs() {
   }
 }
 window.deskLoadOrchestrateJobs = deskLoadOrchestrateJobs;
+
+
+// Orchestrate sample goals (issue #180 follow-up): one click fills
+// the goal box and runs it.
+const DESK_ORCH_SAMPLES = [
+  'Summarize the state of qa, search, and slack',
+  'Give me a status report from every agent',
+  'QA-check this dashboard and search the knowledge base for how trade approvals work',
+  'Summarize recent payments and webhook activity',
+  'Summarize the state of qa, search, and slack, then post the summary to Slack',
+];
+function deskOrchSamplesInit() {
+  const host = document.getElementById('deskOrchSamples');
+  if (!host || host.children.length > 1) return;
+  for (const text of DESK_ORCH_SAMPLES) {
+    const b = document.createElement('button');
+    b.className = 'btn';
+    b.style.padding = '0.2rem 0.55rem';
+    b.style.fontSize = '0.75rem';
+    b.textContent = text;
+    b.onclick = () => {
+      const input = document.getElementById('deskOrchGoal');
+      if (input) input.value = text;
+      deskOrchestrateRun();
+    };
+    host.appendChild(b);
+  }
+}
