@@ -525,39 +525,29 @@ async function main() {
     }
   }
 
-  // 13. Autopilot hunt report PDF email: run a REAL opportunity hunt
-  // (an autopilot workflow - plan, execute, verify, synthesize, then
-  // deterministic sizing) and email its report as a PDF, the path the
-  // desk's Email PDF report button uses (QAAgent prints, EmailAgent
-  // sends, Slack mirrors). 409 = Public not connected -> skip; the
-  // print step's capacity refusal also skips.
+  // 13. Autopilot hunt report PDF email: QAAgent tests the autopilot
+  // agent's workflow end to end - it runs a real hunt through the
+  // public routes and has the hunt's report PDF emailed (QAAgent
+  // prints it, the EmailAgent sends it, Slack mirrors it). The
+  // callable reports skipped when Public is not connected.
   if (!RUN_PDF) {
     skip("Autopilot hunt report PDF email", 'QA_RUN_PDF_CHECK is "false"');
   } else if (!TEST_EMAIL) {
     skip("Autopilot hunt report PDF email", "QA_TEST_EMAIL is not set");
   } else {
     try {
-      const huntRes = await post("/api/public/opportunity-hunt", { budget: 10000, symbols: "SPY" });
-      if (huntRes.status === 409) {
-        skip("Autopilot hunt report PDF email", "Public.com is not connected");
-      } else if (huntRes.status !== 200 || !huntRes.json?.hunt?.id) {
+      const { status, json } = await post("/api/dashboard/qa/autopilot-hunt-test", { toEmail: TEST_EMAIL });
+      if (json?.skipped) {
+        skip("Autopilot hunt report PDF email", json.skipped);
+      } else if (isCapacityRefusal(json?.error)) {
+        skip("Autopilot hunt report PDF email", CAPACITY_WHY);
+      } else {
         record(
           "Autopilot hunt report PDF email",
-          false,
-          `hunt status=${huntRes.status} ${(huntRes.json?.error || "").slice(0, 160)}`,
+          status === 200 && json?.emailed === true,
+          json?.error ||
+            `hunt=${json?.huntId || "?"} trades=${json?.trades ?? "?"} slack=${json?.slackConfigured ? `${json.slackPosted ?? 0} file(s)` : "not-configured"}`,
         );
-      } else {
-        const mailRes = await post(`/api/public/opportunity-hunts/${huntRes.json.hunt.id}/email`, { toEmail: TEST_EMAIL });
-        if (isCapacityRefusal(mailRes.json?.error)) {
-          skip("Autopilot hunt report PDF email", CAPACITY_WHY);
-        } else {
-          record(
-            "Autopilot hunt report PDF email",
-            mailRes.status === 200 && mailRes.json?.emailed === true,
-            mailRes.json?.error ||
-              `status=${mailRes.status}, slack=${mailRes.json?.slackConfigured ? `${mailRes.json.slackPosted ?? 0} file(s)` : "not-configured"}`,
-          );
-        }
       }
     } catch (err) {
       record("Autopilot hunt report PDF email", false, err.message);

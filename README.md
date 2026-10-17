@@ -214,7 +214,7 @@ What it checks:
 10. A2A dispatch: the QA agent's endpoint refuses the unauthenticated (401) and round-trips `qa.summary` and a fixture `qa.ux_audit`.
 11. Desk snapshot email: five screenshots of the whole desk, emailed (`QA_RUN_DESK_CHECK=false` disables).
 12. A2A endpoint test email: every agent's A2A surface probed (card, 401, snapshot dispatch) and the results emailed (`QA_RUN_A2A_CHECK=false` disables). Needs no browser, so it lands even during a merge train.
-13. Autopilot hunt report PDF email: a real opportunity hunt (budget $10,000, SPY) runs on the autopilot pipeline and its report is emailed as a PDF - the autopilot workflow's own output, not a synthetic page (`QA_RUN_PDF_CHECK=false` disables).
+13. Autopilot hunt report PDF email: QAAgent tests the autopilot agent's workflow end to end - it runs a real opportunity hunt (budget $10,000, SPY) through the public routes and has the hunt's report PDF emailed. The autopilot workflow's own output, not a synthetic page (`QA_RUN_PDF_CHECK=false` disables).
 
 Two cross-cutting pieces: any FAIL also hands the failure to QAAgent's investigator, whose diagnosis prints in the log; and at the end of every run the script emails a one-page **summary** (every section's PASS/FAIL/SKIP) to `QA_TEST_EMAIL` through the dashboard's send-email route, so a skipped or failed email is itself reported rather than silent. The report and snapshot screenshots, and the hunt PDF, are additionally mirrored to Slack as file uploads through the bot API when `SLACK_QA_CHANNEL_ID` is configured (Slack's incoming webhook cannot carry files). Browser-bound sections degrade to SKIP when Browser Rendering capacity refuses a session - weather, not a verdict.
 
