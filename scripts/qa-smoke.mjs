@@ -328,7 +328,7 @@ async function main() {
         record(
           "QA report email with screenshots",
           status === 200 && json?.emailed === true,
-          json?.error || `status=${status}`,
+          (json?.error || `status=${status}`) + (json?.slackConfigured ? ` slack=${json.slackPosted ?? 0} file(s)` : " slack=not-configured"),
         );
         for (const t of json?.tabs || []) {
           console.log(`      ${t.passed ? "ok  " : "BAD "} ${t.name}: ${t.detail}`);
@@ -446,7 +446,7 @@ async function main() {
         record(
           "Autopilot Trading Desk snapshot email",
           status === 200 && json?.emailed === true && (json?.shots || []).length === 5,
-          json?.error || `status=${status}, shots=${(json?.shots || []).length}`,
+          json?.error || `status=${status}, shots=${(json?.shots || []).length}, slack=${json?.slackConfigured ? `${json.slackPosted ?? 0} file(s)` : "not-configured"}`,
         );
       }
     } catch (err) {
