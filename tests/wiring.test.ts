@@ -1384,6 +1384,15 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(qa).toContain("expectedButtonBg");
   });
 
+  it("captures console, network, and vitals evidence per page (issue #102)", () => {
+    const specMod = read("src/ux-audit-spec.ts");
+    expect(specMod).toContain("evidenceCollectorScript");
+    expect(specMod).toContain("summarizeEvidence");
+    expect(specMod).toContain("evidence?: boolean");
+    expect(qa).toContain("Page.addScriptToEvaluateOnNewDocument");
+    expect(qa).toContain("summarizeEvidence(evidencePages)");
+  });
+
   it("crawls same-origin links and clicks through page states (step 2)", () => {
     // The spec carries crawl options and per-page steps; the agent
     // normalizes entries, follows same-origin links within caps, and a
