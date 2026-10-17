@@ -823,7 +823,7 @@ export function createApp() {
   async function getOrchestratorAgent(c: any) {
     const stub = await getAgentByName(c.env.ORCHESTRATOR_AGENT as any, "orchestrator");
     return stub as unknown as {
-      orchestrateRun(goal: string): Promise<unknown>;
+      orchestrateRun(goal: string, mode?: string): Promise<unknown>;
       orchestrateJobs(limit?: number): Promise<unknown>;
       orchestrateJob(id: string): Promise<unknown>;
     };
@@ -1732,11 +1732,11 @@ export function createApp() {
   // view's data source. Body { rpc } tests one surface; empty = all.
   // Multi-agent orchestration (issue #180): run a goal, list jobs.
   app.post("/api/dashboard/orchestrate", requireAuth, async (c) => {
-    const body = await c.req.json().catch(() => ({})) as { goal?: string };
+    const body = await c.req.json().catch(() => ({})) as { goal?: string; mode?: string };
     const goal = (body.goal || "").trim();
     if (!goal) return c.json({ error: "goal is required" }, 400);
     const orchestrator = await getOrchestratorAgent(c);
-    const job = await orchestrator.orchestrateRun(goal);
+    const job = await orchestrator.orchestrateRun(goal, body.mode === "supervise" ? "supervise" : "plan");
     return c.json(job as Record<string, unknown>);
   });
 

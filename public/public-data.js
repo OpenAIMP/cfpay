@@ -604,7 +604,8 @@ function deskInitViews() {
     + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Orchestrate</h3>'
     + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin:0 0 0.5rem;">Give the orchestrator a goal. It plans steps across the other agents, runs independent steps in parallel, retries a failed step once, and merges one report. Jobs are saved; browser-QA steps can take minutes.</p>'
     + '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;"><input id="deskOrchGoal" type="text" placeholder="e.g. Summarize every agent\'s state and post it to Slack" style="flex:1;min-width:14rem;">'
-    + '<button class="btn" onclick="deskOrchestrateRun()">Run goal</button></div>'
+    + '<button class="btn" onclick="deskOrchestrateRun()">Run goal</button>'
+    + '<label style="font-size:0.78rem;color:var(--muted);display:flex;gap:0.3rem;align-items:center;"><input type="checkbox" id="deskOrchSupervise"> Supervise (the model may revise the plan between steps)</label></div>'
     + '<div id="deskOrchSamples" style="margin-top:0.55rem;display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center;"><span style="color:var(--muted);font-size:0.75rem;">Try:</span></div>'
     + '<div id="deskOrchResult" style="margin-top:0.6rem;"></div></div>'
     + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Jobs</h3><div id="deskOrchJobs"><span style="color:var(--muted);font-size:0.8rem;">No jobs loaded yet.</span></div></div></section>'
@@ -1270,7 +1271,8 @@ async function deskOrchestrateRun() {
   if (!goal) { host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Type a goal first.</span>'; return; }
   host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Planning and running - this can take minutes when QA steps are involved...</span>';
   try {
-    const job = await api('/api/dashboard/orchestrate', 'POST', { goal });
+    const sup = document.getElementById('deskOrchSupervise');
+    const job = await api('/api/dashboard/orchestrate', 'POST', { goal, mode: sup && sup.checked ? 'supervise' : 'plan' });
     if (job && job.error) throw new Error(job.error);
     host.innerHTML = deskOrchJobHtml(job, true);
     deskLoadOrchestrateJobs();
@@ -1289,7 +1291,8 @@ function deskOrchJobHtml(job, open) {
       + (o && o.error ? ' <span style="color:var(--muted);">' + escapeHtml(o.error) + '</span>' : '') + '</div>';
   }).join('');
   return '<div style="border-top:1px solid var(--border);margin-top:0.5rem;padding-top:0.5rem;">'
-    + '<div style="font-size:0.84rem;"><strong>' + escapeHtml(job.id) + '</strong> \u00b7 ' + escapeHtml(job.status) + ' \u00b7 ' + escapeHtml(job.goal) + '</div>'
+    + '<div style="font-size:0.84rem;"><strong>' + escapeHtml(job.id) + '</strong> \u00b7 ' + escapeHtml(job.status) + ' \u00b7 ' + escapeHtml(job.goal)
+    + (job.mode ? ' <span style="color:var(--muted);font-size:0.72rem;">(' + escapeHtml(job.mode) + (job.revisions ? ', ' + job.revisions + ' revision' + (job.revisions > 1 ? 's' : '') : '') + ')</span>' : '') + '</div>'
     + steps
     + (job.result ? '<div style="font-size:0.82rem;line-height:1.55;margin-top:0.45rem;white-space:pre-wrap;">' + escapeHtml(job.result.slice(0, open ? 4000 : 600)) + '</div>' : '')
     + '</div>';

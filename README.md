@@ -175,6 +175,15 @@ The OrchestratorAgent (issue #180) is the coordination layer above the agents. T
 
 Everything between those calls is code, not model judgement: dependency waves are computed topologically, independent steps run in parallel, each result is judged by a fixed rule (no reply text, `ok: false`, or an `error` field means failure), a failed step is retried once and then reported by name with its dependents skipped, and the job and its steps persist in the orchestrator's own SQL tables - so a job outlives any conversation and stays inspectable in the desk's Orchestrate view.
 
+**Two modes: plan-and-execute, and supervised (issue #185).** The pattern above is `plan` mode, and it stays the default. `supervise` mode keeps the same start - a catalog-validated plan - but after each execution wave the orchestrator's model reviews the actual results against the goal and returns a verdict: **continue**, **stop** (the remaining steps are recorded as skipped with the model's reason), or **revise** (replace the remaining steps; the revision passes through the same catalog validation - no unknown operations, no cycles, no reusing an executed step's id). Supervision is hard-bounded: at most 3 reviews and 12 total steps per job, and an unreadable verdict counts as continue, so a confused supervisor degrades to the plan rather than breaking the job.
+
+Why keep both? They optimize for different things, and neither dominates:
+
+- **Plan mode** is auditable end to end - the entire plan exists and is validated *before* anything runs, which matters when steps can send email or create checkouts - and it is cheaper and more predictable: two model calls regardless of job size, no mid-flight surprises.
+- **Supervise mode** is adaptive: when a step's result changes what should happen next (a search finds nothing, a QA check fails in an unexpected way), the model can react instead of the job blindly executing a stale plan. The cost is more model calls, less predictability, and a wider - still catalog-bounded - decision surface.
+
+Choose per job: `mode` on the A2A operation and the dashboard route, the orchestratorAgent tool's `mode` argument, or the Supervise checkbox in the desk's Orchestrate view. Jobs record their mode and revision count.
+
 **Dispatch: A2A, not agent-as-a-tool.** Each step is executed by building the same JSON-RPC `message/send` body an external A2A caller would send (operation and arguments in a data part) and calling the owning agent's `handleA2A` directly on its Durable Object stub - no HTTP hop, since it is the same Worker. The rationale, in order of weight:
 
 - **One dispatch path per agent.** The A2A handler is the same code external callers, the endpoint tests, and the post-deploy probes exercise. Orchestration cannot drift onto a second, private path into each agent that behaves differently from what the world sees.

@@ -6,11 +6,16 @@ import {
   catalogAgent,
   outcomeFromReply,
   parsePlan,
+  parseSupervisorReply,
   plannerPrompt,
   summarizeOutcomes,
+  supervisorPrompt,
   topoWaves,
+  MAX_REVISIONS,
+  MAX_TOTAL_STEPS,
   type PlanStep,
   type StepOutcome,
+  type SupervisorVerdict,
 } from "./orchestrate";
 
 // OrchestratorAgent (issue #180): multi-agent orchestration for
@@ -47,6 +52,8 @@ export interface OrchestratorJob {
   id: string;
   goal: string;
   status: string; // planning | running | done | partial | failed
+  mode: string; // plan | supervise (issue #185)
+  revisions: number;
   plan: PlanStep[];
   outcomes: StepOutcome[];
   result?: string;
@@ -75,6 +82,11 @@ export class OrchestratorAgent extends Think<Env> {
     return this.ctx.storage.sql;
   }
 
+  private ensureColumn(table: string, column: string, ddl: string): void {
+    const cols = this.db().exec(`PRAGMA table_info(${table})`).toArray() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) this.db().exec(ddl);
+  }
+
   private ensureTables(): void {
     this.db().exec(
       `CREATE TABLE IF NOT EXISTS orchestrate_jobs (
@@ -91,6 +103,8 @@ export class OrchestratorAgent extends Think<Env> {
          PRIMARY KEY (job_id, step_id)
        )`,
     );
+    this.ensureColumn("orchestrate_jobs", "mode", `ALTER TABLE orchestrate_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'plan'`);
+    this.ensureColumn("orchestrate_jobs", "revisions", `ALTER TABLE orchestrate_jobs ADD COLUMN revisions INTEGER NOT NULL DEFAULT 0`);
   }
 
   private origin(): string {
@@ -172,19 +186,65 @@ export class OrchestratorAgent extends Think<Env> {
     return outcome;
   }
 
-  /** Create, plan, and execute a job end to end. Long-running when QA steps are involved. */
+  /** One supervisor review (supervise mode): the model sees the results so far and may revise what remains. Unreadable verdicts count as continue. */
+  private async supervise(goal: string, outcomes: StepOutcome[], executedIds: Set<string>): Promise<SupervisorVerdict> {
+    try {
+      const raw = await this.modelText(supervisorPrompt(goal, summarizeOutcomes(goal, outcomes), [...executedIds]));
+      return parseSupervisorReply(raw, executedIds) ?? { action: "continue" };
+    } catch {
+      return { action: "continue" };
+    }
+  }
+
+  /** Execute one dependency wave: blocked steps are skipped by name, the rest run in parallel. */
+  private async executeWave(jobId: string, wave: PlanStep[], byId: Map<string, StepOutcome>, outcomes: StepOutcome[]): Promise<void> {
+    const runnable: PlanStep[] = [];
+    for (const step of wave) {
+      const blockedBy = (step.dependsOn ?? []).find((d) => byId.get(d) && !byId.get(d)!.ok);
+      if (blockedBy) {
+        const skipped: StepOutcome = {
+          stepId: step.id, agent: step.agent, operation: step.operation,
+          ok: false, skipped: true, error: `dependency ${blockedBy} failed`,
+        };
+        byId.set(step.id, skipped);
+        outcomes.push(skipped);
+        this.recordStep(jobId, step, "skipped", skipped, 0);
+      } else {
+        runnable.push(step);
+      }
+    }
+    const results = await Promise.all(runnable.map((s) => this.runStep(jobId, s)));
+    for (const r of results) {
+      byId.set(r.stepId, r);
+      outcomes.push(r);
+    }
+  }
+
+  /**
+   * Create, plan, and execute a job end to end. Long-running when QA
+   * steps are involved.
+   *
+   * Two modes (issue #185), sharing the planner, the catalog
+   * validation, the dispatcher, and persistence:
+   * - "plan" (default): the validated plan executes as computed.
+   * - "supervise": after each wave the model reviews the results
+   *   and may continue, stop (remaining steps recorded as skipped
+   *   with its reason), or revise the remaining steps - bounded by
+   *   MAX_REVISIONS reviews and MAX_TOTAL_STEPS total steps.
+   */
   @callable()
-  async orchestrateRun(goal: string): Promise<OrchestratorJob> {
+  async orchestrateRun(goal: string, mode: string = "plan"): Promise<OrchestratorJob> {
     this.ensureTables();
     const g = String(goal || "").trim();
+    const m = mode === "supervise" ? "supervise" : "plan";
     const id = `job-${crypto.randomUUID().slice(0, 8)}`;
     const createdAt = Date.now();
     if (!g) {
-      return { id, goal: g, status: "failed", plan: [], outcomes: [], result: "orchestrate.run needs a goal.", createdAt };
+      return { id, goal: g, status: "failed", mode: m, revisions: 0, plan: [], outcomes: [], result: "orchestrate.run needs a goal.", createdAt };
     }
     this.db().exec(
-      `INSERT INTO orchestrate_jobs (id, goal, status, plan_json, created_at) VALUES (?, ?, 'planning', '[]', ?)`,
-      id, g, createdAt,
+      `INSERT INTO orchestrate_jobs (id, goal, status, plan_json, mode, created_at) VALUES (?, ?, 'planning', '[]', ?, ?)`,
+      id, g, m, createdAt,
     );
     let plan: PlanStep[];
     try {
@@ -192,37 +252,66 @@ export class OrchestratorAgent extends Think<Env> {
     } catch (err) {
       const result = String(err);
       this.db().exec(`UPDATE orchestrate_jobs SET status = 'failed', result = ?, finished_at = ? WHERE id = ?`, result, Date.now(), id);
-      return { id, goal: g, status: "failed", plan: [], outcomes: [], result, createdAt, finishedAt: Date.now() };
+      return { id, goal: g, status: "failed", mode: m, revisions: 0, plan: [], outcomes: [], result, createdAt, finishedAt: Date.now() };
     }
     this.db().exec(`UPDATE orchestrate_jobs SET status = 'running', plan_json = ? WHERE id = ?`, JSON.stringify(plan), id);
 
     const outcomes: StepOutcome[] = [];
     const byId = new Map<string, StepOutcome>();
-    for (const wave of topoWaves(plan)) {
-      const runnable: PlanStep[] = [];
-      for (const step of wave) {
-        const blockedBy = (step.dependsOn ?? []).find((d) => byId.get(d) && !byId.get(d)!.ok);
-        if (blockedBy) {
+    let remaining = [...plan];
+    let revisions = 0;
+    for (;;) {
+      if (remaining.length) {
+        const wave = topoWaves(remaining)[0] ?? [];
+        await this.executeWave(id, wave, byId, outcomes);
+        const decided = new Set(outcomes.map((o) => o.stepId));
+        remaining = remaining.filter((s) => !decided.has(s.id));
+        if (m === "plan") {
+          if (remaining.length) continue;
+          break;
+        }
+      } else if (m === "plan") {
+        break;
+      }
+      // Supervise mode: review before deciding there is nothing left to change.
+      if (revisions >= MAX_REVISIONS) break;
+      const executedIds = new Set(outcomes.map((o) => o.stepId));
+      const verdict = await this.supervise(g, outcomes, executedIds);
+      revisions += 1;
+      if (verdict.action === "continue") {
+        if (!remaining.length) break;
+        continue;
+      }
+      if (verdict.action === "stop") {
+        for (const step of remaining) {
           const skipped: StepOutcome = {
             stepId: step.id, agent: step.agent, operation: step.operation,
-            ok: false, skipped: true, error: `dependency ${blockedBy} failed`,
+            ok: false, skipped: true, error: `supervisor stopped: ${verdict.reason}`,
           };
           byId.set(step.id, skipped);
           outcomes.push(skipped);
           this.recordStep(id, step, "skipped", skipped, 0);
-        } else {
-          runnable.push(step);
         }
+        remaining = [];
+        break;
       }
-      const results = await Promise.all(runnable.map((s) => this.runStep(id, s)));
-      for (const r of results) {
-        byId.set(r.stepId, r);
-        outcomes.push(r);
+      // revise: replace everything not yet decided, within the total-step bound.
+      const decidedSteps = plan.filter((s) => byId.has(s.id));
+      if (decidedSteps.length + verdict.steps.length > MAX_TOTAL_STEPS) {
+        if (!remaining.length) break;
+        continue;
       }
+      plan = [...decidedSteps, ...verdict.steps];
+      remaining = [...verdict.steps];
+      this.db().exec(
+        `UPDATE orchestrate_jobs SET plan_json = ?, revisions = ? WHERE id = ?`,
+        JSON.stringify(plan), revisions, id,
+      );
+      if (!remaining.length) break;
     }
 
     const okCount = outcomes.filter((o) => o.ok).length;
-    const status = okCount === outcomes.length ? "done" : okCount > 0 ? "partial" : "failed";
+    const status = outcomes.length > 0 && okCount === outcomes.length ? "done" : okCount > 0 ? "partial" : "failed";
     let result = summarizeOutcomes(g, outcomes);
     try {
       const synthesis = await this.modelText(
@@ -237,8 +326,8 @@ export class OrchestratorAgent extends Think<Env> {
       // The deterministic summary stands.
     }
     const finishedAt = Date.now();
-    this.db().exec(`UPDATE orchestrate_jobs SET status = ?, result = ?, finished_at = ? WHERE id = ?`, status, result, finishedAt, id);
-    return { id, goal: g, status, plan, outcomes, result, createdAt, finishedAt };
+    this.db().exec(`UPDATE orchestrate_jobs SET status = ?, result = ?, revisions = ?, finished_at = ? WHERE id = ?`, status, result, revisions, finishedAt, id);
+    return { id, goal: g, status, mode: m, revisions, plan, outcomes, result, createdAt, finishedAt };
   }
 
   /** Recent jobs, newest first (plans included, outcomes summarized in the job rows). */
@@ -277,6 +366,8 @@ export class OrchestratorAgent extends Think<Env> {
       goal: String(r.goal),
       status: String(r.status),
       plan: JSON.parse(String(r.plan_json || "[]")) as PlanStep[],
+      mode: String(r.mode ?? "plan"),
+      revisions: Number(r.revisions ?? 0),
       outcomes: [],
       result: (r.result as string) ?? undefined,
       createdAt: Number(r.created_at),
@@ -315,7 +406,7 @@ export class OrchestratorAgent extends Think<Env> {
     const op = dataPart ? String((dataPart.data as any).operation || "") : "";
     const args = (dataPart?.data as any) ?? {};
     if (op === "orchestrator.run") {
-      const job = await this.orchestrateRun(String(args.goal || ""));
+      const job = await this.orchestrateRun(String(args.goal || ""), String(args.mode || "plan"));
       return {
         text: `Job ${job.id} ${job.status}: ${job.outcomes.filter((o) => o.ok).length}/${job.outcomes.length} steps ok.\n${job.result ?? ""}`.slice(0, 1500),
         data: job,
