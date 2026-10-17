@@ -64,11 +64,13 @@ export const qaAgentToolSchema = {
   properties: {
     operation: {
       type: "string",
-      enum: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit", "qa.investigate"],
+      enum: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit", "qa.investigate", "qa.browser_profile"],
       description: "Which QA operation to perform.",
     },
     url: { type: "string", description: "http(s) URL to load. Required for qa.check; the start URL for qa.investigate." },
     question: { type: "string", description: "What to investigate, in plain language. Required for qa.investigate (max 500 chars)." },
+    action: { type: "string", enum: ["start", "status", "stop"], description: "For qa.browser_profile: manage the persistent browser profile." },
+    profile: { type: "boolean", description: "For qa.investigate / qa.ux_audit spec: run inside the persistent browser profile when one is active." },
     checks: {
       type: "object",
       properties: {
@@ -120,6 +122,7 @@ export const qaAgentToolSchema = {
         settleSelector: { type: "string", description: "Audit each page once this selector exists." },
         evidence: { type: "boolean", description: "Capture console errors, failed requests, and Web Vitals per page (default true)." },
         baselines: { type: "string", enum: ["record", "compare"], description: "Visual baselines: record stores each view's screenshot hash; compare fails on any view whose screenshot changed since recording." },
+        profile: { type: "boolean", description: "Run inside the persistent browser profile when one is active (issue #102)." },
         viewports: {
           type: "array",
           items: {
