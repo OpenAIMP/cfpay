@@ -1,0 +1,114 @@
+import { Agent } from "agents";
+import {
+  withVoice,
+  WorkersAIFluxSTT,
+  WorkersAITTS,
+  type VoiceTurnContext,
+} from "@cloudflare/voice";
+import type { Env } from "./types";
+import { speakable } from "./voice-text";
+
+// Voice channel for the Public.com desk (issue #168), built on the
+// documented @cloudflare/voice mixin: Workers AI speech-to-text
+// (Deepgram Flux) and text-to-speech (Deepgram Aura) on the existing
+// AI binding - no new keys. The base is the docs' Agent rather than
+// Think on purpose: the voice mixin owns the WebSocket protocol
+// (binary audio frames plus voice JSON), which would collide with
+// Think's chat protocol on the same socket. Everything else follows
+// the other capability agents: its own DO binding, its own A2A card
+// and dispatch, and a read-only snapshot for A2A callers.
+//
+// The agent's one job is the voice channel. The answers come from
+// the desk pipeline itself, reached the same way the dashboard
+// reaches it (POST /api/public/chat) - so a spoken question gets
+// exactly the typed pipeline's answer, including its guard rails:
+// order-placing calls still become approval-gated proposals there,
+// never executions.
+const VoiceBase = withVoice(Agent);
+
+export class VoiceAgent extends VoiceBase<Env> {
+  transcriber = new WorkersAIFluxSTT(this.env.AI);
+  tts = new WorkersAITTS(this.env.AI);
+
+  /** Run one question through the desk pipeline; returns speakable prose. */
+  async answerQuestion(question: string): Promise<string> {
+    const origin = this.env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    try {
+      const res = await fetch(`${origin}/api/public/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": this.env.DASHBOARD_API_KEY,
+        },
+        body: JSON.stringify({ message: question }),
+      });
+      const json = (await res.json().catch(() => null)) as {
+        answer?: string;
+        error?: string;
+      } | null;
+      if (res.status === 409) {
+        return "The Public dot com desk is not connected yet. Connect it in the Public tab first, then ask me again.";
+      }
+      if (!res.ok || !json?.answer) {
+        return "The trading desk could not answer that just now. The details are in the Public tab.";
+      }
+      return speakable(json.answer);
+    } catch {
+      return "I could not reach the trading desk just now.";
+    }
+  }
+
+  async onTurn(transcript: string, _context: VoiceTurnContext): Promise<string> {
+    const question = String(transcript || "").trim();
+    if (!question) return "I did not catch that - could you say it again?";
+    return this.answerQuestion(question);
+  }
+
+  /** Aggregate state for A2A callers: counts only, no transcript contents. */
+  async a2aSnapshot(): Promise<{ agent: string; messages: number; lastRole?: string }> {
+    const history = this.getConversationHistory(1000);
+    return {
+      agent: "voice",
+      messages: history.length,
+      lastRole: history[history.length - 1]?.role,
+    };
+  }
+
+  /** A2A entry point, mirroring QAAgent.handleA2A. */
+  async handleA2A(body: unknown, origin: string): Promise<unknown> {
+    const { createA2ATransport, handleCollecting, voiceCard } = await import("./a2a");
+    const a2a = createA2ATransport(this.ctx.storage.sql, origin, voiceCard(origin), {
+      card: voiceCard,
+      handle: (message: any, context: { taskId: string; contextId: string }) =>
+        this.handleA2AMessage(message, context),
+    });
+    return await handleCollecting(a2a.transport, body);
+  }
+
+  /** Route one A2A message: voice.ask runs the desk pipeline; no operation = snapshot. */
+  async handleA2AMessage(
+    message: any,
+    // Unused: each call is self-contained. Kept to satisfy the interface.
+    _context: { taskId: string; contextId: string },
+  ): Promise<{ text: string; data?: unknown }> {
+    const parts: any[] = Array.isArray(message?.parts) ? message.parts : [];
+    const dataPart = parts.find(
+      (x) => x && x.kind === "data" && x.data && typeof x.data === "object",
+    );
+    const op = dataPart ? String((dataPart.data as any).operation || "") : "";
+    if (op === "voice.ask") {
+      const question = String((dataPart.data as any).question || "").trim();
+      if (!question) return { text: "voice.ask needs a question." };
+      const reply = await this.answerQuestion(question);
+      return { text: reply, data: { spoken: reply } };
+    }
+    if (op && op !== "voice.snapshot") {
+      return { text: `Unknown operation: ${op}` };
+    }
+    const snapshot = await this.a2aSnapshot();
+    return {
+      text: `Voice desk status. ${snapshot.messages} message(s) in the current conversation.`,
+      data: snapshot,
+    };
+  }
+}
