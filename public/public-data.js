@@ -838,7 +838,7 @@ async function runOpportunityHunt() {
       maxRiskPct,
       symbols: symbolsRaw ? symbolsRaw.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean) : undefined,
     });
-    if (res.error) throw new Error(res.error);
+    if (res.error) throw new Error(deskApiErrorText(res));
     if (out) out.innerHTML = huntPlanHtml(res.hunt);
     deskLoadHunts();
   } catch (e) {
@@ -880,7 +880,7 @@ async function emailHuntReport(id) {
   if (st) st.textContent = 'Rendering the PDF and sending...';
   try {
     const res = await api('/api/public/opportunity-hunts/' + id + '/email', 'POST', { toEmail });
-    if (res.error) throw new Error(res.error);
+    if (res.error) throw new Error(deskApiErrorText(res));
     if (st) st.textContent = res.emailed ? 'PDF report sent to ' + toEmail + '.' + (res.slackPosted ? ' Also posted to Slack.' : '') : 'The send did not complete.';
   } catch (e) {
     if (st) st.textContent = 'Failed: ' + (e.message || e);
@@ -1168,6 +1168,36 @@ function deskSyncQuestionsClone() {
 }
 
 // ---------------------------------------------------------------------------
+// Error catalog client (issue #209). The back end returns errors
+// as { error: <user message>, code, hint, retryable } built from
+// src/errors.json; the same catalog is served at /api/errors.json.
+// deskApiErrorText renders a response's error as message + recovery
+// hint; the code is the linkage if a surface wants to act on it
+// (e.g. offer a retry when retryable). Legacy string errors render
+// as before.
+let deskErrorCatalog = null;
+function deskLoadErrorCatalog() {
+  if (deskErrorCatalog) return;
+  deskErrorCatalog = {};
+  fetch('/api/errors.json').then((r) => (r.ok ? r.json() : null)).then((j) => { if (j) deskErrorCatalog = j; }).catch(() => {});
+}
+function deskErrorSpec(code) {
+  return (deskErrorCatalog && deskErrorCatalog[code]) || null;
+}
+function deskApiErrorText(res, fallback) {
+  deskLoadErrorCatalog();
+  if (!res) return fallback || 'Unknown error';
+  if (typeof res.error === 'string' && res.error) {
+    const hint = res.hint || (res.code && deskErrorSpec(res.code) ? deskErrorSpec(res.code).hint : '');
+    return hint ? res.error + ' ' + hint : res.error;
+  }
+  if (res.code && deskErrorSpec(res.code)) {
+    const spec = deskErrorSpec(res.code);
+    return spec.message + (spec.hint ? ' ' + spec.hint : '');
+  }
+  return fallback || 'Unknown error';
+}
+
 // Voice desk client (issue #168; thin custom client since the
 // #173 voice fix; browser-speech fallback added after the cfagent
 // comparison). Two modes, cloud first:
