@@ -398,6 +398,54 @@ export function createApp() {
     return c.html(renderHuntReportHtml(hunt));
   });
 
+  // The hunt report as a PDF, emailed (issue #135 phase 2): QAAgent
+  // prints the report HTML, EmailAgent carries the PDF attachment.
+  app.post("/api/public/opportunity-hunts/:id/email", requireAuth, async (c) => {
+    const body = await c.req.json<{ toEmail?: string }>().catch(() => ({}) as { toEmail?: string });
+    const toEmail = String(body.toEmail || "").trim();
+    if (!/^[^@\s]+@[^@\s]+$/.test(toEmail)) {
+      return c.json({ error: "A valid toEmail is required." }, 400);
+    }
+    const agent = getAgent(c);
+    const hunt = await agent.getOpportunityHunt(c.req.param("id"));
+    if (!hunt) return c.json({ error: "No such hunt" }, 404);
+    const qaAgent = await getQAAgent(c);
+    const printed = await qaAgent.qaPrintPdf(renderHuntReportHtml(hunt));
+    if (!printed.ok || !printed.pdfBase64) {
+      return c.json({ error: printed.error || "PDF rendering failed" }, 502);
+    }
+    const { emailAgentStub } = await import("./email-tool");
+    const emailAgent = emailAgentStub(c.env as any);
+    if (!emailAgent) {
+      return c.json({ error: "The email agent is unavailable, so nothing was sent." }, 503);
+    }
+    const plan = hunt.plan;
+    const lines = [
+      `Opportunity hunt ${hunt.createdAt} (model ${hunt.model}).`,
+      `Budget $${Math.round(hunt.request.budget).toLocaleString()} - ${plan.trades.length} trades - max risk $${Math.round(plan.totalRisk).toLocaleString()} - max profit $${Math.round(plan.totalMaxProfit).toLocaleString()} - unallocated $${Math.round(plan.unallocated).toLocaleString()}.`,
+      "",
+      ...plan.trades.map(
+        (t: any) =>
+          `- ${t.underlying} ${t.strategy}: ${t.contracts} contract(s), max risk $${Math.round(t.totalRisk).toLocaleString()}, max profit $${Math.round(t.totalMaxProfit).toLocaleString()}. ${t.thesis}`,
+      ),
+      "",
+      "The full report is attached as a PDF. Report-only: no orders were placed or proposed; sizing was computed in code under the budget caps.",
+    ];
+    const result = await emailAgent.sendThroughAgent({
+      to: toEmail,
+      subject: `Autopilot Opportunity Hunt - ${plan.trades.length} trades, $${Math.round(plan.totalRisk).toLocaleString()} max risk`,
+      body: lines.join("\n"),
+      attachments: [
+        {
+          filename: `opportunity-hunt-${hunt.createdAt.slice(0, 10)}.pdf`,
+          type: "application/pdf",
+          content: printed.pdfBase64,
+        },
+      ],
+    });
+    return c.json({ emailed: result.ok, error: result.error });
+  });
+
   // Trading desk data reads (issue #112 part 2): the desk's panels call
   // the MCP tools directly — no model in the path, so the numbers on the
   // desk are the tools' own. Parameter names are mapped onto each tool's
@@ -808,6 +856,9 @@ export function createApp() {
         action: string,
         runId?: string,
       ): Promise<{ active: boolean; createdAt?: string; error?: string }>;
+      qaPrintPdf(
+        html: string,
+      ): Promise<{ ok: boolean; pdfBase64?: string; error?: string }>;
       testEmailAttachmentUI(
         apiKey: string,
         toEmail: string,

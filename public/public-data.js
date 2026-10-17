@@ -614,7 +614,10 @@ function huntPlanHtml(hunt) {
     + ' · unallocated $' + Math.round(plan.unallocated).toLocaleString()
     + (discarded ? ' · <span style="color:var(--muted);">' + discarded + ' discarded (see report)</span>' : '') + '</div>'
     + (rows ? '<table style="width:100%;border-collapse:collapse;margin-top:0.5rem;font-size:0.8rem;"><thead><tr><th style="text-align:left;">Underlying</th><th style="text-align:left;">Legs</th><th>Contracts</th><th>Max profit</th><th>Max risk</th><th style="text-align:left;">Why</th></tr></thead><tbody>' + rows + '</tbody></table>' : '<p style="color:var(--muted);">No candidate survived verification and sizing.</p>')
-    + '<div style="margin-top:0.5rem;"><button class="btn" style="' + pBtn + '" onclick="openHuntReport(\'' + hunt.id + '\')">Full report</button></div></div>';
+    + '<div style="margin-top:0.5rem;display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;"><button class="btn" style="' + pBtn + '" onclick="openHuntReport(\'' + hunt.id + '\')">Full report</button>'
+    + '<input type="email" id="huntEmailTo" placeholder="Email for the PDF report" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.4rem;color:var(--text);font-size:0.8rem;">'
+    + '<button class="btn" style="' + pBtn + '" onclick="emailHuntReport(\'' + hunt.id + '\')">Email PDF report</button>'
+    + '<span id="huntEmailState" style="color:var(--muted);font-size:0.75rem;"></span></div></div>';
 }
 
 async function runOpportunityHunt() {
@@ -662,5 +665,19 @@ async function openHuntReport(id) {
     window.open(url, '_blank');
   } catch (e) {
     alert('Could not open the report: ' + (e.message || e));
+  }
+}
+
+async function emailHuntReport(id) {
+  const st = document.getElementById('huntEmailState');
+  const toEmail = ((document.getElementById('huntEmailTo') || {}).value || '').trim();
+  if (!toEmail) { if (st) st.textContent = 'Enter an email address first.'; return; }
+  if (st) st.textContent = 'Rendering the PDF and sending...';
+  try {
+    const res = await api('/api/public/opportunity-hunts/' + id + '/email', 'POST', { toEmail });
+    if (res.error) throw new Error(res.error);
+    if (st) st.textContent = res.emailed ? 'PDF report sent to ' + toEmail + '.' : 'The send did not complete.';
+  } catch (e) {
+    if (st) st.textContent = 'Failed: ' + (e.message || e);
   }
 }
