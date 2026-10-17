@@ -740,6 +740,7 @@ export function createApp() {
         question: string,
         url: string,
         runId?: string,
+        useProfile?: boolean,
       ): Promise<{
         ok: boolean;
         answer?: string;
@@ -758,6 +759,11 @@ export function createApp() {
         toEmail: string,
         runId?: string,
       ): Promise<{ ok: boolean; emailed: boolean; shots: string[]; error?: string }>;
+      qaBrowserProfile(
+        key: string,
+        action: string,
+        runId?: string,
+      ): Promise<{ active: boolean; createdAt?: string; error?: string }>;
       testEmailAttachmentUI(
         apiKey: string,
         toEmail: string,
@@ -1510,7 +1516,7 @@ export function createApp() {
     }
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
     const qaAgent = await getQAAgent(c);
-    const result = await qaAgent.qaInvestigate(question, url, runId);
+    const result = await qaAgent.qaInvestigate(question, url, runId, body.profile === true);
     return c.json(result);
   });
 
@@ -1553,6 +1559,19 @@ export function createApp() {
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
     const result = await qaAgent.qaDeskSnapshotEmail(key, toEmail, runId);
     return jsonOr500(c, result, "qa/desk-snapshot");
+  });
+
+  // Persistent browser profile (issue #102): start | status | stop.
+  app.post("/api/dashboard/qa/browser-profile", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const action = typeof body.action === "string" ? body.action : "status";
+    const presented = c.req.header("X-API-Key") || "";
+    const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const key = presented || auth || "";
+    const qaAgent = await getQAAgent(c);
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const result = await qaAgent.qaBrowserProfile(key, action, runId);
+    return jsonOr500(c, result, "qa/browser-profile");
   });
 
 
