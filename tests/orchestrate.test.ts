@@ -14,7 +14,7 @@ import {
 const good = JSON.stringify([
   { id: "s1", agent: "search", operation: "search.ask", args: { query: "approval policy" } },
   { id: "s2", agent: "qa", operation: "qa.summary", dependsOn: [] },
-  { id: "s3", agent: "slack", operation: "slack.post", args: { text: "done" }, dependsOn: ["s1", "s2"] },
+  { id: "s3", agent: "email", operation: "email.send", args: { to: "ops@example.com", subject: "report", body: "done" }, dependsOn: ["s1", "s2"] },
 ]);
 
 describe("orchestration planning core", () => {
@@ -30,6 +30,7 @@ describe("orchestration planning core", () => {
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "nope", operation: "qa.summary" }]))).toBeNull();
     // The deliberate exclusions are not plannable either.
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "chat", operation: "chat.clear" }]))).toBeNull();
+    expect(parsePlan(JSON.stringify([{ id: "s1", agent: "slack", operation: "slack.post" }]))).toBeNull();
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "webhooks", operation: "webhook.receive" }]))).toBeNull();
   });
 

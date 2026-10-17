@@ -569,7 +569,7 @@ export function orchestratorCard(origin: string): AgentCard {
           "orchestrator.run plans and executes a goal across the other agents; orchestrator.jobs lists recent jobs. Steps run only operations from the published catalog, through each agent's own handler and gates. Long jobs (browser QA steps) take minutes.",
         tags: ["orchestration", "agents", "planning"],
         examples: [
-          "Summarize the state of every agent and post it to Slack",
+          "Summarize the state of every agent",
           "QA-check the dashboard and search the knowledge base for the approval policy",
         ],
       },
