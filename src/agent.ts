@@ -52,6 +52,7 @@ import {
 import type { AutopilotRun } from "./public-autopilot";
 import {
   computeCost,
+  budgetSynthesis,
   contextWindowFor,
   defaultModelId,
   normaliseToolCalls,
@@ -2174,11 +2175,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
       // The full results are still returned to the caller in `trace`, so the UI is
       // unaffected - only what the model re-reads is reduced.
       if (trace.length >= PRUNE_AFTER_CALLS) {
-        const keep = 2;
+        const keep = 3;
         resultIndexes.slice(0, Math.max(0, resultIndexes.length - keep)).forEach((idx) => {
           const m: any = messages[idx];
-          if (m && m.role === "tool" && typeof m.content === "string" && m.content.length > 400) {
-            m.content = m.content.slice(0, 400) + "\n[... shortened: " + (m.content.length - 400) + " more characters; the full result is shown in the tool panel]\n";
+          if (m && m.role === "tool" && typeof m.content === "string" && m.content.length > 1500) {
+            m.content = m.content.slice(0, 1500) + "\n[... shortened: " + (m.content.length - 1500) + " more characters; the full result is shown in the tool panel]\n";
           }
         });
       }
@@ -2247,6 +2248,15 @@ Do not claim to have completed a payment unless you have received confirmation.`
           messages.push({ role: "tool", content: "Tool error: " + msg, tool_call_id: id });
         }
       }
+    }
+
+    // Budget exhausted: one tool-less synthesis call; canned message is fallback only.
+    const synth = await budgetSynthesis(this.env.AI, modelId, messages, contextWindow);
+    if (synth) {
+      usage.prompt_tokens += synth.promptTokens;
+      usage.completion_tokens += synth.completionTokens;
+      usage.total_tokens += synth.totalTokens;
+      return { answer: synth.text, trace, model: modelId, cost: computeCost(modelId, usage), finishReason: "budget_synthesis" };
     }
 
     return {

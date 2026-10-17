@@ -194,6 +194,67 @@ export interface NormalisedToolCall {
  * `function` for robustness. Arguments are always emitted as a string, since
  * that is what the API expects; a non-string is JSON-encoded.
  */
+export interface BudgetSynthesisResult {
+  text: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+/**
+ * One final Workers AI call with NO tools, used when a tool-calling loop
+ * exhausts its budget: the model must answer from the evidence already in
+ * `messages` instead of the caller returning a canned dead-end. Returns
+ * null on any failure or empty text so the caller can fall back. The
+ * instruction restates the answer contract (verdict first where called
+ * for, evidence-only figures, n/a for anything unretrieved) because the
+ * synthesis is only as honest as the evidence it is forced to cite.
+ */
+export async function budgetSynthesis(
+  ai: { run: (model: never, input: never) => Promise<unknown> },
+  modelId: string,
+  messages: unknown[],
+  contextWindow: number | null,
+): Promise<BudgetSynthesisResult | null> {
+  // Same output-reservation logic as the tool loop: what remains of the
+  // context after the conversation, floored so the call is always tried.
+  let maxTokens = 2048;
+  if (contextWindow) {
+    const est = Math.ceil(JSON.stringify(messages).length / 3.5);
+    maxTokens = Math.max(384, Math.min(2048, contextWindow - est - 512));
+  }
+  try {
+    const raw: any = await ai.run(
+      modelId as never,
+      {
+        messages: [
+          ...messages,
+          {
+            role: "user",
+            content:
+              "You have no tool calls left. Answer the original question NOW from the evidence already gathered above. Follow the answer contract exactly (verdict first where one is called for, evidence-only figures, n/a for anything the tools did not return). Do not say you need more data; state plainly what the gathered evidence does and does not support.",
+          },
+        ],
+        max_tokens: maxTokens,
+      } as never,
+    );
+    const completion = readCompletion(raw);
+    const text = (completion.text || "").trim();
+    if (!text) return null;
+    const u: any = completion.usage || {};
+    const promptTokens = Number(u.prompt_tokens || 0);
+    const completionTokens = Number(u.completion_tokens || 0);
+    return {
+      text,
+      promptTokens,
+      completionTokens,
+      totalTokens: Number(u.total_tokens || 0) || promptTokens + completionTokens,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function normaliseToolCalls(raw: unknown): NormalisedToolCall[] {
   if (!Array.isArray(raw)) return [];
   const out: NormalisedToolCall[] = [];
