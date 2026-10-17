@@ -4,6 +4,9 @@ import {
   outcomeFromReply,
   parsePlan,
   parseSupervisorReply,
+  goalTokens,
+  isUnreliableOp,
+  memoryBrief,
   plannerPrompt,
   summarizeOutcomes,
   supervisorPrompt,
@@ -89,5 +92,43 @@ describe("supervisor verdicts (issue #185)", () => {
     expect(parseSupervisorReply(JSON.stringify({ action: "revise", steps: [{ id: "s9", agent: "qa", operation: "qa.destroy" }] }), executed)).toBeNull();
     expect(parseSupervisorReply("not json", executed)).toBeNull();
     expect(supervisorPrompt("g", "results", ["s1"])).toContain("s1");
+  });
+});
+
+describe("planning memory (issue #192)", () => {
+  it("tokenizes goals, dropping glue words", () => {
+    expect([...goalTokens("Summarize the state of qa, search, and slack")].sort()).toEqual(["search", "slack"]);
+    expect(goalTokens("").size).toBe(0);
+  });
+  it("returns an empty brief with no relevant history", () => {
+    expect(memoryBrief("check payments", [], [])).toBe("");
+    expect(memoryBrief("check payments", [{ goal: "audit the dashboard ux", status: "done" }], [])).toBe("");
+    expect(plannerPrompt("check payments", "")).not.toContain("Memory from previous jobs");
+  });
+  it("surfaces similar past goals and unreliable operations", () => {
+    const brief = memoryBrief(
+      "summarize slack and search state",
+      [
+        { goal: "summarize the state of qa, search, and slack", status: "partial" },
+        { goal: "audit the dashboard ux", status: "done" },
+      ],
+      [
+        { operation: "search.ask", runs: 3, failures: 3, lastError: "ai_search_not_found" },
+        { operation: "qa.summary", runs: 4, failures: 1 },
+      ],
+    );
+    expect(brief).toContain("Memory from previous jobs");
+    expect(brief).toContain("finished partial");
+    expect(brief).not.toContain("audit the dashboard ux");
+    expect(brief).toContain("search.ask has failed 3 of its last 3 runs");
+    expect(brief).toContain("ai_search_not_found");
+    expect(brief).not.toContain("qa.summary has failed");
+    expect(plannerPrompt("summarize slack and search state", brief)).toContain("Memory from previous jobs");
+  });
+  it("flags unreliability only on a real record (>=2 runs, >=half failed)", () => {
+    expect(isUnreliableOp({ operation: "x", runs: 1, failures: 1 })).toBe(false);
+    expect(isUnreliableOp({ operation: "x", runs: 2, failures: 1 })).toBe(true);
+    expect(isUnreliableOp({ operation: "x", runs: 5, failures: 2 })).toBe(false);
+    expect(isUnreliableOp({ operation: "x", runs: 5, failures: 0 })).toBe(false);
   });
 });
