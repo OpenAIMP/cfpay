@@ -1114,9 +1114,9 @@ describe("browser teardown cannot fail a QA run", () => {
     // Every browser teardown goes through the helper. Counted exactly, so both a
     // new raw close() and a removed release are caught.
     const uses = qa.split("closeConnectionQuietly(").length - 1;
-    // Eight teardowns: the six deterministic flows, qaInvestigate
-    // (issue #102), and the desk snapshot email.
-    expect(uses, "every browser teardown must use the helper").toBe(8);
+    // Nine teardowns: the six deterministic flows, qaInvestigate
+    // (issue #102), the desk snapshot email, and the profile start.
+    expect(uses, "every browser teardown must use the helper").toBe(9);
   });
 
   it("keeps the report's tab call inside a guard", () => {
@@ -1384,6 +1384,21 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(qa).toContain("expectedButtonBg");
   });
 
+  it("supports the persistent browser profile (issue #102)", () => {
+    const qaMod = read("src/qa-agent.ts");
+    const prof = read("src/browser-profile.ts");
+    const api = read("src/api.ts");
+    expect(prof).toContain("connectBrowserSession");
+    expect(prof).toContain("browser_profile");
+    expect(qaMod).toContain("qaBrowserProfile");
+    expect(qaMod).toContain("openProfileSession");
+    expect(api).toContain('"/api/dashboard/qa/browser-profile"');
+    // The single-helper rule still holds: raw session creation stays
+    // inside openBrowserSession; the profile path uses the *Session
+    // variants, never a third connectBrowser call site.
+    expect(qaMod.split("await connectBrowser(").length - 1).toBe(2);
+  });
+
   it("supports visual baselines in the audit (issue #102)", () => {
     const specMod = read("src/ux-audit-spec.ts");
     expect(specMod).toContain("summarizeBaselines");
@@ -1642,7 +1657,7 @@ describe("the agentic investigation stays wired (issue #102)", () => {
 
   it("is reachable from the route, the tool schema, and the dispatch", () => {
     expect(api).toContain('"/api/dashboard/qa/investigate"');
-    expect(api).toContain("qaInvestigate(question, url, runId)");
+    expect(api).toContain("qaInvestigate(question, url, runId, body.profile === true)");
     expect(schemas).toContain('"qa.investigate"');
     expect(qa).toContain('case "qa.investigate"');
   });
