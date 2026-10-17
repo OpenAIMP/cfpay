@@ -9,6 +9,9 @@
  * agentTool(). It is reachable three ways: a direct @callable() RPC, an A2A operation
  * at /a2a/qa, and a dispatch from a host agent's tool list.
  */
+import { crawlUrlKey, pageEntriesOf } from "./ux-audit-spec";
+import type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
+export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 import { callable } from "agents";
 import { emailAgentTool } from "./agent-tools";
 import { Think } from "@cloudflare/think";
@@ -83,35 +86,6 @@ export const UX_RULES = {
  * declared design token the pages are held to, beyond agreeing with each
  * other.
  */
-export interface UxRuleProfile {
-  contrastNormal?: number;
-  contrastLarge?: number;
-  minTargetPx?: number;
-  ignoreSelectors?: string[];
-  expectedButtonBg?: string;
-}
-
-/**
- * A target spec for qaUxAuditUrl (issue #94): what to audit, how to get
- * in, when a page counts as settled, and which rules apply. Credentials
- * are referenced by the caller (their own session values), never stored.
- */
-export interface UxAuditSpec {
-  /** Absolute URLs to audit; all must share the first page's origin. */
-  pages: string[];
-  auth?: {
-    mode: "none" | "localStorage" | "headers";
-    /** Seeded on the origin before the page loop (mode: localStorage). */
-    localStorage?: Record<string, string>;
-    /** Sent on every request of the session (mode: headers). */
-    headers?: Record<string, string>;
-  };
-  /** Audit a page once this selector exists; default: readyState complete. */
-  settleSelector?: string;
-  settleTimeoutMs?: number;
-  rules?: UxRuleProfile;
-}
-
 /**
  * The in-page UX probe for qaUxAudit: one evaluate that measures everything
  * the audit's rules need from the currently rendered view and returns it as
@@ -1472,36 +1446,43 @@ export class QAAgent extends Think<Env> {
     if (!env.BROWSER) {
       return { ok: false, checks: [], pagesAudited: [], error: "Browser binding not configured" };
     }
-    const pagesIn = Array.isArray(spec?.pages)
-      ? spec.pages.filter((u): u is string => typeof u === "string" && u.length > 0)
-      : [];
-    if (pagesIn.length === 0) {
+    const entriesIn = pageEntriesOf(spec);
+    if (entriesIn.length === 0) {
       return { ok: false, checks: [], pagesAudited: [], error: "spec.pages must list at least one URL" };
     }
     let origin: string;
     try {
-      origin = new URL(pagesIn[0]).origin;
+      origin = new URL(entriesIn[0].url).origin;
     } catch {
-      return { ok: false, checks: [], pagesAudited: [], error: `Invalid URL: ${pagesIn[0]}` };
+      return { ok: false, checks: [], pagesAudited: [], error: `Invalid URL: ${entriesIn[0].url}` };
     }
-    for (const u of pagesIn) {
+    for (const e of entriesIn) {
       let o: string;
       try {
-        o = new URL(u).origin;
+        o = new URL(e.url).origin;
       } catch {
-        return { ok: false, checks: [], pagesAudited: [], error: `Invalid URL: ${u}` };
+        return { ok: false, checks: [], pagesAudited: [], error: `Invalid URL: ${e.url}` };
       }
       if (o !== origin) {
         return {
           ok: false,
           checks: [],
           pagesAudited: [],
-          error: `All pages must share one origin (${origin}); ${u} does not`,
+          error: `All pages must share one origin (${origin}); ${e.url} does not`,
         };
       }
     }
     // A runaway page list would burn the day's browser minutes; cap it.
-    const pages = pagesIn.slice(0, 8);
+    // Crawl (step 2) widens the queue from the seeds' links, never past
+    // the same cap.
+    const crawlOn = !!spec.crawl;
+    const maxPages = Math.min(Math.max(Math.floor(spec.crawl?.maxPages ?? 8), 1), 8);
+    const maxDepth = Math.min(Math.max(Math.floor(spec.crawl?.maxDepth ?? 1), 0), 2);
+    const queue: { url: string; steps: UxAuditStep[]; depth: number }[] = entriesIn
+      .slice(0, 8)
+      .map((e) => ({ url: e.url, steps: e.steps, depth: 0 }));
+    const seen = new Set(queue.map((q) => crawlUrlKey(q.url, origin) ?? q.url));
+    let attempted = 0;
     const rules = {
       contrastNormal: spec.rules?.contrastNormal ?? UX_RULES.contrastNormal,
       contrastLarge: spec.rules?.contrastLarge ?? UX_RULES.contrastLarge,
@@ -1533,7 +1514,10 @@ export class QAAgent extends Think<Env> {
         }
 
         let seeded = false;
-        for (const pageUrl of pages) {
+        while (queue.length > 0 && attempted < maxPages) {
+          const entry = queue.shift()!;
+          const pageUrl = entry.url;
+          attempted++;
           const label = (() => {
             try {
               const u = new URL(pageUrl);
@@ -1573,6 +1557,46 @@ export class QAAgent extends Think<Env> {
               await new Promise((r) => setTimeout(r, 250));
             }
             await new Promise((r) => setTimeout(r, 500));
+
+            // Interaction steps (step 2): click through the states the
+            // caller asked about, then measure the resulting view. A
+            // selector that matches nothing is a visible failure line,
+            // never a silent skip.
+            for (const step of entry.steps) {
+              const clickExpr = `(() => { const el = document.querySelector(${JSON.stringify(step.click)}); if (!el) return false; el.scrollIntoView({ block: "center" }); el.click(); return true; })()`;
+              const cr = (await cdp
+                .send("Runtime.evaluate", { expression: clickExpr, returnByValue: true }, { sessionId })
+                .catch(() => null)) as { result?: { value?: boolean } } | null;
+              if (cr?.result?.value !== true) {
+                failures.push(`${label}: step click "${step.click}" matched nothing`);
+                continue;
+              }
+              this.emitLive(runId, { kind: "step", label: `Clicked ${step.click} on ${label}` });
+              await new Promise((r) => setTimeout(r, 700));
+            }
+
+            // Crawl (step 2): harvest this page's same-origin links for
+            // the queue, breadth-first, within the depth and page caps.
+            if (crawlOn && entry.depth < maxDepth) {
+              const lr = (await cdp
+                .send(
+                  "Runtime.evaluate",
+                  { expression: `Array.from(document.querySelectorAll("a[href]")).map((x) => x.href)`, returnByValue: true },
+                  { sessionId },
+                )
+                .catch(() => null)) as { result?: { value?: string[] } } | null;
+              let added = 0;
+              for (const h of lr?.result?.value ?? []) {
+                const key = crawlUrlKey(h, origin);
+                if (!key || seen.has(key) || seen.size >= maxPages) continue;
+                seen.add(key);
+                queue.push({ url: key, steps: [], depth: entry.depth + 1 });
+                added++;
+              }
+              if (added > 0) {
+                this.emitLive(runId, { kind: "step", label: `Crawl: +${added} page(s) from ${label}` });
+              }
+            }
 
             const ux = (await cdp.send(
               "Runtime.evaluate",
@@ -1638,9 +1662,16 @@ export class QAAgent extends Think<Env> {
       "Coverage",
       failures.length === 0,
       failures.length === 0
-        ? `${probes.length}/${pages.length} pages measured.`
-        : `${probes.length}/${pages.length} pages measured; failed: ${failures.join("; ")}`,
+        ? `${probes.length}/${attempted} pages measured.`
+        : `${probes.length}/${attempted} pages measured; failed: ${failures.join("; ")}`,
     );
+    if (crawlOn) {
+      addFinding(
+        "Crawl coverage",
+        true,
+        `${queue.length === 0 ? "Queue exhausted" : "Queue cut by cap"}: ${seen.size} unique page(s) known (${attempted} attempted, depth <= ${maxDepth}, cap ${maxPages}).`,
+      );
+    }
     for (const f of summarizeUxProbes(probes, rules)) {
       addFinding(f.name, f.passed, f.detail);
     }
@@ -2517,7 +2548,9 @@ export class QAAgent extends Think<Env> {
             data: { ok: false, error: "bad_spec" },
           };
         }
-        if (!specPages.every((u) => typeof u === "string" && /^https?:\/\//.test(u))) {
+        const pageUrlOf = (p: unknown): string =>
+          typeof p === "string" ? p : ((p as { url?: unknown })?.url as string) ?? "";
+        if (!specPages.every((p) => /^https?:\/\//.test(pageUrlOf(p)))) {
           // Same http(s)-only bound as qa.check, for the same reason.
           return {
             text: "qa.ux_audit pages must be http(s) URLs.",
