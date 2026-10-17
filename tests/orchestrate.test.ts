@@ -78,7 +78,7 @@ describe("supervisor verdicts (issue #185)", () => {
   });
   it("parses a revision that depends on an executed step", () => {
     const v = parseSupervisorReply(
-      JSON.stringify({ action: "revise", steps: [{ id: "s2", agent: "slack", operation: "slack.post", args: { text: "report" }, dependsOn: ["s1"] }] }),
+      JSON.stringify({ action: "revise", steps: [{ id: "s2", agent: "email", operation: "email.send", args: { to: "ops@example.com", subject: "report", body: "done" }, dependsOn: ["s1"] }] }),
       executed,
     );
     expect(v?.action).toBe("revise");
