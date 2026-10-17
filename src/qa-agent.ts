@@ -2,7 +2,7 @@
 import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, sha256Hex, summarizeBaselines, summarizeEvidence, viewportListOf } from "./ux-audit-spec";
 import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mergeDiscoveredTabs } from "./tab-coverage";
 import { openProfileConnection, profileRowClear, profileRowGet, profileRowSet, profileSessionAlive } from "./browser-profile";
-import { composeA2AEmail, runA2AEndpointTests } from "./a2a-test";
+import { A2A_ENDPOINTS, composeA2AEmail, runA2AEndpointTests, testA2AEndpoint } from "./a2a-test";
 import type { A2ARow } from "./a2a-test";
 import type { BaselineResult, PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
@@ -564,10 +564,8 @@ export class QAAgent extends Think<Env> {
     if (!runId) return;
     try {
       if (ev.kind === "frame") {
-        // Broadcast only, never buffered or sequenced: at ~100 KB a
-        // frame, buffering would evict the run's steps from the replay
-        // buffer, and a seq would break the panel's dedupe. A late
-        // watcher simply gets the next frame within a second.
+        // Broadcast only, never buffered (frames are ~100 KB and
+        // would evict the run's steps from the replay buffer).
         this.broadcast(
           JSON.stringify({
             type: "qa-live",
@@ -931,9 +929,6 @@ export class QAAgent extends Think<Env> {
       };
     } finally {
       stopFrames();
-      // A void close(): the teardown helper exists precisely because
-      // `browser.close().catch(...)` throws here - close() returns undefined,
-      // and that throw used to replace this method's return value with a 500.
       // Only the owner closes, so a shared session is left usable.
       if (ownsConnection) closeConnectionQuietly(browser);
     }
@@ -1354,6 +1349,20 @@ export class QAAgent extends Think<Env> {
     };
   }
 
+  /** The A2A probes without the email (issue #152): all surfaces, or one by rpc path. */
+  @callable()
+  async qaA2AProbe(apiKey: string, rpc?: string): Promise<{ ok: boolean; results: A2ARow[] }> {
+    const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    if (rpc) {
+      const ep = A2A_ENDPOINTS.find((e) => e.rpc === rpc);
+      if (!ep) return { ok: false, results: [] };
+      const row = await testA2AEndpoint(origin, apiKey, ep);
+      return { ok: row.ok, results: [row] };
+    }
+    const rows = await runA2AEndpointTests(origin, apiKey);
+    return { ok: rows.every((r) => r.ok), results: rows };
+  }
+
   /** Render standalone HTML to a PDF (issue #135): Page.printToPDF on a data: URL. */
   @callable()
   async qaPrintPdf(html: string): Promise<{ ok: boolean; pdfBase64?: string; error?: string }> {
@@ -1546,10 +1555,8 @@ export class QAAgent extends Think<Env> {
             }
             await new Promise((r) => setTimeout(r, 500));
 
-            // Interaction steps (step 2): click through the states the
-            // caller asked about, then measure the resulting view. A
-            // selector that matches nothing is a visible failure line,
-            // never a silent skip.
+            // Interaction steps: click through the caller's states,
+            // then measure. An unmatched selector is a visible failure.
             for (const step of entry.steps) {
               const clickExpr = `(() => { const el = document.querySelector(${JSON.stringify(step.click)}); if (!el) return false; el.scrollIntoView({ block: "center" }); el.click(); return true; })()`;
               const cr = (await cdp.send("Runtime.evaluate", { expression: clickExpr, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: boolean } } | null;
@@ -1988,10 +1995,8 @@ export class QAAgent extends Think<Env> {
           content: base64,
         });
       }
-      // One screenshot per tab, captured by qaDashboardTabs during the
-      // click-through above (raw base64 from CDP, no prefix to strip).
-      // DOM discovery can find more tabs than the email agent's
-      // 5-attachment cap allows: attach in order and note the rest.
+      // One screenshot per tab (qaDashboardTabs, above). More tabs
+      // than the 5-attachment cap: attach in order, note the rest.
       for (const tab of tabResult.tabs) {
         if (tab.screenshot) {
           attachments.push({
@@ -2145,9 +2150,12 @@ export class QAAgent extends Think<Env> {
         const dateStr = new Date().toISOString().slice(0, 10);
         for (const spec of shotSpecs) {
           const scrollExpr = `(() => {
+            const reveal = (e) => { if (e && typeof window.deskReveal === "function") window.deskReveal(e); };
             let el = document.getElementById(${JSON.stringify(spec.anchor)});
+            reveal(el);
             if ((!el || el.offsetParent === null) && ${JSON.stringify(spec.fallbackAnchor ?? "")}) {
               el = document.getElementById(${JSON.stringify(spec.fallbackAnchor ?? "")});
+              reveal(el);
             }
             if (el) { el.scrollIntoView({ block: "start" }); window.scrollBy(0, -70); return true; }
             return false;
@@ -2643,9 +2651,7 @@ export class QAAgent extends Think<Env> {
         error: err instanceof Error ? err.message : String(err),
       };
     } finally {
-      // A void close(): the teardown helper exists precisely because
-      // `browser.close().catch(...)` throws here - close() returns undefined,
-      // and that throw used to replace this method's return value with a 500.
+      // Teardown goes through the helper (a void close() must never throw here).
       closeConnectionQuietly(browser);
     }
   }
@@ -2688,10 +2694,7 @@ export class QAAgent extends Think<Env> {
       });
 
       // x402 v2: the challenge rides base64 in the PAYMENT-REQUIRED
-      // header (the body is just an error stub); v1 used the body.
-      // Read the header first, fall back to the body. (Reading only
-      // the body false-failed this check
-      // against a well-formed v2 challenge.)
+      // header; v1 used the body. Header first, body as fallback.
       let challenge: any = null;
       let challengeSource = "body";
       const challengeHeader =
