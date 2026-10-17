@@ -1169,18 +1169,27 @@ function deskSyncQuestionsClone() {
 
 // ---------------------------------------------------------------------------
 // Voice desk client (issue #168; thin custom client since the
-// #173 voice fix): speaks the @cloudflare/voice mixin protocol
-// directly over a plain WebSocket instead of the esm.sh VoiceClient
-// build, whose startCall path never reached the microphone in the
-// dashboard. Protocol (from the installed package's types): on open
-// send {type:"hello", protocol_version:1}; the server greets with
-// welcome + status, and on {type:"start_call"} it answers with
-// audio_config and starts listening. Mic audio goes up as binary
-// PCM16 16kHz frames (an AudioWorklet resamples and converts);
-// spoken answers come down as binary audio frames in the
-// audio_config format (mp3 from the Workers AI TTS) plus JSON
-// status/transcript frames. {type:"end_call"} hangs up; a server
-// status of idle after the call started also ends it locally.
+// #173 voice fix; browser-speech fallback added after the cfagent
+// comparison). Two modes, cloud first:
+//
+// CLOUD speaks the @cloudflare/voice mixin protocol directly over a
+// plain WebSocket: on open send {type:"hello", protocol_version:1};
+// the server greets with welcome + status, and on
+// {type:"start_call"} it answers with audio_config and starts
+// listening. Mic audio goes up as binary PCM16 16kHz frames (an
+// AudioWorklet resamples and converts); spoken answers come down
+// as binary audio frames in the audio_config format (mp3 from the
+// Workers AI TTS) plus JSON status/transcript frames.
+//
+// FALLBACK (cfagent-style): if the cloud call does not reach a live
+// state within a few seconds - the observed failure is the mixin's
+// speech stack never leaving idle - the client switches to the
+// browser's own speech recognition and synthesis, and runs each
+// spoken turn as TEXT through the VoiceAgent's A2A voice.ask (the
+// same desk pipeline, the speakable answer), exactly the split
+// cfagent's voice uses: browser speech at the edges, text in the
+// middle. Voice then depends on nothing at Cloudflare except the
+// desk's language model.
 
 const DESK_VOICE_WORKLET = [
   'class AudioCaptureProcessor extends AudioWorkletProcessor {',
@@ -1221,8 +1230,10 @@ function deskVoiceStop(sendEnd) {
   const btn = document.getElementById('deskVoiceBtn');
   if (btn) btn.textContent = '\u{1F399}\ufe0f Talk to the desk';
   if (!session) return;
-  try { if (sendEnd && session.ws.readyState === WebSocket.OPEN) session.ws.send(JSON.stringify({ type: 'end_call' })); } catch (e) { /* already gone */ }
-  try { session.ws.close(); } catch (e) { /* already gone */ }
+  if (session.rec) { try { session.rec.abort(); } catch (e) { /* not running */ } session.rec = null; }
+  if (session.mode === 'browser') { try { window.speechSynthesis.cancel(); } catch (e) { /* none */ } }
+  try { if (sendEnd && session.ws && session.ws.readyState === WebSocket.OPEN) session.ws.send(JSON.stringify({ type: 'end_call' })); } catch (e) { /* already gone */ }
+  if (session.ws) { try { session.ws.close(); } catch (e) { /* already gone */ } }
   if (session.stream) session.stream.getTracks().forEach((t) => t.stop());
   if (session.audioCtx) session.audioCtx.close().catch(() => {});
   if (session.playCtx) session.playCtx.close().catch(() => {});
@@ -1258,7 +1269,7 @@ async function deskVoiceStartMic(session) {
   await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
   const node = new AudioWorkletNode(ctx, 'audio-capture-processor');
   node.port.onmessage = (e2) => {
-    if (session.ws.readyState !== WebSocket.OPEN) return;
+    if (!session.ws || session.ws.readyState !== WebSocket.OPEN) return;
     const samples = e2.data.samples;
     const pcm = new Int16Array(samples.length);
     for (let i = 0; i < samples.length; i++) {
@@ -1275,8 +1286,174 @@ async function deskVoiceStartMic(session) {
   mute.connect(ctx.destination);
 }
 
-async function deskToggleVoice() {
+// Cloud mode: resolves true once the call is live (audio_config or
+// a non-idle status). Resolves false when the call cannot start:
+// no live state within 6s of start_call, the socket closing first,
+// or the microphone being refused (fatal - the fallback needs the
+// mic too, and session.fatal carries the reason).
+function deskVoiceStartCloud(session, key) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(proto + '//' + location.host + '/agents/voice-agent/desk?token=' + encodeURIComponent(key));
+    ws.binaryType = 'arraybuffer';
+    session.ws = ws;
+    const timer = setTimeout(() => done(false), 6000);
+    ws.onopen = () => {
+      try { ws.send(JSON.stringify({ type: 'hello', protocol_version: 1 })); } catch (e) { /* close handler reports */ }
+    };
+    ws.onmessage = async (ev) => {
+      if (typeof ev.data !== 'string') { deskVoicePlay(session, ev.data); return; }
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type === 'welcome') {
+        // The greeting proves socket, token auth, and routing. Only
+        // now start the call, then the microphone - the order the
+        // mixin's own client uses.
+        try {
+          ws.send(JSON.stringify({ type: 'start_call' }));
+          await deskVoiceStartMic(session);
+          session.started = true;
+          const btn = document.getElementById('deskVoiceBtn');
+          if (btn) btn.textContent = '\u23f9 End voice';
+        } catch (e) {
+          session.fatal = e && e.name === 'NotAllowedError'
+            ? 'microphone permission was denied'
+            : 'the microphone could not start (' + (e && e.message ? e.message : e) + ')';
+          clearTimeout(timer);
+          done(false);
+        }
+      } else if (msg.type === 'audio_config') {
+        session.format = msg.format || 'mp3';
+        if (msg.sampleRate) session.sampleRate = msg.sampleRate;
+        clearTimeout(timer);
+        done(true);
+      } else if (msg.type === 'status') {
+        deskVoiceSetStatus('Voice: ' + msg.status + (msg.status === 'listening' ? ' - speak now.' : ''));
+        if (msg.status !== 'idle') { clearTimeout(timer); done(true); }
+        if (msg.status === 'idle' && session.started && settled) {
+          deskVoiceStop(false);
+          deskVoiceSetStatus('Voice is off - ask out loud and the desk answers out loud.');
+        }
+      } else if (msg.type === 'transcript') {
+        session.messages.push({ role: msg.role, text: msg.text });
+        deskVoiceRenderTranscript(session);
+      } else if (msg.type === 'error') {
+        deskVoiceSetStatus('Voice error: ' + (msg.message || msg.code || 'unknown'));
+      }
+    };
+    ws.onclose = () => {
+      if (deskVoice !== session) return;
+      clearTimeout(timer);
+      if (!settled) { done(false); return; }
+      if (session.started) {
+        deskVoiceStop(false);
+        deskVoiceSetStatus('Voice: connection closed.');
+      }
+    };
+  });
+}
+
+// One fallback turn: the question goes to the VoiceAgent's A2A
+// voice.ask, which runs the desk pipeline and returns the speakable
+// answer text - the same brain as the typed composer and the cloud
+// channel.
+async function deskVoiceBrowserTurn(session, question) {
+  session.turnInFlight = true;
+  session.messages.push({ role: 'user', text: question });
+  deskVoiceRenderTranscript(session);
+  deskVoiceSetStatus('Voice (browser): thinking...');
+  let answer = '';
+  try {
+    const key = localStorage.getItem('cfmail_api_key') || '';
+    const res = await fetch('/a2a/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'desk-voice-' + Date.now(),
+        method: 'message/send',
+        params: {
+          message: {
+            kind: 'message',
+            role: 'user',
+            parts: [{ kind: 'data', data: { operation: 'voice.ask', question } }],
+            messageId: 'desk-voice-' + Date.now(),
+          },
+        },
+      }),
+    });
+    const json = await res.json().catch(() => null);
+    const parts = (json && json.result && Array.isArray(json.result.parts)) ? json.result.parts : [];
+    const textPart = parts.find((p) => p && p.kind === 'text' && typeof p.text === 'string');
+    answer = textPart ? textPart.text : '';
+  } catch (e) { /* answered below */ }
+  if (deskVoice !== session) return;
+  if (!answer) answer = 'The desk could not answer that just now.';
+  session.messages.push({ role: 'assistant', text: answer });
+  deskVoiceRenderTranscript(session);
+  session.speaking = true;
+  deskVoiceSetStatus('Voice (browser): speaking...');
+  const utter = new SpeechSynthesisUtterance(answer);
+  const resume = () => {
+    session.speaking = false;
+    session.turnInFlight = false;
+    if (deskVoice === session) deskVoiceBrowserListen(session);
+  };
+  utter.onend = resume;
+  utter.onerror = resume;
+  window.speechSynthesis.speak(utter);
+}
+
+function deskVoiceBrowserListen(session) {
+  if (deskVoice !== session || session.speaking || session.turnInFlight) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const rec = new SR();
+  session.rec = rec;
+  rec.lang = 'en-US';
+  rec.interimResults = false;
+  deskVoiceSetStatus('Voice (browser): listening - speak now.');
+  rec.onresult = (ev) => {
+    const result = ev.results && ev.results[0] && ev.results[0][0];
+    const text = result ? String(result.transcript || '').trim() : '';
+    if (text) deskVoiceBrowserTurn(session, text);
+    else deskVoiceBrowserListen(session);
+  };
+  rec.onerror = (ev) => {
+    if (deskVoice !== session) return;
+    if (ev.error === 'not-allowed') {
+      deskVoiceStop(false);
+      deskVoiceSetStatus('Voice could not start: microphone permission was denied.');
+      return;
+    }
+    if (ev.error === 'no-speech' || ev.error === 'aborted') { deskVoiceBrowserListen(session); return; }
+    deskVoiceSetStatus('Voice (browser): ' + ev.error + ' - listening again.');
+    deskVoiceBrowserListen(session);
+  };
+  rec.onend = () => {
+    // Recognition also ends after a result; the turn flow restarts
+    // it. Restart only when idle-waiting (no turn in flight).
+    if (deskVoice === session && !session.speaking && session.rec === rec && !session.turnInFlight) {
+      try { rec.start(); } catch (e) { /* already started */ }
+    }
+  };
+  try { rec.start(); } catch (e) { /* already started */ }
+}
+
+// Fallback mode: returns false when this browser has no speech
+// recognition at all.
+function deskVoiceStartBrowser(session) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR || !window.speechSynthesis) return false;
+  session.mode = 'browser';
   const btn = document.getElementById('deskVoiceBtn');
+  if (btn) btn.textContent = '\u23f9 End voice';
+  deskVoiceBrowserListen(session);
+  return true;
+}
+
+async function deskToggleVoice() {
   if (deskVoice) {
     deskVoiceStop(true);
     deskVoiceSetStatus('Voice is off - ask out loud and the desk answers out loud.');
@@ -1288,62 +1465,29 @@ async function deskToggleVoice() {
     return;
   }
   deskVoiceSetStatus('Starting voice...');
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(proto + '//' + location.host + '/agents/voice-agent/desk?token=' + encodeURIComponent(key));
-  ws.binaryType = 'arraybuffer';
   const session = deskVoice = {
-    ws, stream: null, audioCtx: null, playCtx: null, playAt: 0,
-    format: 'mp3', sampleRate: 16000, messages: [], started: false,
+    mode: 'cloud', ws: null, stream: null, audioCtx: null, playCtx: null, playAt: 0,
+    format: 'mp3', sampleRate: 16000, messages: [], started: false, rec: null, speaking: false, turnInFlight: false, fatal: '',
   };
-  const fail = (msg) => {
-    if (deskVoice !== session) return;
+  const cloudOk = await deskVoiceStartCloud(session, key);
+  if (deskVoice !== session) return; // stopped while starting
+  if (cloudOk) return; // live; the frame handlers drive the UI
+  if (session.fatal) {
     deskVoiceStop(false);
-    deskVoiceSetStatus('Voice could not start: ' + msg);
-  };
-  const timer = setTimeout(() => fail('the voice connection timed out'), 15000);
-  ws.onopen = () => {
-    try { ws.send(JSON.stringify({ type: 'hello', protocol_version: 1 })); } catch (e) { /* close handler reports */ }
-  };
-  ws.onmessage = async (ev) => {
-    if (typeof ev.data !== 'string') { deskVoicePlay(session, ev.data); return; }
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch (e) { return; }
-    if (msg.type === 'welcome') {
-      // The greeting proves socket, token auth, and routing. Only
-      // now start the call, then the microphone - the order the
-      // mixin's own client uses.
-      try {
-        ws.send(JSON.stringify({ type: 'start_call' }));
-        await deskVoiceStartMic(session);
-        clearTimeout(timer);
-        session.started = true;
-        if (btn) btn.textContent = '\u23f9 End voice';
-      } catch (e) {
-        fail(e && e.message ? e.message : 'microphone unavailable');
-      }
-    } else if (msg.type === 'audio_config') {
-      session.format = msg.format || 'mp3';
-      if (msg.sampleRate) session.sampleRate = msg.sampleRate;
-    } else if (msg.type === 'status') {
-      deskVoiceSetStatus('Voice: ' + msg.status + (msg.status === 'listening' ? ' - speak now.' : ''));
-      if (msg.status === 'idle' && session.started) {
-        deskVoiceStop(false);
-        deskVoiceSetStatus('Voice is off - ask out loud and the desk answers out loud.');
-      }
-    } else if (msg.type === 'transcript') {
-      session.messages.push({ role: msg.role, text: msg.text });
-      deskVoiceRenderTranscript(session);
-    } else if (msg.type === 'error') {
-      deskVoiceSetStatus('Voice error: ' + (msg.message || msg.code || 'unknown'));
-    }
-  };
-  ws.onclose = () => {
-    if (deskVoice !== session) return;
-    clearTimeout(timer);
-    const wasStarted = session.started;
+    deskVoiceSetStatus('Voice could not start: ' + session.fatal + '.');
+    return;
+  }
+  // Cloud speech did not start: tear it down and fall back to the
+  // browser's own speech, cfagent-style.
+  if (session.ws) { try { session.ws.close(); } catch (e) { /* gone */ } session.ws = null; }
+  if (session.stream) { session.stream.getTracks().forEach((t) => t.stop()); session.stream = null; }
+  if (session.audioCtx) { session.audioCtx.close().catch(() => {}); session.audioCtx = null; }
+  session.started = false;
+  deskVoiceSetStatus('Voice: cloud speech did not start - switching to browser speech...');
+  if (!deskVoiceStartBrowser(session)) {
     deskVoiceStop(false);
-    deskVoiceSetStatus(wasStarted ? 'Voice: connection closed.' : 'Voice could not start: the connection closed.');
-  };
+    deskVoiceSetStatus('Voice could not start: cloud speech failed and this browser offers no speech recognition.');
+  }
 }
 
 
