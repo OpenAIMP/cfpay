@@ -470,7 +470,7 @@ function deskRenderLogs() {
   const host = document.getElementById('deskLogsList');
   if (!host) return;
   if (!pubData.length) {
-    host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">No exchanges yet this session.</span>';
+    host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">No exchanges yet this session - ask a question in Trading and its full tool trace (raw data, downloads) lands here.</span>';
     return;
   }
   host.innerHTML = pubData.map((entry, idx) => ({ entry, idx })).reverse().map(({ entry, idx }) =>
@@ -531,6 +531,9 @@ function deskInitViews() {
     + '.desk-nav-btn{text-align:left;background:var(--bg);color:var(--text);border:1px solid var(--border);}'
     + '.desk-nav-btn.active{background:var(--accent);color:var(--on-accent);border-color:transparent;}'
     + '.desk-views{flex:1;min-width:0;}'
+    + '#deskRuns{max-height:17rem;overflow-y:auto;}'
+    + '#publicTrades{max-height:17rem;overflow-y:auto;}'
+    + '#deskToolsList{max-height:26rem;overflow-y:auto;}'
     + '.desk-view>.card{margin-bottom:1rem;}'
     + '@media (max-width:760px){.desk-shell{flex-direction:column;}.desk-nav{flex-direction:row;flex-wrap:wrap;position:static;}}';
   document.head.appendChild(style);
@@ -554,9 +557,14 @@ function deskInitViews() {
     + '</div>';
   const intro = panel.querySelector(':scope > .card');
   if (intro) intro.after(shell); else panel.appendChild(shell);
+  // The host MUST be section-scoped: the nav buttons carry the same
+  // data-view values and precede the sections in the shell markup, so
+  // an unscoped [data-view=...] query returns a BUTTON - and the desk
+  // ended up appended inside the Trading nav button (no visible nav,
+  // empty views). That was the #133 layout bug found in production.
   const move = (id, view) => {
     const el = document.getElementById(id);
-    const host = shell.querySelector('[data-view="' + view + '"]');
+    const host = shell.querySelector('section.desk-view[data-view="' + view + '"]');
     if (el && host) host.appendChild(el);
   };
   move('publicDesk', 'trading');
@@ -581,7 +589,7 @@ function deskInitViews() {
 
   // The per-answer model/tools meta line is a log line, not trading UI.
   const meta = document.getElementById('publicTools');
-  const logsCard = shell.querySelector('[data-view="logs"] .card');
+  const logsCard = shell.querySelector('section.desk-view[data-view="logs"] .card');
   if (meta && logsCard) logsCard.insertBefore(meta, logsCard.children[1] || null);
   deskRenderLogs();
 }

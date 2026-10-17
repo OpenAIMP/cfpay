@@ -1634,6 +1634,18 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(idx).toContain("deskShowView('trading')");
   });
 
+  it("desk view moves are section-scoped, never nav buttons (issue #133 fix)", () => {
+    const pdata = read("public/public-data.js");
+    // Nav buttons and view sections share data-view values; an
+    // unscoped selector returns the button and the desk gets appended
+    // inside it (the production "no left nav" bug).
+    expect(pdata).toContain("section.desk-view[data-view=");
+    expect(pdata).not.toContain("shell.querySelector('[data-view=");
+    // Long panels scroll inside their cards instead of growing the page.
+    expect(pdata).toContain("#deskRuns{max-height:");
+    expect(pdata).toContain("#publicTrades{max-height:");
+  });
+
   it("the opportunity hunt is wired end to end (issue #135)", () => {
     const agent = read("src/agent.ts");
     const api = read("src/api.ts");
