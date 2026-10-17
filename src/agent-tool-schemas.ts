@@ -64,10 +64,11 @@ export const qaAgentToolSchema = {
   properties: {
     operation: {
       type: "string",
-      enum: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit"],
+      enum: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit", "qa.investigate"],
       description: "Which QA operation to perform.",
     },
-    url: { type: "string", description: "http(s) URL to load. Required for qa.check." },
+    url: { type: "string", description: "http(s) URL to load. Required for qa.check; the start URL for qa.investigate." },
+    question: { type: "string", description: "What to investigate, in plain language. Required for qa.investigate (max 500 chars)." },
     checks: {
       type: "object",
       properties: {
