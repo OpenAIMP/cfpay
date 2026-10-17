@@ -189,6 +189,7 @@ jobs:
 
       - name: Run QA checks against production
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}        
           BASE_URL: https://pay.openaimp.com
           DASHBOARD_API_KEY: ${{ secrets.DASHBOARD_API_KEY }}
           QA_TEST_EMAIL: ${{ secrets.QA_TEST_EMAIL }}
