@@ -27,6 +27,7 @@ export const A2A_ENDPOINTS: A2AEndpoint[] = [
 
 export interface A2ARow {
   agent: string;
+  rpc: string;
   cardOk: boolean;
   cardName?: string;
   unauthStatus: number;
@@ -120,6 +121,7 @@ export async function testA2AEndpoint(
   }
   return {
     agent: ep.agent,
+    rpc: ep.rpc,
     cardOk,
     cardName,
     unauthStatus,
