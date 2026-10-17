@@ -60,6 +60,32 @@ function skip(name, why) {
   console.log(`  [SKIP] ${name} - ${why}`);
 }
 
+// Capacity wait-and-retry: a browser section refused by Browser
+// Rendering capacity on the first pass is not skipped yet - it is
+// deferred. After every section has run, the suite waits
+// (QA_CAPACITY_WAIT_MS, default 90000) for browser sessions from
+// earlier runs to drain, then re-runs ONLY the deferred sections
+// once. A refusal on the retry pass is the honest SKIP of record.
+// This exists because merge trains overlap deploys: the previous
+// run's sessions are still holding the browser when the next run
+// starts, and every browser section used to skip in lockstep.
+let pass = 1;
+const deferredNames = new Set();
+function skipCapacity(name) {
+  if (pass === 1) {
+    deferredNames.add(name);
+    console.log(`  [DEFER] ${name} - browser capacity; queued for the retry pass`);
+    return;
+  }
+  skip(name, CAPACITY_WHY);
+}
+function shouldRun(name) {
+  if (pass === 1) return true;
+  if (!deferredNames.has(name)) return false;
+  deferredNames.delete(name);
+  return true;
+}
+
 /** POST a JSON body with the dashboard key. */
 async function post(path, body) {
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -122,6 +148,41 @@ async function investigateFailures() {
   }
 }
 
+// The same summary as a presentable HTML email (light theme, inline
+// styles, status chips) - mail clients render the table; the plain
+// text body above remains the fallback for clients that do not.
+function summaryEmailHtml(subject) {
+  const esc = (x) =>
+    String(x || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const chip = (r) => {
+    const st = r.skipped
+      ? "background:#e5e7eb;color:#4b5563;"
+      : r.ok
+        ? "background:#dcfce7;color:#166534;"
+        : "background:#fee2e2;color:#b91c1c;";
+    const label = r.skipped ? "SKIP" : r.ok ? "PASS" : "FAIL";
+    return `<span style="${st}border-radius:999px;padding:1px 9px;font-size:11px;font-weight:700;">${label}</span>`;
+  };
+  const rows = results
+    .map(
+      (r) =>
+        `<tr><td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;white-space:nowrap;">${chip(r)}</td>` +
+        `<td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;color:#111827;">${esc(r.name)}</td>` +
+        `<td style="padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">${esc(r.detail || "")}</td></tr>`,
+    )
+    .join("");
+  return (
+    `<div style="background:#f3f4f6;padding:24px 12px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">` +
+    `<div style="max-width:660px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">` +
+    `<div style="padding:18px 22px;border-bottom:1px solid #e5e7eb;">` +
+    `<div style="font-size:17px;font-weight:700;color:#111827;">${esc(subject)}</div>` +
+    `<div style="font-size:12px;color:#6b7280;margin-top:3px;">Post-deploy QA against ${esc(BASE_URL)} - ${new Date().toISOString()}</div></div>` +
+    `<table style="width:100%;border-collapse:collapse;">${rows}</table>` +
+    `<div style="padding:14px 22px;font-size:12px;line-height:1.55;color:#6b7280;">A SKIP means the check did not run (usually browser capacity during a merge train), never that it passed. Browser sections refused by capacity are retried once after a wait before any SKIP is recorded. This summary is sent on every deploy precisely so a skipped or failed email is itself reported.</div>` +
+    `</div></div>`
+  );
+}
+
 let summarySent = false;
 async function sendSummaryEmail() {
   // One short email per deploy listing every section's PASS/FAIL/SKIP,
@@ -156,6 +217,7 @@ async function sendSummaryEmail() {
       to: TEST_EMAIL,
       subject,
       body,
+      html: summaryEmailHtml(subject),
     });
     console.log(
       json && (json.ok === true || json.emailId)
@@ -201,6 +263,26 @@ async function main() {
     return;
   }
 
+  await runSections();
+
+  // Retry pass: give deferred browser sections one more chance once
+  // earlier runs' sessions have had time to drain.
+  if (deferredNames.size > 0) {
+    pass = 2;
+    const waitMs = Number(process.env.QA_CAPACITY_WAIT_MS || 90000);
+    console.log(
+      `\nBrowser capacity blocked ${deferredNames.size} check(s) on the first pass; ` +
+        `waiting ${Math.round(waitMs / 1000)}s for sessions to drain, then retrying once...`,
+    );
+    await new Promise((r) => setTimeout(r, waitMs));
+    await runSections();
+  }
+
+  await finish();
+}
+
+async function runSections() {
+  if (pass === 1) {
   // 2. Non-destructive edge cases. Safe on every deploy.
   try {
     const { status, json } = await post("/api/dashboard/qa/edge-cases", {});
@@ -215,7 +297,9 @@ async function main() {
   } catch (err) {
     record("edge cases hold against production", false, err.message);
   }
+  }
 
+  if (pass === 1) {
   // 3. Payment guards. Never signs, never spends.
   try {
     const { status, json } = await post("/api/dashboard/qa/payment-flow", {});
@@ -232,14 +316,16 @@ async function main() {
   } catch (err) {
     record("payment guards hold (no funds moved)", false, err.message);
   }
+  }
 
+  if (shouldRun("dashboard tabs render real data")) {
   // 4. Tab data: proves the dashboard authenticates and renders real rows.
   try {
     const { status, json } = await post("/api/dashboard/qa/tabs", {});
     if (status === 400) {
       skip("dashboard tabs render real data", "endpoint requires an explicit API key");
     } else if (isCapacityRefusal(json?.error)) {
-      skip("dashboard tabs render real data", CAPACITY_WHY);
+      skipCapacity("dashboard tabs render real data");
     } else {
       record(
         "dashboard tabs render real data",
@@ -253,7 +339,9 @@ async function main() {
   } catch (err) {
     record("dashboard tabs render real data", false, err.message);
   }
+  }
 
+  if (shouldRun("UX audit runs against the dashboard")) {
   // 5. UX audit of the dashboard itself (issue #91). Asserts the audit RUNS
   //    and returns structured findings. The dashboard's own findings may
   //    legitimately fail rules — that is the audit working — so the verdict
@@ -262,7 +350,7 @@ async function main() {
     const { status, json } = await post("/api/dashboard/qa/ux-audit", {});
     const findings = Array.isArray(json?.checks) ? json.checks : [];
     if (isCapacityRefusal(json?.error)) {
-      skip("UX audit runs against the dashboard", CAPACITY_WHY);
+      skipCapacity("UX audit runs against the dashboard");
     } else {
       record(
         "UX audit runs against the dashboard",
@@ -276,7 +364,9 @@ async function main() {
   } catch (err) {
     record("UX audit runs against the dashboard", false, err.message);
   }
+  }
 
+  if (shouldRun("UX audit catches the fixture's planted violations")) {
   // 6. UX audit correctness (issue #94): the fixture page plants exactly
   //    four violations (public/qa-fixture.html). The generalized audit must
   //    catch those — and only those. This is the audit checking its own
@@ -312,7 +402,7 @@ async function main() {
       isCapacityRefusal(json?.error) &&
       (json?.checks || []).length === 0
     ) {
-      skip("UX audit catches the fixture's planted violations", CAPACITY_WHY);
+      skipCapacity("UX audit catches the fixture's planted violations");
     } else {
       record(
         "UX audit catches the fixture's planted violations",
@@ -328,7 +418,9 @@ async function main() {
   } catch (err) {
     record("UX audit catches the fixture's planted violations", false, err.message);
   }
+  }
 
+  if (shouldRun("send-email form with attachment")) {
   // 7. Attachment check: drives the real Send Email form end to end and sends
   // a real email to QA_TEST_EMAIL. Runs by default; see RUN_ATTACHMENT above.
   if (!RUN_ATTACHMENT) {
@@ -341,7 +433,7 @@ async function main() {
         toEmail: TEST_EMAIL,
       });
       if (isCapacityRefusal(json?.error, json?.detail)) {
-        skip("send-email form with attachment", CAPACITY_WHY);
+        skipCapacity("send-email form with attachment");
       } else {
         record(
           "send-email form with attachment",
@@ -353,7 +445,9 @@ async function main() {
       record("send-email form with attachment", false, err.message);
     }
   }
+  }
 
+  if (shouldRun("QA report email with screenshots")) {
   // 8. The QA report email: the tab check WITH screenshots, emailed as the
   // 4-PNG report - the same email the dashboard's Email QA Report button
   // sends, and the report of record for this automated run. (Section 7 is
@@ -369,7 +463,7 @@ async function main() {
         toEmail: TEST_EMAIL,
       });
       if (isCapacityRefusal(json?.error)) {
-        skip("QA report email with screenshots", CAPACITY_WHY);
+        skipCapacity("QA report email with screenshots");
       } else {
         record(
           "QA report email with screenshots",
@@ -384,7 +478,9 @@ async function main() {
       record("QA report email with screenshots", false, err.message);
     }
   }
+  }
 
+  if (pass === 1) {
   // 9. Trading desk data endpoints (issue #112 part 2): the desk's panels
   //    read quotes / portfolio / chain straight from the MCP tools via
   //    these endpoints, so the suite exercises them directly. A 409 means
@@ -404,6 +500,7 @@ async function main() {
     }
   } catch (err) {
     record("trading desk data endpoints respond", false, err.message);
+  }
   }
 
   // 10. A2A dispatch (issue #102 step 3): the QA agent's A2A endpoint
@@ -438,6 +535,7 @@ async function main() {
       return { status: res.status, json, blob: JSON.stringify(json || {}) };
     };
 
+    if (pass === 1) {
     const noAuth = await a2aSend({ operation: "qa.summary" }, false);
     record("A2A refuses unauthenticated dispatch", noAuth.status === 401, `status=${noAuth.status}`);
 
@@ -453,14 +551,16 @@ async function main() {
         summaryParts.some((p) => p.kind === "text" && String(p.text || "").includes("QA status.")),
       `status=${summary.status}`,
     );
+    }
 
     // The reply Message carries the dispatch's text summary (the failing
     // check names); the structured artifact does not cross message/send,
     // so assert on the text: the fixture must report failing checks and
     // name the contrast rule among them.
+    if (shouldRun("A2A qa.ux_audit dispatch returns findings")) {
     const audit = await a2aSend({ operation: "qa.ux_audit", spec: { pages: [`${BASE_URL}/qa-fixture.html`] } }, true);
     if (isCapacityRefusal(audit.blob)) {
-      skip("A2A qa.ux_audit dispatch returns findings", CAPACITY_WHY);
+      skipCapacity("A2A qa.ux_audit dispatch returns findings");
     } else {
       record(
         "A2A qa.ux_audit dispatch returns findings",
@@ -468,10 +568,12 @@ async function main() {
         `status=${audit.status}`,
       );
     }
+    }
   } catch (err) {
     record("A2A dispatch", false, err.message);
   }
 
+  if (shouldRun("Autopilot Trading Desk snapshot email")) {
   // 11. Autopilot Trading Desk snapshot email (PR #134): the second
   //     standing email - five screenshots of the whole desk (overview,
   //     trading chat, runs, portfolio/chain, trade approvals) to the
@@ -487,7 +589,7 @@ async function main() {
         toEmail: TEST_EMAIL,
       });
       if (isCapacityRefusal(json?.error)) {
-        skip("Autopilot Trading Desk snapshot email", CAPACITY_WHY);
+        skipCapacity("Autopilot Trading Desk snapshot email");
       } else {
         record(
           "Autopilot Trading Desk snapshot email",
@@ -499,7 +601,9 @@ async function main() {
       record("Autopilot Trading Desk snapshot email", false, err.message);
     }
   }
+  }
 
+  if (pass === 1) {
   // 12. A2A test email: QAAgent probes EVERY agent's A2A endpoint
   // (card, 401-without-auth, authenticated snapshot dispatch - all
   // read-only) and emails the results. No browser involved, so no
@@ -524,7 +628,9 @@ async function main() {
       record("A2A endpoint test email", false, err.message);
     }
   }
+  }
 
+  if (shouldRun("Autopilot hunt report PDF email")) {
   // 13. Autopilot hunt report PDF email: QAAgent tests the autopilot
   // agent's workflow end to end - it runs a real hunt through the
   // public routes and has the hunt's report PDF emailed (QAAgent
@@ -540,7 +646,7 @@ async function main() {
       if (json?.skipped) {
         skip("Autopilot hunt report PDF email", json.skipped);
       } else if (isCapacityRefusal(json?.error)) {
-        skip("Autopilot hunt report PDF email", CAPACITY_WHY);
+        skipCapacity("Autopilot hunt report PDF email");
       } else {
         record(
           "Autopilot hunt report PDF email",
@@ -553,8 +659,7 @@ async function main() {
       record("Autopilot hunt report PDF email", false, err.message);
     }
   }
-
-  await finish();
+  }
 }
 
 main().catch((err) => {

@@ -1424,6 +1424,7 @@ export function createApp() {
       to: string;
       subject: string;
       body: string;
+      html?: string;
       attachments?: { filename: string; type: string; content: string }[];
     }>();
     // Through the shared helper, which is how every other caller reaches this agent.
@@ -1439,6 +1440,7 @@ export function createApp() {
       to: body.to,
       subject: body.subject,
       body: body.body,
+      html: body.html,
       // Optional: absent means a plain send, which is the common case. The agent
       // validates the caps and refuses an oversized message with a named reason
       // before any send is attempted.

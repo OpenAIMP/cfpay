@@ -349,6 +349,8 @@ export class EmailAgent extends Think<Env, EmailState> {
     to: string;
     subject: string;
     body: string;
+    /** Optional HTML body, sent alongside the plain-text body. */
+    html?: string;
     /** Recorded as the sender. Defaults to the agent's own address. */
     from?: string;
     /** Base64 attachments. Validated and capped before anything is sent. */
@@ -422,6 +424,7 @@ export class EmailAgent extends Think<Env, EmailState> {
         replyTo: `agent@${this.env.EMAIL_DOMAIN}`,
         subject,
         text: body,
+        ...(input?.html ? { html: String(input.html) } : {}),
         // Spread conditionally: passing an empty array is harmless but noisy, and the
         // binding only needs the field when there is something in it.
         ...(attachmentCount > 0 ? { attachments: prepared.attachments } : {}),

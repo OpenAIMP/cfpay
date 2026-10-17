@@ -1657,6 +1657,15 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(smoke).toContain("/api/dashboard/send-email");
   });
 
+  it("capacity wait-and-retry and the HTML summary are wired", () => {
+    const smoke = read("scripts/qa-smoke.mjs");
+    const emailAgent = read("src/email-agent.ts");
+    expect(smoke).toContain("skipCapacity");
+    expect(smoke).toContain("QA_CAPACITY_WAIT_MS");
+    expect(smoke).toContain("summaryEmailHtml");
+    expect(emailAgent).toContain("html?: string");
+  });
+
   it("the notification center is wired (issue #163)", () => {
     const pdata = read("public/public-data.js");
     expect(pdata).toContain("notifyInit");
