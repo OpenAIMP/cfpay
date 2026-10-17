@@ -4,6 +4,7 @@ import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mer
 import { openProfileConnection, profileRowClear, profileRowGet, profileRowSet, profileSessionAlive } from "./browser-profile";
 import { A2A_ENDPOINTS, composeA2AEmail, runA2AEndpointTests, testA2AEndpoint } from "./a2a-test";
 import { printTestBody, printTestHtml, printTestSubject } from "./print-test";
+import { postFilesToSlack } from "./slack-files";
 import type { A2ARow } from "./a2a-test";
 import type { BaselineResult, PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
@@ -667,12 +668,7 @@ export class QAAgent extends Think<Env> {
     return result;
   }
 
-  /**
-   * RPC: click through the dashboard tabs and verify each renders real
-   * data. Known tabs are checked against their containers (see
-   * src/tab-coverage.ts); tabs discovered in the DOM are verified
-   * generically. One session for the whole run.
-   */
+  /** RPC: click through the dashboard tabs and verify each renders real data. */
   @callable()
   async qaDashboardTabs(
     apiKey: string,
@@ -905,12 +901,7 @@ export class QAAgent extends Think<Env> {
     return { ok, tabs: results };
   }
 
-    /**
-   * RPC: deterministic UX audit (issue #91): one session through the
-   * dashboard (navigate, seed, reload, click the views), running the
-   * UX probe at each and scoring the same rules as the generalized
-   * audit.
-   */
+    /** RPC: deterministic UX audit of the dashboard (issue #91). */
   @callable()
   async qaUxAudit(
     apiKey: string,
@@ -1222,12 +1213,7 @@ export class QAAgent extends Think<Env> {
     return (await openProfileConnection(env.BROWSER, this.ctx.storage.sql as never)) as CdpLike | null;
   }
 
-  /**
-   * RPC: manage the persistent browser profile (issue #102).
-   * start creates a session at the maximum keep_alive and seeds the
-   * dashboard sign-in into it; status reports liveness; stop deletes
-   * the session. Audit/investigate runs opt into it per call.
-   */
+  /** RPC: manage the persistent browser profile (issue #102): start / status / stop. */
   @callable()
   async qaBrowserProfile(
     key: string,
@@ -1415,12 +1401,7 @@ export class QAAgent extends Think<Env> {
     } catch { return false; }
   }
 
-    /**
-   * RPC: the generalized UX audit (issue #94, step 1): audits the
-   * pages of one origin named by a target spec (public,
-   * localStorage-seeded, or header-authed), with optional crawl,
-   * per-page steps, viewports, evidence, and baselines (issue #102).
-   */
+    /** RPC: the generalized UX audit (issue #94): crawl, steps, viewports, evidence, baselines. */
   @callable()
   async qaUxAuditUrl(
     spec: UxAuditSpec,
@@ -1906,7 +1887,7 @@ export class QAAgent extends Think<Env> {
     toEmail: string,
     runId?: string,
     withInvestigation = true,
-  ): Promise<{ ok: boolean; emailed: boolean; tabs: any[]; error?: string }> {
+  ): Promise<{ ok: boolean; emailed: boolean; tabs: any[]; slackPosted?: number; slackConfigured?: boolean; error?: string }> {
     // ONE session for the whole report: opening one session per check
     // is what exhausted the Browser Rendering concurrency limit.
     const env = this.env as Env;
@@ -2013,9 +1994,17 @@ export class QAAgent extends Think<Env> {
         omittedShots = attachments.length - 5;
         attachments.length = 5;
       }
-      const finalBody = omittedShots > 0
+      const slack = await postFilesToSlack(
+        this.env as Env,
+        `QA Report: Dashboard ${tabResult.ok ? "PASS" : "FAIL"} - ${dateStr}`,
+        attachments.map((a) => ({ filename: a.filename, contentB64: a.content })),
+      );
+      const slackLine = slack.configured
+        ? `\n\nScreenshots also posted to Slack: ${slack.posted}/${attachments.length}.`
+        : "\n\nScreenshots were not posted to Slack (Slack channel not configured).";
+      const finalBody = (omittedShots > 0
         ? body + `\n\nNote: ${omittedShots} further tab screenshot(s) were captured but not attached (the email agent caps attachments at 5).`
-        : body;
+        : body) + slackLine;
       this.emitLive(runId, { kind: "step", label: "Emailing the report", detail: toEmail });
       const sendResult = await emailAgent.sendThroughAgent({
         to: toEmail,
@@ -2041,7 +2030,7 @@ export class QAAgent extends Think<Env> {
         };
       }
       this.emitLive(runId, { kind: "result", label: "Report emailed", ok: true, detail: toEmail });
-      return { ok: tabResult.ok, emailed: true, tabs: tabResult.tabs };
+      return { ok: tabResult.ok, emailed: true, tabs: tabResult.tabs, slackPosted: slack.posted, slackConfigured: slack.configured };
     } catch (err) {
       return {
         ok: tabResult.ok,
@@ -2056,17 +2045,13 @@ export class QAAgent extends Think<Env> {
   }
 
 
-  /**
-   * RPC: email five screenshots of the Autopilot Trading Desk (a
-   * separate email from the QA report, which is unchanged): overview,
-   * chat, autopilot runs, portfolio/chain rail, trade approvals.
-   */
+  /** RPC: email five screenshots of the Autopilot Trading Desk (separate from the QA report). */
   @callable()
   async qaDeskSnapshotEmail(
     apiKey: string,
     toEmail: string,
     runId?: string,
-  ): Promise<{ ok: boolean; emailed: boolean; shots: string[]; error?: string }> {
+  ): Promise<{ ok: boolean; emailed: boolean; shots: string[]; slackPosted?: number; slackConfigured?: boolean; error?: string }> {
     const env = this.env as Env;
     if (!env.BROWSER) {
       return { ok: false, emailed: false, shots: [], error: "Browser binding not configured" };
@@ -2239,11 +2224,18 @@ export class QAAgent extends Think<Env> {
       if (!emailAgent) {
         return { ok: false, emailed: false, shots: shotNames, error: "The email agent is unavailable." };
       }
+      const slack = await postFilesToSlack(
+        this.env as Env,
+        `Autopilot Trading Desk Snapshot - ${new Date().toISOString().slice(0, 10)}`,
+        attachments.map((a) => ({ filename: a.filename, contentB64: a.content })),
+      );
       this.emitLive(runId, { kind: "step", label: "Emailing desk snapshots", detail: toEmail });
       const sendResult = await emailAgent.sendThroughAgent({
         to: toEmail,
         subject: `Autopilot Trading Desk Snapshot - ${new Date().toISOString().slice(0, 10)}`,
-        body,
+        body: body + (slack.configured
+          ? `\n\nScreenshots also posted to Slack: ${slack.posted}/${attachments.length}.`
+          : "\n\nScreenshots were not posted to Slack (Slack channel not configured)."),
         attachments,
       });
       if (!sendResult?.ok) {
@@ -2255,7 +2247,7 @@ export class QAAgent extends Think<Env> {
         };
       }
       this.emitLive(runId, { kind: "result", label: "Desk snapshot emailed", ok: true, detail: toEmail });
-      return { ok: true, emailed: true, shots: shotNames };
+      return { ok: true, emailed: true, shots: shotNames, slackPosted: slack.posted, slackConfigured: slack.configured };
     } catch (err) {
       return {
         ok: false,
@@ -2266,11 +2258,7 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-    /**
-   * Failure follow-up (issue #102): hand a suite/report failure to
-   * the agentic investigator (inside the browser profile when one is
-   * active, so it sees the signed-in app). Best-effort.
-   */
+    /** Failure follow-up (issue #102): hand a failure to the agentic investigator. Best-effort. */
   private async investigateFailure(
     what: string,
     failures: string[],
@@ -2287,12 +2275,7 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-  /**
-   * RPC: run the full dashboard QA suite in order and return an
-   * aggregate result - the "one button" equivalent of clicking every
-   * QA button in turn. The two email-sending checks are skipped
-   * unless a recipient is supplied.
-   */
+  /** RPC: the full dashboard QA suite in order; email checks need a recipient. */
   @callable()
   async qaFullSuite(
     apiKey: string,
@@ -2658,12 +2641,7 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-  /**
-   * RPC: verify the payment endpoint's guards, without ever paying
-   * (no signing, no funds): no signature -> 402 + a well-formed
-   * challenge (v2 base64 header, v1 body - both read); an invalid
-   * signature still refuses; nothing is processed.
-   */
+  /** RPC: verify the payment guards without ever paying (402 challenge, invalid signature refuses). */
   @callable()
   async qaPaymentFlow(
     origin?: string,
@@ -2777,12 +2755,7 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-    /**
-   * RPC: negative and edge-case checks against the dashboard API:
-   * bad input must be refused with the right status AND a structured
-   * JSON body, not an HTML error page (the happy-path-only suite
-   * would never see a 401 quietly becoming a 200).
-   */
+    /** RPC: negative/edge-case checks - bad input refused with the right status and a JSON body. */
   @callable()
   async qaEdgeCases(
     origin?: string,
@@ -2889,12 +2862,7 @@ export class QAAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-    /**
-   * Route one A2A message. Note the exposure, stated on the card:
-   * `qa.check` makes the Worker browse to a caller-chosen URL (an
-   * SSRF shape) - it is bearer-gated and bounded to http(s), but a
-   * credential holder can make the Worker browse to an internal name.
-   */
+    /** Route one A2A message (qa.check browses a caller-chosen URL: bearer-gated, http(s) only). */
   async handleA2AMessage(
     message: any,
     // Unused: each call is self-contained. Kept to satisfy the interface.
