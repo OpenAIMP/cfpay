@@ -560,6 +560,8 @@ function deskInitViews() {
     + '.desk-intro p{font-size:0.82rem !important;line-height:1.45 !important;margin-bottom:0.4rem !important;}'
     + '.desk-view>.card{margin-bottom:1rem;}'
     + '.desk-duo{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:1rem;align-items:start;}'
+    + '.desk-duo>.card{min-width:0;}'
+    + '#publicInput{min-width:0;}'
     + '.container:has(#public.active){max-width:none;}'
     + '.desk-duo>.card{margin-bottom:0;}'
     + '.desk-logs-duo{display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start;margin-bottom:1rem;}'
@@ -712,6 +714,14 @@ function deskInitViews() {
     mainCol.insertBefore(duo, chatCard);
     duo.appendChild(chatCard);
     duo.appendChild(qClone);
+    // The duo must NOT live inside #publicDesk (issue #174): that
+    // legacy grid reserves a 370px rail column beside its main
+    // column, which trapped the duo at partial width and squeezed
+    // the Ask card until its button overflowed under the questions
+    // card. As a direct child of the Trading section the duo takes
+    // the section's full width by plain block layout.
+    const tradingSection = shell.querySelector('section.desk-view[data-view="trading"]');
+    if (tradingSection) tradingSection.insertBefore(duo, tradingSection.firstChild);
     deskSyncQuestionsClone();
     const qSrc = document.getElementById('publicQuestions');
     if (qSrc && window.MutationObserver) {

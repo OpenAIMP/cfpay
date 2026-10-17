@@ -1666,6 +1666,13 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(emailAgent).toContain("html?: string");
   });
 
+  it("the Trading duo lives outside the legacy desk grid (issue #174)", () => {
+    const pdata = read("public/public-data.js");
+    expect(pdata).toContain("tradingSection.insertBefore(duo, tradingSection.firstChild)");
+    expect(pdata).toContain("#publicInput{min-width:0;}");
+    expect(pdata).toContain(".desk-duo>.card{min-width:0;}");
+  });
+
   it("the desk uses the full width with a larger questions share (issue #171)", () => {
     const pdata = read("public/public-data.js");
     expect(pdata).toContain(".container:has(#public.active){max-width:none;}");
