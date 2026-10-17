@@ -603,6 +603,22 @@ function deskInitViews() {
     + '</div>';
   const intro = panel.querySelector(':scope > .card');
   if (intro) { intro.classList.add('desk-intro'); intro.after(shell); } else panel.appendChild(shell);
+
+  // Knowledge search (issue #170): the SearchAgent's desk face, in
+  // the Tools view. Ask returns the grounded answer; Chunks the raw
+  // retrieved chunks. An unconfigured instance errors honestly.
+  const toolsSection = shell.querySelector('section.desk-view[data-view="tools"]');
+  if (toolsSection) {
+    const searchCard = document.createElement('div');
+    searchCard.className = 'card';
+    searchCard.innerHTML = '<h3 style="font-size:1rem;margin-bottom:0.5rem;">Knowledge search</h3>'
+      + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin:0 0 0.5rem;">Search the knowledge base indexed by Cloudflare AI Search (SearchAgent). Ask returns the grounded answer with its sources; Chunks shows the retrieved text itself.</p>'
+      + '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;"><input id="deskSearchInput" type="text" placeholder="Ask the knowledge base..." style="flex:1;min-width:12rem;">'
+      + '<button class="btn" onclick="deskSearchRun(\'ask\')">Ask</button>'
+      + '<button class="btn" onclick="deskSearchRun(\'query\')">Chunks</button></div>'
+      + '<div id="deskSearchResult" style="margin-top:0.6rem;"></div>';
+    toolsSection.appendChild(searchCard);
+  }
   // The host MUST be section-scoped: the nav buttons carry the same
   // data-view values and precede the sections in the shell markup, so
   // an unscoped [data-view=...] query returns a BUTTON - and the desk
@@ -1202,3 +1218,35 @@ async function deskToggleVoice() {
     if (status) status.textContent = 'Voice could not start: ' + (err && err.message ? err.message : err);
   }
 }
+
+
+// Knowledge search runner (issue #170).
+async function deskSearchRun(mode) {
+  const input = document.getElementById('deskSearchInput');
+  const host = document.getElementById('deskSearchResult');
+  const q = (input && input.value || '').trim();
+  if (!host) return;
+  if (!q) { host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Type a question first.</span>'; return; }
+  host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Searching...</span>';
+  try {
+    const r = await api('/api/dashboard/search', 'POST', { query: q, mode });
+    if (r && r.error) throw new Error(r.error);
+    const chunks = (r && r.chunks) || [];
+    let html = '';
+    if (mode === 'ask' && r.answer) {
+      html += '<div style="font-size:0.86rem;line-height:1.55;">' + escapeHtml(r.answer) + '</div>';
+    }
+    if (chunks.length) {
+      html += chunks.map((c0) =>
+        '<div style="border-top:1px solid var(--border);margin-top:0.5rem;padding-top:0.5rem;">'
+        + '<div style="font-size:0.72rem;color:var(--muted);">' + escapeHtml(c0.source || 'index') + ' \u00b7 score ' + (Math.round((c0.score || 0) * 100) / 100) + '</div>'
+        + '<div style="font-size:0.82rem;line-height:1.5;">' + escapeHtml(c0.text.slice(0, 600)) + '</div></div>').join('');
+    } else if (!html) {
+      html = '<span style="color:var(--muted);font-size:0.8rem;">No chunks returned. If the search instance is not created yet, the agent says so in its snapshot (Endpoints view).</span>';
+    }
+    host.innerHTML = html;
+  } catch (e) {
+    host.innerHTML = '<span class="badge-failed">Search failed</span> <span style="font-size:0.8rem;">' + escapeHtml(String(e.message || e)) + '</span>';
+  }
+}
+window.deskSearchRun = deskSearchRun;
