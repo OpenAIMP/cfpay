@@ -3,6 +3,7 @@ import {
   paymentAgentToolSchema,
   chatAgentToolSchema,
   qaAgentToolSchema,
+  searchAgentToolSchema,
   slackAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -10,6 +11,7 @@ import { EmailAgent } from "./email-agent";
 import { PaymentsAgent } from "./payments-agent";
 import { SlackAgent } from "./slack-agent";
 import { QAAgent } from "./qa-agent";
+import { SearchAgent } from "./search-agent";
 import { ChatAgent } from "./chat-agent";
 import { WebhookAgent } from "./webhook-agent";
 import { Agent, callable } from "agents";
@@ -35,6 +37,7 @@ import type { ToolSet } from "ai";
 import {
   emailAgentTool,
   chatAgentTool,
+  searchAgentTool,
   qaAgentTool,
   slackAgentTool,
   webhookAgentTool,
@@ -100,6 +103,7 @@ const AGENT_TOOL_DISPATCH = {
   webhookAgent: { cls: WebhookAgent, displayName: "Webhook Agent" },
   slackAgent: { cls: SlackAgent, displayName: "Slack Agent" },
   qaAgent: { cls: QAAgent, displayName: "QA Agent" },
+  searchAgent: { cls: SearchAgent, displayName: "Search Agent" },
   chatAgent: { cls: ChatAgent, displayName: "Chat Agent" },
 } as const;
 
@@ -124,6 +128,7 @@ const agentToolInputSchema = {
   webhooks: webhookAgentToolSchema,
   slack: slackAgentToolSchema,
   qa: qaAgentToolSchema,
+  search: searchAgentToolSchema,
   chat: chatAgentToolSchema,
 } as const;
 const DEFAULT_STATE: AgentState = {
@@ -229,6 +234,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
       slackAgent: slackAgentTool,
       qaAgent: qaAgentTool,
       chatAgent: chatAgentTool,
+      searchAgent: searchAgentTool,
     };
   }
 
@@ -2119,13 +2125,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
         tool_calls: toolCalls,
       });
 
-      // Shorten all but the most recent results before the next request.
-      //
-      // Nothing pruned history before, so every round re-sent every earlier result
-      // at full size: an option chain is up to 6000 characters, so eight rounds
-      // grew the prompt monotonically to ~112k input tokens over a single question.
-      // The full results are still returned to the caller in `trace`, so the UI is
-      // unaffected - only what the model re-reads is reduced.
+      // Shorten all but the most recent results before the next request:
+      // unpruned history re-sent every earlier result at full size, growing
+      // the prompt monotonically. Full results still reach the caller in trace.
       if (trace.length >= PRUNE_AFTER_CALLS) {
         const keep = 3;
         resultIndexes.slice(0, Math.max(0, resultIndexes.length - keep)).forEach((idx) => {
@@ -2516,6 +2518,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
         description:
           "Dispatch the QA agent to load a page and report whether it worked, or to check this Worker's own dashboard.",
         parameters: agentToolInputSchema.qa,
+      },
+    });
+
+    specs.push({
+      type: "function",
+      function: {
+        name: "searchAgent",
+        description:
+          "Dispatch the search agent (AI Search): search.query = chunks, search.ask = grounded answer.",
+        parameters: agentToolInputSchema.search,
       },
     });
 
