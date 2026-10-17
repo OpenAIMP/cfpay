@@ -552,7 +552,7 @@ export function orchestratorCard(origin: string): AgentCard {
   return {
     name: "CFmail Orchestrator Agent",
     description:
-      "Multi-agent orchestration: give it a goal and it plans steps across the email, payments, webhook, Slack, QA, chat, voice, search, and host agents, runs independent steps in parallel, retries a failed step once before reporting it by name, and returns one merged report. Jobs persist and are listable. Dispatch goes through each agent's own A2A handler, so no agent's gates are bypassed.",
+      "Multi-agent orchestration: give it a goal and it plans steps across the email, payments, webhook, Slack, QA, chat, voice, search, and host agents, runs independent steps in parallel, retries a failed step once before reporting it by name, and returns one merged report. Jobs persist and are listable. Two modes: plan (the validated plan executes as computed) and supervise (the model reviews results between execution waves and may revise the remaining steps, within hard bounds). Dispatch goes through each agent's own A2A handler, so no agent's gates are bypassed.",
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_ORCHESTRATOR_RPC_PATH,
