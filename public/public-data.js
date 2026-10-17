@@ -927,3 +927,122 @@ async function deskUpdateApprovalNotice() {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Notification center (issue #163): a bell in the dashboard header
+// listing everything the user should know about - pending trade
+// approvals (until decided), recent webhook events, recent hunts.
+
+function notifyInit() {
+  const right = document.querySelector('.header .right');
+  if (!right || document.getElementById('notifyWrap')) return;
+  const wrap = document.createElement('span');
+  wrap.id = 'notifyWrap';
+  wrap.style.cssText = 'position:relative;display:inline-block;';
+  wrap.innerHTML = '<button class="wallet-btn" id="notifyBell" title="Notifications" onclick="toggleNotifyPanel(event)">\u{1F514}'
+    + '<span id="notifyBadge" class="desk-nav-badge" style="display:none;margin-left:0.3rem;"></span></button>'
+    + '<div id="notifyPanel" style="display:none;position:absolute;right:0;top:calc(100% + 0.5rem);width:23rem;max-width:90vw;max-height:27rem;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;z-index:80;box-shadow:0 10px 30px rgba(0,0,0,0.45);text-align:left;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.6rem 0.8rem;border-bottom:1px solid var(--border);">'
+    + '<strong style="font-size:0.9rem;">Notifications</strong>'
+    + '<button class="btn" style="padding:0.15rem 0.5rem;font-size:0.75rem;" onclick="refreshNotifications()">Refresh</button></div>'
+    + '<div id="notifyList"><div style="padding:0.8rem;color:var(--muted);font-size:0.85rem;">Loading...</div></div></div>';
+  right.insertBefore(wrap, right.firstChild);
+  document.addEventListener('click', (ev) => {
+    const panel = document.getElementById('notifyPanel');
+    const w = document.getElementById('notifyWrap');
+    if (panel && w && !w.contains(ev.target)) panel.style.display = 'none';
+  });
+  refreshNotifications();
+  setInterval(refreshNotifications, 60000);
+}
+
+function toggleNotifyPanel(ev) {
+  if (ev) ev.stopPropagation();
+  const panel = document.getElementById('notifyPanel');
+  if (!panel) return;
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? '' : 'none';
+  if (opening) {
+    refreshNotifications().then(() => {
+      localStorage.setItem('cfmail_notify_seen', String(Date.now()));
+      updateNotifyBadge(window.__notifyPending || 0, 0);
+    });
+  }
+}
+
+function updateNotifyBadge(pending, unseen) {
+  const badge = document.getElementById('notifyBadge');
+  if (!badge) return;
+  const total = pending + unseen;
+  badge.style.display = total > 0 ? '' : 'none';
+  badge.textContent = String(total);
+}
+
+function notifyGo(kind) {
+  const panel = document.getElementById('notifyPanel');
+  if (panel) panel.style.display = 'none';
+  if (kind === 'webhooks') { switchTab('webhooks'); return; }
+  switchTab('public');
+  if (kind === 'logs') deskShowView('logs');
+  if (kind === 'trading') deskShowView('trading');
+}
+
+async function refreshNotifications() {
+  const list = document.getElementById('notifyList');
+  const items = [];
+  let pending = 0;
+  try {
+    const res = await api('/api/public/trades');
+    const proposals = (res && res.proposals) || [];
+    for (const pr of proposals) {
+      if (pr.status !== 'pending') continue;
+      pending += 1;
+      items.push({
+        t: Date.parse(pr.createdAt) || 0, icon: '\u23f3', kind: 'logs',
+        title: 'Trade approval pending: ' + pr.tool,
+        detail: 'Expires 24h after it was proposed. Review it on the Logs page.',
+      });
+    }
+  } catch (e) { /* Public not connected or not signed in: skip. */ }
+  try {
+    const data = await api('/api/dashboard/webhooks');
+    const events = (data && data.events) || [];
+    for (const e of events.slice(0, 5)) {
+      items.push({
+        t: Date.parse(e.receivedAt) || 0, icon: '\u{1F517}', kind: 'webhooks',
+        title: 'Webhook: ' + (e.provider || '') + ' ' + (e.eventType || ''),
+        detail: 'Handled by ' + (e.agentName || 'an agent') + '.',
+      });
+    }
+  } catch (e) { /* skip */ }
+  try {
+    const data = await api('/api/public/opportunity-hunts');
+    const hunts = (data && data.hunts) || [];
+    for (const h of hunts.slice(0, 3)) {
+      const trades = h.plan && h.plan.trades ? h.plan.trades.length : 0;
+      items.push({
+        t: Date.parse(h.createdAt || h.ts) || 0, icon: '\u{1F3AF}', kind: 'trading',
+        title: 'Opportunity hunt completed',
+        detail: trades + ' sized trade(s) in the plan. Open it from the Trading view.',
+      });
+    }
+  } catch (e) { /* skip */ }
+  items.sort((a, b) => b.t - a.t);
+  const seen = Number(localStorage.getItem('cfmail_notify_seen') || 0);
+  const unseen = items.filter((i) => i.t > seen && i.kind !== 'logs').length;
+  window.__notifyPending = pending;
+  updateNotifyBadge(pending, unseen);
+  if (!list) return;
+  if (!items.length) {
+    list.innerHTML = '<div style="padding:0.8rem;color:var(--muted);font-size:0.85rem;">No notifications yet.</div>';
+    return;
+  }
+  list.innerHTML = items.slice(0, 12).map((i) =>
+    '<div onclick="notifyGo(\'' + i.kind + '\')" style="padding:0.55rem 0.8rem;border-bottom:1px solid var(--border);cursor:pointer;">'
+    + '<div style="font-size:0.85rem;">' + i.icon + ' ' + escapeHtml(i.title) + '</div>'
+    + '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.15rem;">' + escapeHtml(i.detail) + '</div>'
+    + '<div style="font-size:0.7rem;color:var(--muted);">' + (i.t ? new Date(i.t).toLocaleString() : '') + '</div></div>',
+  ).join('');
+}
+
+notifyInit();
