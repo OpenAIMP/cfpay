@@ -465,6 +465,20 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
+   * Navigate to the dashboard, then seed its API key, then reload so
+   * init reads it. Order matters: localStorage is origin-scoped, so
+   * seeding on about:blank leaves checks asserting against the login
+   * page (the PR #74 bug).
+   */
+  private async navigateAndSeed(cdp: CdpLike, sessionId: string, origin: string, key: string): Promise<void> {
+    await cdp.send("Page.navigate", { url: origin }, { sessionId });
+    await new Promise((r) => setTimeout(r, 3000));
+    await cdp.send("Runtime.evaluate", { expression: `localStorage.setItem(${JSON.stringify(DASHBOARD_API_KEY_STORAGE_KEY)}, ${JSON.stringify(key)})` }, { sessionId });
+    await cdp.send("Page.reload", {}, { sessionId });
+    await new Promise((r) => setTimeout(r, 4000));
+  }
+
+  /**
    * Shared browser-check logic.
    */
   private async runBrowserCheck(
@@ -799,27 +813,7 @@ export class QAAgent extends Think<Env> {
 
         this.emitLive(runId, { kind: "step", label: "Loading dashboard" });
 
-        // Navigate FIRST. localStorage is origin-scoped: seeding it on the
-        // about:blank target (opaque origin) before navigating meant the
-        // dashboard never saw the key and always showed the login page.
-        await cdp.send("Page.navigate", { url: origin }, { sessionId });
-        // Wait for the navigation to commit so the seed below runs on the
-        // dashboard's origin, not about:blank.
-        await new Promise((r) => setTimeout(r, 3000));
-
-        // Seed the key the dashboard reads during init, then reload so init
-        // runs with the key present.
-        await cdp.send(
-          "Runtime.evaluate",
-          {
-            expression: `localStorage.setItem(${JSON.stringify(
-              DASHBOARD_API_KEY_STORAGE_KEY,
-            )}, ${JSON.stringify(apiKey)})`,
-          },
-          { sessionId },
-        );
-        await cdp.send("Page.reload", {}, { sessionId });
-        await new Promise((r) => setTimeout(r, 4000));
+        await this.navigateAndSeed(cdp, sessionId, origin, apiKey);
 
         // Fail loudly on the login page: otherwise the per-tab checks
         // report "container missing" and bury the actual cause.
@@ -1047,19 +1041,7 @@ export class QAAgent extends Think<Env> {
         stopFrames = this.startFrameStream(cdp, sessionId, runId);
 
         this.emitLive(runId, { kind: "step", label: "Loading dashboard" });
-        await cdp.send("Page.navigate", { url: origin }, { sessionId });
-        await new Promise((r) => setTimeout(r, 3000));
-        await cdp.send(
-          "Runtime.evaluate",
-          {
-            expression: `localStorage.setItem(${JSON.stringify(
-              DASHBOARD_API_KEY_STORAGE_KEY,
-            )}, ${JSON.stringify(apiKey)})`,
-          },
-          { sessionId },
-        );
-        await cdp.send("Page.reload", {}, { sessionId });
-        await new Promise((r) => setTimeout(r, 4000));
+        await this.navigateAndSeed(cdp, sessionId, origin, apiKey);
 
         // Same loud failure as the tab check: auditing the login page would
         // produce confident, meaningless findings.
@@ -1902,6 +1884,7 @@ export class QAAgent extends Think<Env> {
     apiKey: string,
     toEmail: string,
     runId?: string,
+    withInvestigation = true,
   ): Promise<{ ok: boolean; emailed: boolean; tabs: any[]; error?: string }> {
     // ONE session for the whole report: opening one session per check
     // is what exhausted the Browser Rendering concurrency limit.
@@ -1932,6 +1915,16 @@ export class QAAgent extends Think<Env> {
       };
     }
 
+    let investigation: { question: string; answer: string; steps: number } | undefined;
+    if (withInvestigation && !tabResult.ok) {
+      investigation = await this.investigateFailure(
+        "The dashboard tab checks in the QA report failed.",
+        tabResult.tabs.filter((t: any) => !t.passed).map((t: any) => `${t.name} - ${t.detail}`),
+        env.SELF_ORIGIN ?? "https://pay.openaimp.com",
+        runId,
+      );
+    }
+
     const tabLines = tabResult.tabs
       .map((t: any) => `- ${t.name}: ${t.passed ? "PASS" : "FAIL"} - ${t.detail}`)
       .join("\n");
@@ -1942,6 +1935,7 @@ export class QAAgent extends Think<Env> {
       ``,
       `Tab Results:`,
       tabLines,
+      ...(investigation ? [``, `Automated investigation (model-driven, QAAgent):`, investigation.answer] : []),
       ``,
       `Screenshots of the dashboard and of each tab are attached.`,
       ``,
@@ -1951,10 +1945,8 @@ export class QAAgent extends Think<Env> {
     ].join("\n");
 
     try {
-      // Through the shared helper rather than getAgentByName directly. That call was also
-      // not awaited, so the stub it returned was a Promise: .sendThroughAgent would have
-      // been undefined at runtime and the catch would have reported emailed:false, which
-      // is why this report never actually arrived.
+      // Through the shared helper: getAgentByName is async, and the
+      // un-awaited stub is why this report once never arrived.
       const { emailAgentStub } = await import("./email-tool");
       const emailAgent = emailAgentStub(this.env as Env);
       if (!emailAgent) {
@@ -2099,19 +2091,7 @@ export class QAAgent extends Think<Env> {
           )
           .catch(() => {});
 
-        await cdp.send("Page.navigate", { url: origin }, { sessionId });
-        await new Promise((r) => setTimeout(r, 3000));
-        await cdp.send(
-          "Runtime.evaluate",
-          {
-            expression: `localStorage.setItem(${JSON.stringify(
-              DASHBOARD_API_KEY_STORAGE_KEY,
-            )}, ${JSON.stringify(apiKey)})`,
-          },
-          { sessionId },
-        );
-        await cdp.send("Page.reload", {}, { sessionId });
-        await new Promise((r) => setTimeout(r, 4000));
+        await this.navigateAndSeed(cdp, sessionId, origin, apiKey);
 
         const loginCheck = (await cdp.send("Runtime.evaluate", { expression: `!!document.getElementById('login') && getComputedStyle(document.getElementById('login')).display !== 'none'`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: boolean } } | null;
         if (loginCheck?.result?.value === true) {
@@ -2265,6 +2245,27 @@ export class QAAgent extends Think<Env> {
   }
 
     /**
+   * Failure follow-up (issue #102): hand a suite/report failure to
+   * the agentic investigator (inside the browser profile when one is
+   * active, so it sees the signed-in app). Best-effort.
+   */
+  private async investigateFailure(
+    what: string,
+    failures: string[],
+    url: string,
+    runId?: string,
+  ): Promise<{ question: string; answer: string; steps: number } | undefined> {
+    const question = `${what} Failing checks: ${failures.slice(0, 4).join("; ")}. Investigate, find the likely cause, and report what is broken and what evidence supports it.`;
+    this.emitLive(runId, { kind: "step", label: "Investigating the failure", detail: failures.slice(0, 4).join("; ") });
+    try {
+      const inv = await this.qaInvestigate(question, url, runId, true);
+      return inv.answer ? { question, answer: inv.answer, steps: inv.steps.length } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * RPC: run the full dashboard QA suite in order and return an
    * aggregate result - the "one button" equivalent of clicking every
    * QA button in turn. The two email-sending checks are skipped
@@ -2279,6 +2280,7 @@ export class QAAgent extends Think<Env> {
     ok: boolean;
     checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[];
     emailed: boolean;
+    investigation?: { question: string; answer: string; steps: number };
     error?: string;
   }> {
     const checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[] = [];
@@ -2357,7 +2359,7 @@ export class QAAgent extends Think<Env> {
           detail: att.detail,
           error: att.error,
         });
-        const rep = await this.qaAndEmailReport(apiKey, toEmail, runId);
+        const rep = await this.qaAndEmailReport(apiKey, toEmail, runId, false);
         emailed = rep.emailed;
         record("Email QA Report", {
           ok: rep.emailed,
@@ -2399,7 +2401,16 @@ export class QAAgent extends Think<Env> {
         label: suiteOk ? "Full suite passed" : "Full suite failed",
         ok: suiteOk,
       });
-      return { ok: suiteOk, checks, emailed };
+      let investigation: { question: string; answer: string; steps: number } | undefined;
+      if (!suiteOk) {
+        investigation = await this.investigateFailure(
+          "The post-deploy QA full suite failed on the production dashboard.",
+          checks.filter((c) => !c.skipped && !c.passed).map((c) => `${c.name} - ${c.detail}`),
+          (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com",
+          runId,
+        );
+      }
+      return { ok: suiteOk, checks, emailed, investigation };
     } catch (err) {
       return {
         ok: false,
@@ -2452,22 +2463,7 @@ export class QAAgent extends Think<Env> {
       try {
         const sessionId = await cdp.attachToTarget(targetId);
 
-        // Navigate FIRST: localStorage is origin-scoped, so seeding on the
-        // about:blank target (opaque origin) would leave the dashboard without
-        // the key. Seed on the dashboard origin, then reload so init reads it.
-        await cdp.send("Page.navigate", { url: origin }, { sessionId });
-        await new Promise((r) => setTimeout(r, 3000));
-        await cdp.send(
-          "Runtime.evaluate",
-          {
-            expression: `localStorage.setItem(${JSON.stringify(
-              DASHBOARD_API_KEY_STORAGE_KEY,
-            )}, ${JSON.stringify(apiKey)})`,
-          },
-          { sessionId },
-        );
-        await cdp.send("Page.reload", {}, { sessionId });
-        await new Promise((r) => setTimeout(r, 4000));
+        await this.navigateAndSeed(cdp, sessionId, origin, apiKey);
 
         // Open the Send Email tab and wait for the form to exist, rather than
         // assuming a fixed delay is enough for the tab switch to take effect.
@@ -2681,10 +2677,10 @@ export class QAAgent extends Think<Env> {
         detail: `status=${challengeRes.status}`,
       });
 
-      // x402 v2 carries the challenge base64-encoded in the PAYMENT-REQUIRED
-      // header; v1 put it in the body. This deployment is v2 — its body is
-      // just {"error":"Payment required"} — so read the header first and fall
-      // back to the body. (Reading only the body false-failed this check
+      // x402 v2: the challenge rides base64 in the PAYMENT-REQUIRED
+      // header (the body is just an error stub); v1 used the body.
+      // Read the header first, fall back to the body. (Reading only
+      // the body false-failed this check
       // against a well-formed v2 challenge.)
       let challenge: any = null;
       let challengeSource = "body";

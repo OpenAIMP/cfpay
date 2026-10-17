@@ -703,6 +703,11 @@
         }
         html += '</ul>';
       }
+      if (res.investigation && res.investigation.answer) {
+        html += '<div style="margin-top:0.75rem;border-left:3px solid #b45309;padding:0.5rem 0.75rem;background:var(--bg);">'
+          + '<p style="margin:0 0 0.35rem;"><strong>Automated investigation</strong> <span style="color:var(--muted);">(' + res.investigation.steps + ' browser steps)</span></p>'
+          + '<p style="margin:0;white-space:pre-wrap;">' + escapeHtml(res.investigation.answer) + '</p></div>';
+      }
       html += '</div>';
       el.innerHTML = html;
     }

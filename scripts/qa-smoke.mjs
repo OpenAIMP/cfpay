@@ -87,7 +87,35 @@ async function get(path) {
   return { status: res.status, json };
 }
 
-function finish() {
+// Failure follow-up (issue #102): when anything gated failed, hand
+// the failure to QAAgent's agentic investigator before exiting, so
+// the CI log carries a diagnosis and not just a red X. Runs once,
+// best-effort, and never changes the exit code.
+let investigated = false;
+async function investigateFailures() {
+  if (investigated) return;
+  investigated = true;
+  const failures = results.filter((r) => !r.ok && !r.skipped);
+  if (failures.length === 0 || !API_KEY) return;
+  console.log("\nInvestigating the failure(s) with QAAgent (qa.investigate)...");
+  try {
+    const question =
+      "The post-deploy QA smoke failed. Failing checks: " +
+      failures.map((f) => `${f.name}${f.detail ? ` - ${f.detail}` : ""}`).join("; ") +
+      ". Investigate the site, find the likely cause, and report what is broken and what evidence supports it.";
+    const { status, json } = await post("/api/dashboard/qa/investigate", { question, url: BASE_URL, profile: true });
+    if (status === 200 && json && json.answer) {
+      console.log(`  [INVESTIGATE] ${String(json.answer).split("\n").join("\n  ")}`);
+    } else {
+      console.log(`  [INVESTIGATE] no diagnosis (status=${status})`);
+    }
+  } catch (err) {
+    console.log(`  [INVESTIGATE] failed to run: ${err.message}`);
+  }
+}
+
+async function finish() {
+  await investigateFailures();
   const ran = results.filter((r) => !r.skipped).length;
   const skipped = results.filter((r) => r.skipped).length;
   const passed = ran - failed;
@@ -109,13 +137,13 @@ async function main() {
     record("worker responds on /health", res.ok, `status=${res.status}`);
   } catch (err) {
     record("worker responds on /health", false, err.message);
-    finish();
+    await finish();
     return;
   }
 
   if (!API_KEY) {
     skip("authenticated QA checks", "DASHBOARD_API_KEY is not set");
-    finish();
+    await finish();
     return;
   }
 
@@ -324,7 +352,7 @@ async function main() {
     record("trading desk data endpoints respond", false, err.message);
   }
 
-  finish();
+  await finish();
 }
 
 main().catch((err) => {
