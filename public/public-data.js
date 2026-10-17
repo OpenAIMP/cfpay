@@ -1157,6 +1157,17 @@ async function deskToggleVoice() {
       if (el && e) el.textContent = 'Voice error: ' + e;
     });
     client.connect();
+    // startCall() refuses while the socket is still opening (it
+    // emits "Cannot start call: not connected" and returns without
+    // touching the microphone), so wait for the connection to open
+    // first. The server greeting (status: idle) arrives on open;
+    // only then can a call actually start.
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('the voice connection timed out')), 15000);
+      client.addEventListener('connectionchange', (open) => {
+        if (open) { clearTimeout(timer); resolve(); }
+      });
+    });
     await client.startCall();
     if (btn) btn.textContent = '\u23f9 End voice';
   } catch (err) {

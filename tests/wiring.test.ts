@@ -1696,6 +1696,7 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(wrangler).toContain('"class_name": "VoiceAgent"');
     expect(wrangler).toContain('"tag": "v9"');
     expect(pdata).toContain("deskToggleVoice");
+    expect(pdata).toContain("the voice connection timed out");
     expect(pdata).toContain("@cloudflare/voice@0.5.0/client");
     expect(a2aTest).toContain('rpc: "/a2a/voice"');
   });
