@@ -1685,6 +1685,15 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(host).toContain("Trade approval pending");
   });
 
+  it("desk UX round 4 is wired (issue #166)", () => {
+    const pdata = read("public/public-data.js");
+    expect(pdata).toContain("navBtn('hunt', 'Opportunity Hunt')");
+    expect(pdata).toContain("moveCardOf('deskWatch', 'watchlist')");
+    expect(pdata).toContain("deskSyncQuestionsClone");
+    expect(pdata).toContain("deskQuestionsCloneHost");
+    expect(pdata).not.toContain("deskWatchHost");
+  });
+
   it("desk UX round 3 is wired (issue #159)", () => {
     const pdata = read("public/public-data.js");
     expect(pdata).toContain("navBtn('chain', 'Option Chain')");
@@ -1692,7 +1701,7 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("moveCardTo('deskRuns', logsDuo)");
     expect(pdata).toContain("deskLogsDuo");
     expect(pdata).toContain("desk-duo");
-    expect(pdata).toContain('onclick="deskLoadQuotes()"');
+    expect(idx).toContain('onclick="deskLoadQuotes()"');
   });
 
   it("the desk layout refinements are wired (issue #152)", () => {
