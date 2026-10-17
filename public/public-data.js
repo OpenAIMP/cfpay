@@ -300,7 +300,7 @@ async function deskToggleRun(id) {
   try { const res = await api('/api/public/autopilot-runs/' + encodeURIComponent(id) + '/session'); box.innerHTML = deskRenderSession(res.messages); }
   catch (err) { deskErr(box, err); }
 }
-function deskRefreshAll() { deskLoadQuotes(); deskLoadPortfolio(); deskLoadRuns(); }
+function deskRefreshAll() { deskLoadQuotes(); deskLoadPortfolio(); deskLoadRuns(); deskLoadHunts(); }
 
 
 // --- Answer trace + raw-data downloads (moved from the page; pubData and
@@ -562,6 +562,23 @@ function deskInitViews() {
   move('publicDesk', 'trading');
   move('publicQuestionCard', 'questions');
   move('publicConnectedBox', 'status');
+  // Opportunity hunt card (issue #135) into the desk rail.
+  const rail = document.querySelector('#publicDesk .desk-rail');
+  if (rail && !document.getElementById('huntCard')) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.id = 'huntCard';
+    card.innerHTML = '<h3 style="font-size:1rem;margin-bottom:0.35rem;">Opportunity hunt</h3>'
+      + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin-bottom:0.5rem;">Budget-bounded premium-selling scan. The agent gathers live chain evidence; sizing is computed in code. Report-only - nothing is ordered.</p>'
+      + '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:flex-end;">'
+      + '<label style="font-size:0.75rem;color:var(--muted);">Budget $<br><input type="number" id="huntBudget" value="50000" min="1000" step="1000" style="width:7rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.45rem;color:var(--text);font-size:0.85rem;"></label>'
+      + '<label style="font-size:0.75rem;color:var(--muted);">Max risk / trade %<br><input type="number" id="huntRisk" value="2" min="0.5" max="10" step="0.5" style="width:5rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.45rem;color:var(--text);font-size:0.85rem;"></label>'
+      + '<label style="font-size:0.75rem;color:var(--muted);">Symbols (optional)<br><input type="text" id="huntSymbols" placeholder="NVDA, AMD, SMH" style="width:10rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.45rem;color:var(--text);font-size:0.85rem;"></label>'
+      + '<button class="btn" onclick="runOpportunityHunt()">Run hunt</button></div>'
+      + '<div id="huntResult"></div><div id="huntHistory"></div>';
+    rail.appendChild(card);
+  }
+
   // The per-answer model/tools meta line is a log line, not trading UI.
   const meta = document.getElementById('publicTools');
   const logsCard = shell.querySelector('[data-view="logs"] .card');
@@ -571,3 +588,79 @@ function deskInitViews() {
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', deskInitViews);
 else deskInitViews();
+
+
+// ---------------------------------------------------------------------------
+// Opportunity hunt (issue #135): a budget-bounded premium-selling scan.
+// The card is injected into the desk rail by deskInitViews; sizing is
+// computed server-side in code - this UI only collects the budget and
+// renders the plan.
+
+function huntLegs(t) {
+  return t.legs.map((l) => l.action + ' ' + l.strike + (l.type === 'call' ? 'C' : 'P')).join(' / ');
+}
+
+function huntPlanHtml(hunt) {
+  const plan = hunt.plan;
+  const rows = plan.trades.map((t) =>
+    '<tr><td><strong>' + escapeHtml(t.underlying) + '</strong></td><td>' + escapeHtml(huntLegs(t)) + '<br><span style="color:var(--muted);font-size:0.72rem;">exp ' + escapeHtml(t.expiry) + ' · spot ' + t.spot + '</span></td>'
+    + '<td>' + t.contracts + '</td><td>$' + Math.round(t.totalMaxProfit).toLocaleString() + '</td><td>$' + Math.round(t.totalRisk).toLocaleString() + '</td>'
+    + '<td style="font-size:0.78rem;">' + escapeHtml(t.thesis || '') + '</td></tr>').join('');
+  const discarded = plan.rejected.length + plan.unsized.length;
+  return '<div style="font-size:0.82rem;margin-top:0.5rem;">'
+    + '<div><strong>' + plan.trades.length + ' trades</strong> · max risk $' + Math.round(plan.totalRisk).toLocaleString()
+    + ' · max profit $' + Math.round(plan.totalMaxProfit).toLocaleString()
+    + ' · EV $' + Math.round(plan.totalExpectedValue).toLocaleString()
+    + ' · unallocated $' + Math.round(plan.unallocated).toLocaleString()
+    + (discarded ? ' · <span style="color:var(--muted);">' + discarded + ' discarded (see report)</span>' : '') + '</div>'
+    + (rows ? '<table style="width:100%;border-collapse:collapse;margin-top:0.5rem;font-size:0.8rem;"><thead><tr><th style="text-align:left;">Underlying</th><th style="text-align:left;">Legs</th><th>Contracts</th><th>Max profit</th><th>Max risk</th><th style="text-align:left;">Why</th></tr></thead><tbody>' + rows + '</tbody></table>' : '<p style="color:var(--muted);">No candidate survived verification and sizing.</p>')
+    + '<div style="margin-top:0.5rem;"><button class="btn" style="' + pBtn + '" onclick="openHuntReport(\'' + hunt.id + '\')">Full report</button></div></div>';
+}
+
+async function runOpportunityHunt() {
+  const out = document.getElementById('huntResult');
+  const budget = Number((document.getElementById('huntBudget') || {}).value);
+  const maxRiskPct = Number((document.getElementById('huntRisk') || {}).value) || 2;
+  const symbolsRaw = ((document.getElementById('huntSymbols') || {}).value || '').trim();
+  if (!budget || budget <= 0) { if (out) out.innerHTML = '<span style="color:var(--red);font-size:0.8rem;">Enter a budget first.</span>'; return; }
+  if (out) out.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Hunting - the autopilot scans quotes and chains, then sizing is computed in code. This can take a minute...</span>';
+  try {
+    const res = await api('/api/public/opportunity-hunt', 'POST', {
+      budget,
+      maxRiskPct,
+      symbols: symbolsRaw ? symbolsRaw.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean) : undefined,
+    });
+    if (res.error) throw new Error(res.error);
+    if (out) out.innerHTML = huntPlanHtml(res.hunt);
+    deskLoadHunts();
+  } catch (e) {
+    if (out) out.innerHTML = '<span style="color:var(--red);font-size:0.8rem;">' + escapeHtml(e.message || String(e)) + '</span>';
+  }
+}
+
+async function deskLoadHunts() {
+  const host = document.getElementById('huntHistory');
+  if (!host) return;
+  try {
+    const res = await api('/api/public/opportunity-hunts');
+    const hunts = (res && res.hunts) || [];
+    host.innerHTML = hunts.length
+      ? '<div style="margin-top:0.6rem;font-size:0.78rem;color:var(--muted);">Past hunts</div>' + hunts.slice(0, 5).map((h) =>
+          '<div style="display:flex;justify-content:space-between;gap:0.5rem;font-size:0.8rem;margin-top:0.3rem;"><span>' + escapeHtml((h.createdAt || '').slice(0, 10)) + ' · $' + Math.round(h.request.budget).toLocaleString() + ' budget · ' + h.plan.trades.length + ' trades · $' + Math.round(h.plan.totalRisk).toLocaleString() + ' risk</span>'
+          + '<button class="btn" style="' + pBtn + '" onclick="openHuntReport(\'' + h.id + '\')">Report</button></div>').join('')
+      : '';
+  } catch { /* not connected yet */ }
+}
+
+async function openHuntReport(id) {
+  try {
+    const key = localStorage.getItem('cfmail_api_key') || '';
+    const res = await fetch('/api/public/opportunity-hunts/' + id + '/report', { headers: { 'X-API-Key': key } });
+    if (!res.ok) throw new Error('status ' + res.status);
+    const html = await res.text();
+    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    window.open(url, '_blank');
+  } catch (e) {
+    alert('Could not open the report: ' + (e.message || e));
+  }
+}
