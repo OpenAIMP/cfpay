@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { postFilesToSlack } from "./slack-files";
+import { errorBody, errorStatus, mapUnknownError, ERROR_CATALOG } from "./errors";
 import { safeStringify } from "./browser-lifecycle";
 import Stripe from "stripe";
 import type { Env, PaymentClaim, StripeConfig } from "./types";
@@ -75,6 +76,16 @@ function isStripeCheckoutRateLimited(ip: string): boolean {
 
 export function createApp() {
   const app = new Hono<{ Bindings: Env }>();
+  // Global failure funnel (issue #209): any unhandled exception in a
+  // route becomes the INTERNAL catalog error. The original is logged
+  // server-side; raw exception text never reaches a client.
+  app.onError((err, c) => {
+    console.error("unhandled route error", err);
+    return c.json(errorBody("INTERNAL"), 500);
+  });
+  // The error catalog itself, for the front end (issue #209). Public:
+  // it is only user-facing copy and status metadata.
+  app.get("/api/errors.json", (c) => c.json(ERROR_CATALOG));
 
   /**
    * Shown when Public.com refuses this client_id.
@@ -120,7 +131,7 @@ export function createApp() {
       return next();
     }
     // Fail closed: neither valid API key nor valid OAuth session.
-    return c.json({ error: "Unauthorized" }, 401);
+    return c.json(errorBody("UNAUTHORIZED"), 401);
   }
 
   // ---------------------------------------------------------------------------
@@ -281,7 +292,7 @@ export function createApp() {
   app.post("/api/public/connect", requireAuth, async (c) => {
     const body = await c.req.json<{ token?: string }>();
     const token = (body.token || "").trim();
-    if (!token) return c.json({ error: "An access token is required." }, 400);
+    if (!token) return c.json(errorBody("VALIDATION_FAILED"), 400);
 
     // Verify before storing: a token that cannot list tools is not useful, and
     // storing it first would make the UI claim a connection that does not work.
@@ -291,7 +302,7 @@ export function createApp() {
       await agent.setPublicToken(token);
       return c.json({ ok: true, toolCount: tools.length, tools: tools.map((t) => t.name) });
     } catch (err) {
-      return c.json({ error: String(err) }, 400);
+      return c.json(errorBody("PUBLIC_UPSTREAM"), errorStatus("PUBLIC_UPSTREAM"));
     }
   });
 
@@ -336,7 +347,9 @@ export function createApp() {
         })),
       });
     } catch (err) {
-      return c.json({ error: String(err) }, 502);
+      const mapped = mapUnknownError(err);
+      const code = mapped === "INTERNAL" ? "PUBLIC_UPSTREAM" : mapped;
+      return c.json(errorBody(code), errorStatus(code));
     }
   });
 
@@ -374,16 +387,18 @@ export function createApp() {
     };
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
-    if (!token) return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+    if (!token) return c.json(errorBody("PUBLIC_NOT_CONNECTED"), 409);
     try {
       const session: McpSession = {};
       const tools = await listTools(token, session);
-      if (tools.length === 0) return c.json({ error: "Public.com returned no tools for this account." }, 502);
+      if (tools.length === 0) return c.json(errorBody("PUBLIC_NO_TOOLS"), 502);
       const storedModel = await agent.getPublicModel();
       const result = await agent.runOpportunityHunt(token, request, tools, session, storedModel);
       return c.json({ hunt: result.hunt, model: result.model });
     } catch (err) {
-      return c.json({ error: String(err) }, 502);
+      const code = mapUnknownError(err);
+      console.error("opportunity hunt failed", code, err);
+      return c.json(errorBody(code), errorStatus(code));
     }
   });
 
@@ -693,7 +708,9 @@ export function createApp() {
       const proposal = await agent.decideTradeProposal(c.req.param("id"), body.approved, body.notes);
       return c.json({ proposal });
     } catch (err) {
-      return c.json({ error: String(err) }, 400);
+      const mapped = mapUnknownError(err);
+      const code = mapped === "INTERNAL" ? "CONFLICT" : mapped;
+      return c.json(errorBody(code), errorStatus(code));
     }
   });
 
@@ -753,12 +770,12 @@ export function createApp() {
 
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
-    if (!token) return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+    if (!token) return c.json(errorBody("PUBLIC_NOT_CONNECTED"), 409);
 
     try {
       const session: McpSession = {};
       const tools = await listTools(token, session);
-      if (tools.length === 0) return c.json({ error: "Public.com returned no tools for this account." }, 502);
+      if (tools.length === 0) return c.json(errorBody("PUBLIC_NO_TOOLS"), 502);
       const storedModel = await agent.getPublicModel();
       if (body.autopilot) {
         const result = await agent.runAutopilot(token, message, tools, session, storedModel);
@@ -773,7 +790,12 @@ export function createApp() {
       );
       return c.json({ answer, trace, model, cost, finishReason });
     } catch (err) {
-      return c.json({ error: String(err) }, 502);
+      // Issue #209: a provider failure (quota, transient, timeout)
+      // becomes its catalog error - never the raw exception text
+      // (this catch used to send "AiError: 4006: ..." to the desk).
+      const code = mapUnknownError(err);
+      console.error("public chat failed", code, err);
+      return c.json(errorBody(code), errorStatus(code));
     }
   });
   function getAgent(c: any) {
@@ -1493,7 +1515,7 @@ export function createApp() {
 
     // Fail closed: an unset key must never match an empty presented value.
     if (!c.env.DASHBOARD_API_KEY || !timingSafeStringEqual(presented, c.env.DASHBOARD_API_KEY)) {
-      return c.json({ error: "Unauthorized" }, 401);
+      return c.json(errorBody("UNAUTHORIZED"), 401);
     }
 
     const agentId = c.env.CfmailAgent.idFromName("agent");

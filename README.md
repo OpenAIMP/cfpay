@@ -354,6 +354,10 @@ Test it in production:
 
 Reading failures: **401** — missing or wrong API key. **404** on the session URL — wrong run id, or a pre-alignment run. **AiError 4006 / 3043** mid-run — Workers AI quota / transient errors; the run dies at whichever AI call it was making, so retry. **HTTP 502, "Internal error in Durable Object storage caused object to be reset"** — the agent's Durable Object was reset by a storage-layer error mid-run (first observed 2026-10-15, on the step-1 test question above). Retry the run; if it recurs, treat it as a defect in the run's state/session writes, not a Workers AI problem.
 
+### Error handling: one catalog for back end and front end (issue #209)
+
+Every error the deployment returns comes from **`src/errors.json`** - one catalog, the single source of truth. Each entry is a stable code (`AI_QUOTA_EXHAUSTED`, `PUBLIC_NOT_CONNECTED`, `SEARCH_NOT_CONFIGURED`, ...) with its HTTP status, a user-facing message, recovery guidance, and a `retryable` flag. The back end builds response bodies from it (`src/errors.ts`): `{ error: <message>, code, hint, retryable }`. Known platform failures are mapped to codes at the boundary - a Workers AI quota refusal becomes `AI_QUOTA_EXHAUSTED`, a transient provider error `AI_PROVIDER_UNAVAILABLE`, a missing AI Search instance `SEARCH_NOT_CONFIGURED` - and a global handler turns any unhandled exception into `INTERNAL`, logging the original server-side. **Raw exception text never reaches a client** (the desk once rendered a bare `AiError: 4006: ...` platform string as a chat answer; that class of leak is what this removes). The front end fetches the same catalog from `GET /api/errors.json` and renders errors by code - message plus the recovery hint - so back end and front end can never drift: **the code is the linkage**. Existing string consumers keep working because `error` remains the user message. Phase 1 covers the API's auth failure, the Public routes (connect, tools, chat, hunt, trade decisions), and the desk's chat/search rendering; later phases sweep the remaining routes and carry codes in A2A failure replies.
+
 ## API Endpoints
 
 | Endpoint | Method | Auth | Description |

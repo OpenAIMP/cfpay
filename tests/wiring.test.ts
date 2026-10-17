@@ -1721,6 +1721,19 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("Knowledge search");
   });
 
+  it("the error catalog is wired front and back (issue #209)", () => {
+    const api = read("src/api.ts");
+    const pdata = read("public/public-data.js");
+    const index = read("public/index.html");
+    expect(api).toContain('from "./errors"');
+    expect(api).toContain('"/api/errors.json"');
+    expect(api).toContain("app.onError");
+    expect(api).not.toContain("error: String(err)");
+    expect(pdata).toContain("deskApiErrorText");
+    expect(pdata).toContain("/api/errors.json");
+    expect(index).toContain("deskApiErrorText(res)");
+  });
+
   it("the voice agent is wired (issue #168)", () => {
     const voice = read("src/voice-agent.ts");
     const a2a = read("src/a2a.ts");
