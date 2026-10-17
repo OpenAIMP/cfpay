@@ -736,6 +736,18 @@ export function createApp() {
         spec: any,
         runId?: string,
       ): Promise<{ ok: boolean; checks: { name: string; passed: boolean; detail: string }[]; pagesAudited: string[]; error?: string }>;
+      qaInvestigate(
+        question: string,
+        url: string,
+        runId?: string,
+      ): Promise<{
+        ok: boolean;
+        answer?: string;
+        steps: { tool: string; detail: string }[];
+        url: string;
+        model: string;
+        error?: string;
+      }>;
       qaAndEmailReport(
         apiKey: string,
         toEmail: string,
@@ -1478,6 +1490,22 @@ export function createApp() {
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaUxAuditUrl(spec, runId);
+    return c.json(result);
+  });
+
+  // Agentic investigation (issue #102): a question + start URL; the
+  // QAAgent's model drives a real browser and reports findings. The
+  // investigation itself is credential-free - it never sees this key.
+  app.post("/api/dashboard/qa/investigate", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const question = typeof body.question === "string" ? body.question : "";
+    const url = typeof body.url === "string" ? body.url : "";
+    if (!question || !url) {
+      return c.json({ error: "Body must carry question and url." }, 400);
+    }
+    const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
+    const qaAgent = await getQAAgent(c);
+    const result = await qaAgent.qaInvestigate(question, url, runId);
     return c.json(result);
   });
 

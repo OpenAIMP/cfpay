@@ -20,7 +20,15 @@ import { closeConnectionQuietly } from "./browser-lifecycle";
 // Think's getTools() is synchronous, so there is no await available at the
 // point the tool set is built.
 import { createBrowserTools } from "agents/browser/ai";
-import { defaultModelId } from "./models";
+import { budgetSynthesis, contextWindowFor, defaultModelId, normaliseToolCalls, readCompletion } from "./models";
+import {
+  INVESTIGATE_MAX_CALLS,
+  INVESTIGATE_MAX_TURNS,
+  INVESTIGATE_SYSTEM,
+  clampInvestigateInput,
+  investigateToolSpecs,
+  pageStateExpression,
+} from "./investigate";
 import type { Env } from "./types";
 
 export interface QACheckResult {
@@ -1682,6 +1690,214 @@ export class QAAgent extends Think<Env> {
     };
   }
 
+
+  /**
+   * RPC: model-driven browser investigation (issue #102). The model
+   * drives a real browser through hand-rolled CDP tools (navigate /
+   * click / type / evaluate / page_state / screenshot) and reports what
+   * it found. This is the agentic layer over the deterministic checks:
+   * it decides what to open and click, including following up on a
+   * failure a scripted check could only report. Credential-free by
+   * design - it never receives the dashboard key or a spec's auth, so
+   * it investigates what a visitor can reach.
+   */
+  @callable()
+  async qaInvestigate(
+    question: string,
+    url: string,
+    runId?: string,
+  ): Promise<{
+    ok: boolean;
+    answer?: string;
+    steps: { tool: string; detail: string }[];
+    url: string;
+    model: string;
+    error?: string;
+  }> {
+    const input = clampInvestigateInput(question, url);
+    if ("error" in input) {
+      return { ok: false, steps: [], url: typeof url === "string" ? url : "", model: "", error: input.error };
+    }
+    const env = this.env as Env;
+    if (!env.BROWSER) {
+      return { ok: false, steps: [], url: input.url, model: "", error: "Browser binding not configured" };
+    }
+    const modelId = defaultModelId();
+    const specs = investigateToolSpecs();
+    const steps: { tool: string; detail: string }[] = [];
+    this.emitLive(runId, { kind: "step", label: `Investigating: ${input.question}` });
+
+    let browser: CdpLike | null = null;
+    try {
+      const cdp = await this.openBrowserSession(env);
+      browser = cdp;
+      const { targetId } = (await cdp.send("Target.createTarget", {
+        url: "about:blank",
+      })) as { targetId: string };
+      let stopFrames: () => void = () => {};
+      try {
+        const sessionId = await cdp.attachToTarget(targetId);
+        stopFrames = this.startFrameStream(cdp, sessionId, runId);
+
+        const pageState = async (): Promise<string> => {
+          const r = (await cdp
+            .send("Runtime.evaluate", { expression: pageStateExpression(), returnByValue: true }, { sessionId })
+            .catch(() => null)) as { result?: { value?: string } } | null;
+          return typeof r?.result?.value === "string" ? r.result.value : "(page state unavailable)";
+        };
+
+        const runTool = async (name: string, args: any): Promise<string> => {
+          switch (name) {
+            case "navigate": {
+              const target = typeof args?.url === "string" ? args.url : "";
+              if (!/^https?:\/\//.test(target)) return "Refused: navigate needs an http(s) URL.";
+              await cdp.send("Page.navigate", { url: target }, { sessionId });
+              await new Promise((r) => setTimeout(r, 1500));
+              return pageState();
+            }
+            case "click": {
+              const sel = typeof args?.selector === "string" ? args.selector : "";
+              const expr = `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.scrollIntoView({ block: "center" }); el.click(); return true; })()`;
+              const cr = (await cdp
+                .send("Runtime.evaluate", { expression: expr, returnByValue: true }, { sessionId })
+                .catch(() => null)) as { result?: { value?: boolean } } | null;
+              if (cr?.result?.value !== true) return `No element matches selector ${JSON.stringify(sel)}.`;
+              await new Promise((r) => setTimeout(r, 700));
+              return pageState();
+            }
+            case "type": {
+              const sel = typeof args?.selector === "string" ? args.selector : "";
+              const text = typeof args?.text === "string" ? args.text : "";
+              const expr = `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.focus(); const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")?.set; if (setter) setter.call(el, ${JSON.stringify(text)}); else el.value = ${JSON.stringify(text)}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`;
+              const tr = (await cdp
+                .send("Runtime.evaluate", { expression: expr, returnByValue: true }, { sessionId })
+                .catch(() => null)) as { result?: { value?: boolean } } | null;
+              return tr?.result?.value === true ? `Typed into ${sel}.` : `No element matches selector ${JSON.stringify(sel)}.`;
+            }
+            case "evaluate": {
+              const expr = typeof args?.expression === "string" ? args.expression : "";
+              if (!expr) return "evaluate needs an expression.";
+              const er = (await cdp
+                .send("Runtime.evaluate", { expression: expr, returnByValue: true }, { sessionId })
+                .catch((e) => ({ evalError: String(e) }))) as any;
+              if (er?.evalError) return "Evaluation failed: " + er.evalError;
+              if (er?.exceptionDetails) return "Evaluation threw in the page.";
+              const v = er?.result?.value;
+              return (typeof v === "string" ? v : JSON.stringify(v ?? null)).slice(0, 3000);
+            }
+            case "page_state":
+              return pageState();
+            case "screenshot": {
+              const shot = (await cdp
+                .send("Page.captureScreenshot", { format: "png" }, { sessionId })
+                .catch(() => ({ data: undefined }))) as { data?: string };
+              if (shot.data) {
+                this.emitLive(runId, {
+                  kind: "screenshot",
+                  label: "Investigator screenshot",
+                  image: `data:image/png;base64,${shot.data}`,
+                });
+              }
+              return shot.data ? "Screenshot captured (shown in the live panel)." : "Screenshot failed.";
+            }
+            default:
+              return `Unknown tool: ${name}`;
+          }
+        };
+
+        await cdp.send("Page.navigate", { url: input.url }, { sessionId });
+        await new Promise((r) => setTimeout(r, 2000));
+        const initialState = await pageState();
+        steps.push({ tool: "navigate", detail: input.url });
+
+        const messages: any[] = [
+          { role: "system", content: INVESTIGATE_SYSTEM },
+          {
+            role: "user",
+            content: `Question: ${input.question}\nThe browser is open on the start page. Its current state:\n${initialState}`,
+          },
+        ];
+        const contextWindow = contextWindowFor(modelId);
+        let answer: string | undefined;
+        let calls = 0;
+        for (let turn = 0; turn < INVESTIGATE_MAX_TURNS && calls < INVESTIGATE_MAX_CALLS && !answer; turn++) {
+          let maxTokens = 1024;
+          if (contextWindow) {
+            const est = Math.ceil((JSON.stringify(messages).length + JSON.stringify(specs).length) / 3.5);
+            maxTokens = Math.max(384, Math.min(1024, contextWindow - est - 512));
+          }
+          const response: any = await env.AI.run(
+            modelId as never,
+            { messages, tools: specs, max_tokens: maxTokens } as never,
+          );
+          const completion = readCompletion(response);
+          const toolCalls = normaliseToolCalls(completion.toolCalls);
+          if (toolCalls.length === 0) {
+            answer = completion.text.trim() || undefined;
+            break;
+          }
+          messages.push({ role: "assistant", content: completion.text, tool_calls: toolCalls });
+          for (const call of toolCalls) {
+            calls++;
+            const name = call.function.name;
+            let args: any = {};
+            try {
+              args = JSON.parse(call.function.arguments || "{}");
+            } catch {
+              args = {};
+            }
+            if (name === "report") {
+              const findings =
+                typeof args?.findings === "string" && args.findings.trim()
+                  ? args.findings.trim()
+                  : completion.text.trim() || "Investigation finished.";
+              answer = findings;
+              steps.push({ tool: "report", detail: findings.slice(0, 200) });
+              messages.push({ role: "tool", content: "Report recorded.", tool_call_id: call.id });
+              break;
+            }
+            const out = await runTool(name, args).catch(
+              (e) => "Tool failed: " + (e instanceof Error ? e.message : String(e)),
+            );
+            steps.push({ tool: name, detail: out.slice(0, 200) });
+            this.emitLive(runId, { kind: "step", label: `${name}: ${out.slice(0, 120)}` });
+            messages.push({ role: "tool", content: out, tool_call_id: call.id });
+          }
+        }
+
+        if (!answer) {
+          const synth = await budgetSynthesis(env.AI, modelId, messages, contextWindow);
+          if (synth) answer = synth.text;
+        }
+        if (!answer) {
+          return {
+            ok: false,
+            steps,
+            url: input.url,
+            model: modelId,
+            error:
+              "The investigation spent its tool budget without reaching a report. The steps taken are in the result; a narrower question usually gets further.",
+          };
+        }
+        this.emitLive(runId, { kind: "result", label: "Investigation complete", ok: true, detail: answer.slice(0, 200) });
+        return { ok: true, answer, steps, url: input.url, model: modelId };
+      } finally {
+        stopFrames();
+        await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        steps,
+        url: input.url,
+        model: modelId,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      closeConnectionQuietly(browser);
+    }
+  }
+
   /**
    * RPC: run dashboard QA checks and email a plain-text report with PNG
    * screenshots attached (dashboard home plus one per tab).
@@ -2566,6 +2782,30 @@ export class QAAgent extends Think<Env> {
           text: result.ok
             ? `UX audit passed on ${result.pagesAudited.length} page(s): all checks green.`
             : `UX audit on ${result.pagesAudited.length} page(s) found failing checks: ${failedNames.join(", ")}.`,
+          data: result,
+        };
+      }
+
+      case "qa.investigate": {
+        // Issue #102: the agentic layer. A caller (host model, A2A peer,
+        // or the API route) hands the agent a question and a start URL;
+        // the agent's own model drives the browser and reports findings.
+        const inv = clampInvestigateInput(args.question, args.url);
+        if ("error" in inv) {
+          return {
+            text: "qa.investigate needs a question and a starting http(s) URL. " + inv.error,
+            data: { ok: false, error: "bad_args" },
+          };
+        }
+        const result = await this.qaInvestigate(inv.question, inv.url);
+        if (!result.ok) {
+          return {
+            text: "Investigation could not complete: " + (result.error ?? "unknown error"),
+            data: result,
+          };
+        }
+        return {
+          text: `Investigation of ${inv.url} (${result.steps.length} steps): ${result.answer}`,
           data: result,
         };
       }
