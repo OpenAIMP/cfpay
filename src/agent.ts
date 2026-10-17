@@ -50,6 +50,15 @@ import {
   runAutopilotPipeline,
 } from "./public-autopilot";
 import type { AutopilotRun } from "./public-autopilot";
+import { parseToolJson, pickArgs } from "./public-data";
+import {
+  buildHuntGoal,
+  extractSpot,
+  HuntStore,
+  parseCandidates,
+  sizePlan,
+} from "./opportunity-hunt";
+import type { HuntRequest, StoredHunt } from "./opportunity-hunt";
 import {
   computeCost,
   budgetSynthesis,
@@ -409,18 +418,12 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
 
   // ─── AI ─────────────────────────────────────────────────────
 
-  /**
-   * Answer one message and generate the reply.
-   *
-   * Runs a real tool loop: the capability agents are dispatched from here, which is what
-   * makes them used rather than merely offered. Before this the method was a single model
-   * call with no tools at all - the agents were wired into getTools() and into the tool
-   * list, but nothing in this path ever called runAgentTool, so a question about the
-   * ledger was answered from the system prompt instead of by asking the ledger's owner.
-   *
-   * Same shape as the Public.com loop, and for the same reasons: the model may answer in
-   * either envelope, tool calls may arrive in the legacy or current shape, and the loop is
-   * bounded by CALLS rather than rounds because one round can make several.
+    /**
+   * Answer one message and generate the reply. Runs a real tool loop:
+   * the capability agents are dispatched from here (before this, the
+   * path never called runAgentTool, so ledger questions were answered
+   * from the system prompt instead of by the ledger's owner). Bounded
+   * by CALLS rather than rounds, like the Public.com loop.
    */
   async generateAIResponse(
     userMessage: string,
@@ -891,20 +894,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
-  /**
-   * Fulfil a paid request.
-   *
-   * The capability now belongs to the payments agent, so this forwards. Two paths
-   * reach the same method on the same Durable Object:
-   *
-   *   - A2A: an HTTP JSON-RPC message to the endpoint the payments agent card
-   *     advertises. This is the inter-agent contract, and the path a third party
-   *     would use.
-   *   - Direct Durable Object RPC, used when A2A is unavailable - during a rolling
-   *     deploy, or when DASHBOARD_API_KEY is absent from the environment.
-   *
-   * A refusal from A2A is surfaced, not retried over RPC. A reused payment must not
-   * get a second attempt through a different door, or the replay check is pointless.
+    /**
+   * Fulfil a paid request - forwards to the payments agent over A2A
+   * (the inter-agent contract), falling back to direct DO RPC only
+   * when A2A is unavailable. A refusal from A2A is surfaced, never
+   * retried over RPC: a reused payment must not get a second attempt
+   * through a different door.
    */
   async processPaidRequest(
     senderEmail: string,
@@ -1255,24 +1250,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
   // A2A protocol
   // ===========================================================================
 
-  /**
-   * The payments capability agent.
-   *
-   * Returns null when the binding is absent, so this agent still functions if the
-   * payments DO has not been deployed yet. Callers fall back to writing their own
-   * state in that case, which keeps a rolling deploy safe.
+    /**
+   * The payments capability agent. Returns null when the binding is
+   * absent, so this agent still functions if the payments DO has not
+   * been deployed yet.
    */
-  /**
-   * Call the payments agent over A2A.
-   *
-   * This is the real inter-agent path: an HTTP POST of an A2A JSON-RPC message to
-   * the endpoint the payments agent card advertises, carrying the same bearer
-   * credential the transport checks. The direct Durable Object RPC remains for
-   * latency-critical ledger reads, but a capability call goes over the protocol so
-   * the two agents are only coupled by the contract, not by a binding.
-   *
-   * Returns null when the call could not be completed, so callers can decide
-   * whether to fall back rather than assuming success.
+    /**
+   * Call the payments agent over A2A: an HTTP POST of a JSON-RPC
+   * message to the endpoint its card advertises, so the two agents
+   * are coupled by the contract, not a binding. Returns null when the
+   * call could not be completed.
    */
   private async callPaymentsAgentOverA2A(
     operation: string,
@@ -1346,16 +1333,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
     } catch (error) {
       console.error("A2A call to payments agent threw:", error);
 
-      // Tell "the other agent refused this" apart from "I could not reach the other
-      // agent". Collapsing both into null was a money bug, and it is the one the
-      // dashboard reports as "Payment already used": a REFUSAL was reported as
-      // unreachable, so the caller fell through to the direct RPC path and presented
-      // the same payment a second time. On the live x402 reconciliation path - where
-      // the browser re-POSTs the same signature while it waits for the chain - the
-      // first attempt has already been charged and fulfilled, and the second is then
-      // truthfully told the payment is spent. The dashboard is entitled to treat that
-      // phrase as final (isRetryableVerificationError excludes it), so the fix is to
-      // stop producing a retryable-looking error for a reused claim.
+      // Tell "the other agent refused this" apart from "I could not
+      // reach the other agent". Collapsing both into null was a money
+      // bug: a REFUSAL reported as unreachable made the caller fall
+      // through to direct RPC and present the same payment twice
+      // ("Payment already used"). Never produce a retryable-looking
+      // error for a reused claim.
       const message = error instanceof Error ? error.message : String(error);
 
       // The canonical reuse phrase. api.ts maps it to HTTP 409, and the dashboard
@@ -1431,23 +1414,14 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
-  /**
-   * Aggregate state for the A2A executor.
-   *
-   * Counts and types only. The A2A endpoint is reachable by other agents, so it
-   * must not hand out email bodies, addresses or transaction hashes that its
-   * read-only skill does not need.
+    /**
+   * Aggregate state for the A2A executor: counts and types only - the
+   * endpoint must not hand out email bodies, addresses or hashes.
    */
-  /**
-   * Handle one A2A JSON-RPC call.
-   *
-   * Runs inside the Durable Object so it can use ctx.storage.sql directly. Doing
-   * this from the Worker would mean reaching into the DO's internals for the SQL
-   * handle, which is not part of any public surface.
-   *
-   * Returns { streamed, events, result } - always serializable, because the RPC
-   * boundary rejects anything else. The Worker frames events as SSE when streamed
-   * is true.
+    /**
+   * Handle one A2A JSON-RPC call, inside the DO so it can use
+   * ctx.storage.sql directly. Returns { streamed, events, result } -
+   * always serializable, as the RPC boundary rejects anything else.
    */
   /**
    * Answer a question about emails, payments and webhooks from the aggregate
@@ -1511,23 +1485,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return await handleCollecting(a2a.transport, body);
   }
 
-  /**
-   * Route one A2A message for the chat channel.
-   *
-   * Chat owns no resource - it reads mail, payments and webhooks and produces a reply -
-   * so it is not a fifth agent. Making it one would mean a Durable Object with no
-   * authoritative state, which is a service wearing an agent's shape. It is an
-   * operation on the endpoint that already generates the text instead.
-   *
-   * THE SURFACE REMAINS READ-ONLY, and that is the point. `chat.send` produces a
-   * conversational reply and mutates nothing: it cannot send mail, post to Slack, move
-   * funds or record a payment. Those belong to the agents that own those resources, and
-   * each of them decides what a caller may do. What this exposes is the ability to ask
-   * questions, which is what chat is for.
-   *
-   * It does spend Workers AI tokens, so it is behind the bearer credential like every
-   * other A2A call. A caller that wants facts without inference can omit the operation
-   * and get the composed snapshot instead.
+    /**
+   * Route one A2A message for the chat channel. Chat owns no resource,
+   * so it is an operation here, not a fifth agent - and THE SURFACE
+   * REMAINS READ-ONLY: chat.send produces a reply and mutates nothing
+   * (it cannot send mail, post, or move funds). Bearer-gated like
+   * every A2A call, as it spends Workers AI tokens.
    */
   async handleA2AMessage(
     message: any,
@@ -2063,27 +2026,14 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const PRUNE_AFTER_CALLS = 4;
     // Built once: the definitions do not change between rounds.
     const toolSpecs = this.toAiToolSpecs(tools);
-    // The model's whole context has to hold the tool definitions, the system
-    // prompt, the question, every tool result so far, AND the answer. Nothing
-    // checked that budget, so a 24k-context model (llama-3.3-70b) was handed a
-    // ~22k-token tool set plus a fixed 2048-token answer reservation, and the
-    // provider rejected the request outright (AiError 8007: input + requested
-    // output over the context limit) - the tab 502'd on any question.
-    //
-    // Two defences, because the first alone was not enough: PR #81 shipped the
-    // estimate only, and the provider still rejected the request - the
-    // char-based estimate ran ~500 tokens optimistic while the payload sits
-    // within a token of the limit, so "close" was indistinguishable from
-    // "over". So:
-    //
-    //   1. Estimate the prompt size and shrink the output reservation to what
-    //      remains, floored so a small-context model is still tried.
-    //   2. If the provider rejects the request as over-length anyway, its
-    //      error reports the real limit and input size - recompute the
-    //      reservation from THOSE numbers and retry once. Only when the
-    //      provider's own figures leave no room for an answer does the
-    //      question fail, with the reason stated plainly instead of the raw
-    //      AiError.
+    // Context budget: the model's window must hold tool definitions,
+    // system prompt, question, all tool results AND the answer. PR #81
+    // shipped an estimate-only defence and the provider still rejected
+    // (the char estimate ran ~500 tokens optimistic). So: (1) estimate
+    // the prompt and shrink the output reservation to what remains,
+    // floored so a small-context model is still tried; (2) on the
+    // provider's over-length rejection, recompute the reservation from
+    // ITS figures and retry once.
     const contextWindow = contextWindowFor(modelId);
     const contextError = (limit: number, inputTokens: number) =>
       new Error(
@@ -2339,6 +2289,80 @@ Do not claim to have completed a payment unless you have received confirmation.`
       tools.map((t) => t.name),
       modelId,
     );
+  }
+
+  /**
+   * Opportunity hunt (issue #135): the autopilot pipeline scans the
+   * universe for premium-selling candidates; every figure is then
+   * re-verified in code against a fresh live quote (moneyness,
+   * defined-risk structure) and sized deterministically under the
+   * budget caps in src/opportunity-hunt.ts - the model proposes, the
+   * code disposes. Report-only: the hunt goal forbids order tools and
+   * nothing here can place or propose an order.
+   */
+  async runOpportunityHunt(
+    token: string,
+    request: HuntRequest,
+    tools: McpTool[],
+    session: McpSession,
+    model?: string | null,
+  ): Promise<{ hunt: StoredHunt; answer: string; model: string }> {
+    const modelId = resolveModelId(model);
+    const result = await runAutopilotPipeline(
+      {
+        aiRun: (mid, messages, maxTokens) =>
+          this.env.AI.run(mid as never, { messages, max_tokens: maxTokens } as never),
+        runStep: (question) =>
+          this.answerInstrumentQuestion(token, question, tools, session, modelId, {
+            maxToolCalls: AUTOPILOT_STEP_TOOL_BUDGET,
+          }),
+        save: async (run) => {
+          await this.writeAutopilotRun(run);
+          await recordRunToSession(this.sessions, run);
+        },
+      },
+      buildHuntGoal(request),
+      tools.map((t) => t.name),
+      modelId,
+    );
+    const candidates = parseCandidates(result.answer);
+    const spots: Record<string, number | undefined> = {};
+    const quotesTool = tools.find((t) => t.name === "get_quotes");
+    const underlyings = [...new Set(candidates.map((c) => c.underlying))];
+    if (quotesTool && underlyings.length) {
+      try {
+        const { args } = pickArgs(quotesTool.inputSchema, {
+          symbols: { names: ["symbols", "tickers"], value: underlyings },
+        });
+        const payload = parseToolJson(await callTool(token, quotesTool.name, args, {}));
+        for (const u of underlyings) spots[u] = extractSpot(payload, u);
+      } catch {
+        // Spots stay undefined; every candidate is then rejected as
+        // unverifiable rather than sized on faith.
+      }
+    }
+    const plan = sizePlan(candidates, spots, request);
+    const hunt: StoredHunt = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      request,
+      model: modelId,
+      runId: result.autopilot.id,
+      plan,
+      summary: result.answer.split("```")[0].trim(),
+    };
+    new HuntStore(this.ctx.storage.sql).save(hunt);
+    return { hunt, answer: result.answer, model: modelId };
+  }
+
+  /** Stored opportunity hunts, newest first. */
+  async listOpportunityHunts(): Promise<StoredHunt[]> {
+    return new HuntStore(this.ctx.storage.sql).list();
+  }
+
+  /** One stored opportunity hunt by id. */
+  async getOpportunityHunt(id: string): Promise<StoredHunt | null> {
+    return new HuntStore(this.ctx.storage.sql).get(id);
   }
 
   /**
