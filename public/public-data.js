@@ -1321,6 +1321,7 @@ const DESK_ORCH_SAMPLES = [
   'QA-check this dashboard and search the knowledge base for how trade approvals work',
   'Summarize recent payments and webhook activity',
   'Summarize recent emails, payments, and webhook events',
+  'Summarize the state of qa, search, and slack, then post the summary to Slack',
 ];
 function deskOrchSamplesInit() {
   const host = document.getElementById('deskOrchSamples');
