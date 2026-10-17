@@ -486,7 +486,7 @@ export function qaCard(origin: string): AgentCard {
         id: "browser-qa",
         name: "Browser QA",
         description:
-          "Load an http(s) URL in a real browser and report pass/fail for the expected strings, plus a screenshot. qa.dashboard checks this Worker's own dashboard. qa.ux_audit audits a web app's rendered pages against UX rules from a caller-supplied spec. qa.investigate hands the agent a question and a start URL and lets its model drive the browser (navigate, click, type, inspect) to answer it. All operations require a bearer token.",
+          "Load an http(s) URL in a real browser and report pass/fail for the expected strings, plus a screenshot. qa.dashboard checks this Worker's own dashboard. qa.ux_audit audits a web app's rendered pages against UX rules from a caller-supplied spec. qa.investigate hands the agent a question and a start URL and lets its model drive the browser (navigate, click, type, inspect) to answer it. qa.browser_profile manages a persistent browser profile (start/status/stop) whose signed-in session audits and investigations can reuse. All operations require a bearer token.",
         tags: ["qa", "browser", "outbound", "write"],
         examples: [
           "Check that https://example.com loads and contains Welcome.",

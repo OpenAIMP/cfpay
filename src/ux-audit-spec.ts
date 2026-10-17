@@ -64,6 +64,12 @@ export interface UxAuditSpec {
    * not perceptual diffing - any pixel change counts as changed.
    */
   baselines?: "record" | "compare";
+  /**
+   * Run inside the persistent browser profile (issue #102) when one
+   * is active - the stored Browser Run session's cookies/storage -
+   * instead of a fresh throwaway session.
+   */
+  profile?: boolean;
   /** Audit a page once this selector exists; default: readyState complete. */
   settleSelector?: string;
   settleTimeoutMs?: number;

@@ -1,16 +1,12 @@
 /**
- * QAAgent — autonomous QA agent.
- *
- * Part of issue #42 (Think migration). This agent uses browser tools
- * (Puppeteer via the BROWSER binding) to load pages, extract text,
- * take screenshots, and report pass/fail.
- *
- * Extends Think, which is what makes it chat-capable and therefore a valid child for
- * agentTool(). It is reachable three ways: a direct @callable() RPC, an A2A operation
- * at /a2a/qa, and a dispatch from a host agent's tool list.
+ * QAAgent - autonomous QA agent (issue #42 Think migration): drives a
+ * real browser to load pages and report pass/fail. Extends Think, so
+ * it is a valid agentTool() child; reachable via @callable() RPC, the
+ * A2A operation at /a2a/qa, and host-agent dispatch.
  */
 import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, sha256Hex, summarizeBaselines, summarizeEvidence, viewportListOf } from "./ux-audit-spec";
 import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mergeDiscoveredTabs } from "./tab-coverage";
+import { openProfileConnection, profileRowClear, profileRowGet, profileRowSet, profileSessionAlive } from "./browser-profile";
 import type { BaselineResult, PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 import { callable } from "agents";
@@ -42,11 +38,9 @@ export interface QACheckResult {
 }
 
 /**
- * One live-view event for a QA run (issue #88). While a dashboard-initiated
- * run is in flight, the agent broadcasts these over its WebSocket so the QA
- * tab's side panel can show the run working: step narration, per-check
- * verdicts, and the screenshots the checks already capture. Events are keyed
- * by a caller-minted run id, so a watcher only ever sees its own run.
+ * One live-view event for a QA run (issue #88): broadcast over the
+ * agent WebSocket so the QA tab's panel can show the run working -
+ * steps, verdicts, screenshots. Keyed by a caller-minted run id.
  */
 export interface QALiveEvent {
   seq: number;
@@ -61,14 +55,10 @@ export interface QALiveEvent {
 }
 
 /**
- * The localStorage key the dashboard reads its API key from.
- *
- * This must match `public/index.html`, which reads `cfmail_api_key` in five
- * places. QAAgent previously seeded `cfpay_api_key` here - a key the dashboard
- * never reads - so every "authenticated" QA check silently rendered the login
- * page and then asserted against that login page's text. The tab check could
- * therefore never fail for the reason it existed, and could pass for no reason
- * at all. tests/wiring.test.ts now guards the two sites against drifting.
+ * The localStorage key the dashboard reads its API key from. Must
+ * match public/index.html (`cfmail_api_key`): QAAgent previously
+ * seeded a key the dashboard never reads, so "authenticated" checks
+ * silently asserted against the login page. Guarded in wiring tests.
  */
 export const DASHBOARD_API_KEY_STORAGE_KEY = "cfmail_api_key";
 
@@ -88,20 +78,14 @@ export const UX_RULES = {
 };
 
 /**
- * A per-target rule profile for the generalized audit (issue #94): every
- * field is optional and merges over UX_RULES. The ignore list is how a
- * target declares legitimate exceptions (a cookie banner's small close
- * button, say) so the findings stay signal, and expectedButtonBg is a
- * declared design token the pages are held to, beyond agreeing with each
- * other.
+ * A per-target rule profile for the generalized audit (issue #94):
+ * every field optional, merging over UX_RULES; the ignore list is how
+ * a target declares legitimate exceptions so findings stay signal.
  */
 /**
- * The in-page UX probe for qaUxAudit: one evaluate that measures everything
- * the audit's rules need from the currently rendered view and returns it as
- * data. The audit's verdicts are computed from this data in the agent, so
- * the same page always produces the same findings. Written without template
- * literals (thresholds arrive via interpolation) and without optional
- * chaining in hot paths, matching the other in-page probes in this file.
+ * The in-page UX probe for qaUxAudit: one evaluate measuring
+ * everything the audit's rules need from the rendered view, returned
+ * as data; verdicts are computed in the agent from that data.
  */
 function uxProbeExpression(profile?: UxRuleProfile): string {
   const normal = profile?.contrastNormal ?? UX_RULES.contrastNormal;
@@ -209,11 +193,8 @@ function uxProbeExpression(profile?: UxRuleProfile): string {
 
 /**
  * Turn per-page probe measurements into findings for the generalized
- * audit (issue #94). Same rules as qaUxAudit computes for the dashboard —
- * contrast, target size, heading hierarchy, button-style consistency,
- * layout integrity, image alt — plus design-token conformance when the
- * profile declares an expected primary-button background. Pure: same
- * measurements in, same findings out.
+ * audit (issue #94) - the same rules qaUxAudit computes for the
+ * dashboard, plus design-token conformance. Pure.
  */
 function summarizeUxProbes(
   probes: { view: string; data: any }[],
@@ -353,12 +334,9 @@ interface CdpLike {
 }
 
 /**
- * Turn a browser-layer failure into a message that names the likely cause.
- *
- * The raw text for a session-limit refusal points at wrangler.jsonc, which is
- * almost never the problem, and it reached the dashboard as a bare
- * "HTTP 500: Internal Server Error". Both are fixed by deciding here what the
- * error actually means.
+ * Turn a browser-layer failure into a message that names the likely
+ * cause - the raw text for a session-limit refusal points at
+ * wrangler.jsonc, which sends you to the wrong file.
  */
 /**
  * True when the error is the "did not return a WebSocket" refusal from
@@ -435,14 +413,10 @@ export class QAAgent extends Think<Env> {
     // This makes the email capability available for LLM-driven dispatch.
     const env = this.env as Env;
 
-    // Model-driven browser tools, for interactive automation (clicking, form
-    // filling, navigation) that the hand-rolled CDP methods below do not attempt.
-    //
-    // Guarded rather than assumed: creating these needs both the BROWSER and
-    // LOADER bindings, and a getTools() that throws takes down every chat turn on
-    // the agent, including the paths that never touch a browser. Environment
-    // variables are configuration, so an agent must not fail to boot because one
-    // optional binding is absent - it should simply offer fewer tools.
+    // Model-driven browser tools, guarded: creating them needs the
+    // BROWSER and LOADER bindings, and a throwing getTools() would take
+    // down every chat turn - an absent optional binding must simply
+    // mean fewer tools, never a failed boot.
     let browserTools: Record<string, unknown> = {};
     if (env.BROWSER && env.LOADER) {
       try {
@@ -511,13 +485,9 @@ export class QAAgent extends Think<Env> {
     const ownsConnection = !sharedConnection;
 
     try {
-      // CDP-based browser check (replaces raw Puppeteer).
-      //
-      // connectBrowser resolves to a CdpConnection already - its declared return type is
-      // Promise<CdpConnection> - so the connection is used directly. The previous code
-      // wrapped it in `new CdpSession(browser)`, which passed a CdpConnection where the
-      // constructor expects a WebSocket, and CdpSession is only a deprecated alias for
-      // CdpConnection anyway.
+      // CDP-based browser check. connectBrowser resolves to a
+      // CdpConnection directly - use it as-is (a previous version
+      // double-wrapped it in the deprecated CdpSession alias).
       const cdp = sharedConnection ?? (await this.openBrowserSession(env));
 
       const { targetId } = (await cdp.send("Target.createTarget", {
@@ -618,12 +588,10 @@ export class QAAgent extends Think<Env> {
     if (!runId) return;
     try {
       if (ev.kind === "frame") {
-        // Broadcast only, never buffered and never sequenced. At ~100 KB a
-        // frame, buffering them would evict the run's steps and screenshots
-        // from the replay buffer within a minute; and a seq on a frame would
-        // make the panel's dedupe discard older buffered events it has not
-        // caught up on yet. A watcher that connects late simply gets the
-        // next frame within a second.
+        // Broadcast only, never buffered or sequenced: at ~100 KB a
+        // frame, buffering would evict the run's steps from the replay
+        // buffer, and a seq would break the panel's dedupe. A late
+        // watcher simply gets the next frame within a second.
         this.broadcast(
           JSON.stringify({
             type: "qa-live",
@@ -1031,17 +999,11 @@ export class QAAgent extends Think<Env> {
     return { ok, tabs: results };
   }
 
-  /**
-   * RPC: deterministic UX audit (issue #91). Drives the dashboard like
-   * qaDashboardTabs does — one session, navigate → seed → reload, click
-   * through the data tabs — and at each view runs uxProbeExpression() to
-   * measure the rendered page against UX_RULES: contrast, target size,
-   * heading hierarchy, primary-button consistency across views, layout
-   * integrity, image alt text, and the tabs' landing-state pattern.
-   *
-   * Deterministic by construction: the probe returns measurements and the
-   * verdicts are computed here, so the same page always yields the same
-   * findings. No model is consulted.
+    /**
+   * RPC: deterministic UX audit (issue #91): one session through the
+   * dashboard (navigate, seed, reload, click the views), running the
+   * UX probe at each and scoring the same rules as the generalized
+   * audit.
    */
   @callable()
   async qaUxAudit(
@@ -1355,6 +1317,80 @@ export class QAAgent extends Think<Env> {
     return { ok: findings.every((f) => f.passed), checks: findings };
   }
 
+  /** Persistent browser profile (issue #102): see src/browser-profile.ts. */
+  private profileRow(): { sessionId: string; createdAt: string } | null {
+    return profileRowGet(this.ctx.storage.sql as never);
+  }
+  private async profileAlive(env: Env, sessionId: string): Promise<boolean> {
+    return profileSessionAlive(env.BROWSER, sessionId);
+  }
+  private async openProfileSession(env: Env): Promise<CdpLike | null> {
+    return (await openProfileConnection(env.BROWSER, this.ctx.storage.sql as never)) as CdpLike | null;
+  }
+
+  /**
+   * RPC: manage the persistent browser profile (issue #102).
+   * start creates a session at the maximum keep_alive and seeds the
+   * dashboard sign-in into it; status reports liveness; stop deletes
+   * the session. Audit/investigate runs opt into it per call.
+   */
+  @callable()
+  async qaBrowserProfile(
+    key: string,
+    action: string,
+    runId?: string,
+  ): Promise<{ active: boolean; createdAt?: string; error?: string }> {
+    const env = this.env as Env;
+    if (!env.BROWSER) return { active: false, error: "Browser binding not configured" };
+    const row = this.profileRow();
+    if (action === "status") {
+      if (!row) return { active: false };
+      if (await this.profileAlive(env, row.sessionId)) return { active: true, createdAt: row.createdAt };
+      profileRowClear(this.ctx.storage.sql as never);
+      return { active: false };
+    }
+    if (action === "stop") {
+      if (row) {
+        try {
+          const { deleteBrowserSession } = await import("agents/browser");
+          await deleteBrowserSession(env.BROWSER, row.sessionId);
+        } catch { /* already gone */ }
+        profileRowClear(this.ctx.storage.sql as never);
+      }
+      return { active: false };
+    }
+    if (action !== "start") return { active: false, error: `Unknown action "${action}" (start | status | stop).` };
+    if (row && (await this.profileAlive(env, row.sessionId))) return { active: true, createdAt: row.createdAt };
+    let conn: CdpLike | null = null;
+    try {
+      const { createBrowserSession, connectBrowserSession } = await import("agents/browser");
+      const info = await createBrowserSession(env.BROWSER, { keepAliveMs: 600000 });
+      const createdAt = new Date().toISOString();
+      profileRowSet(this.ctx.storage.sql as never, info.sessionId, createdAt);
+      conn = (await connectBrowserSession(env.BROWSER, info.sessionId)) as CdpLike;
+      const { targetId } = (await conn.send("Target.createTarget", { url: "about:blank" })) as { targetId: string };
+      try {
+        const sessionId = await conn.attachToTarget(targetId);
+        const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+        await conn.send("Page.navigate", { url: origin }, { sessionId });
+        await new Promise((r) => setTimeout(r, 3000));
+        if (key) {
+          await conn.send("Runtime.evaluate", { expression: `localStorage.setItem(${JSON.stringify(DASHBOARD_API_KEY_STORAGE_KEY)}, ${JSON.stringify(key)})` }, { sessionId });
+          await conn.send("Page.reload", {}, { sessionId });
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      } finally {
+        await conn.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+      this.emitLive(runId, { kind: "result", label: "Browser profile started", ok: true, detail: "Signed-in session kept alive for reuse (10 min idle cap)." });
+      return { active: true, createdAt };
+    } catch (err) {
+      return { active: false, error: describeBrowserFailure(err) };
+    } finally {
+      closeConnectionQuietly(conn);
+    }
+  }
+
   /** Visual-baseline storage (issue #102): one hash per view label. */
   private baselineSql() {
     const sql = this.ctx.storage.sql;
@@ -1374,17 +1410,11 @@ export class QAAgent extends Think<Env> {
     } catch { return false; }
   }
 
-  /**
-   * RPC: the generalized UX audit (issue #94, step 1). Audits the pages of
-   * one origin named by a target spec — public pages, localStorage-seeded
-   * apps, or header-authed sessions — measuring each settled page with the
-   * same probe the dashboard audit uses and judging it against the spec's
-   * rule profile (UX_RULES by default). qaUxAudit above remains the cfpay
-   * preset: it knows this app's login and tab flow, which a generic spec
-   * cannot; the probe and the rules are shared.
-   *
-   * Auth values in the spec are the caller's own session material: they
-   * are applied to the browser session and never stored or logged.
+    /**
+   * RPC: the generalized UX audit (issue #94, step 1): audits the
+   * pages of one origin named by a target spec (public,
+   * localStorage-seeded, or header-authed), with optional crawl,
+   * per-page steps, viewports, evidence, and baselines (issue #102).
    */
   @callable()
   async qaUxAuditUrl(
@@ -1450,7 +1480,9 @@ export class QAAgent extends Think<Env> {
     const baselineResults: BaselineResult[] = [];
     const failures: string[] = [];
     try {
-      const cdp = await this.openBrowserSession(env);
+      let cdp = spec.profile ? await this.openProfileSession(env) : null;
+      if (spec.profile && cdp) this.emitLive(runId, { kind: "step", label: "Using the persistent browser profile" });
+      if (!cdp) cdp = await this.openBrowserSession(env);
       browser = cdp;
       const { targetId } = (await cdp.send("Target.createTarget", {
         url: "about:blank",
@@ -1665,6 +1697,7 @@ export class QAAgent extends Think<Env> {
     question: string,
     url: string,
     runId?: string,
+    useProfile?: boolean,
   ): Promise<{
     ok: boolean;
     answer?: string;
@@ -1688,7 +1721,9 @@ export class QAAgent extends Think<Env> {
 
     let browser: CdpLike | null = null;
     try {
-      const cdp = await this.openBrowserSession(env);
+      let cdp = useProfile ? await this.openProfileSession(env) : null;
+      if (useProfile && cdp) this.emitLive(runId, { kind: "step", label: "Using the persistent browser profile" });
+      if (!cdp) cdp = await this.openBrowserSession(env);
       browser = cdp;
       const { targetId } = (await cdp.send("Target.createTarget", {
         url: "about:blank",
@@ -2107,21 +2142,12 @@ export class QAAgent extends Think<Env> {
           await new Promise((r) => setTimeout(r, 500));
         }
 
-        const summary = (await cdp
-          .send(
-            "Runtime.evaluate",
-            {
-              expression: `JSON.stringify({
+        const summary = (await cdp.send("Runtime.evaluate", { expression: `JSON.stringify({
                 connected: !!document.getElementById('publicDesk') && getComputedStyle(document.getElementById('publicDesk')).display !== 'none',
                 watch: (document.getElementById('deskWatch') ? document.getElementById('deskWatch').innerText : '').replace(/\\s+/g, ' ').slice(0, 280),
                 portfolio: (document.getElementById('deskPortfolio') ? document.getElementById('deskPortfolio').innerText : '').replace(/\\s+/g, ' ').slice(0, 280),
                 runs: (document.getElementById('deskRuns') ? document.getElementById('deskRuns').innerText : '').replace(/\\s+/g, ' ').slice(0, 280)
-              })`,
-              returnByValue: true,
-            },
-            { sessionId },
-          )
-          .catch(() => null)) as { result?: { value?: string } } | null;
+              })`, returnByValue: true }, { sessionId }).catch(() => null)) as { result?: { value?: string } } | null;
         deskSummary = summary?.result?.value ?? "";
 
         const dateStr = new Date().toISOString().slice(0, 10);
@@ -2238,16 +2264,11 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-  /**
-   * RPC: run the full dashboard QA suite in order and return an aggregate
-   * result. Each check runs sequentially and manages its own browser session
-   * (openBrowserSession retries once on a capacity refusal), so a full run
-   * takes a few minutes — this is the "one button" equivalent of clicking
-   * every QA button in turn.
-   *
-   * The two email-sending checks (testEmailAttachmentUI, qaAndEmailReport)
-   * are skipped when no recipient is given, rather than failing: they send
-   * real emails and must never fire without an explicit address.
+    /**
+   * RPC: run the full dashboard QA suite in order and return an
+   * aggregate result - the "one button" equivalent of clicking every
+   * QA button in turn. The two email-sending checks are skipped
+   * unless a recipient is supplied.
    */
   @callable()
   async qaFullSuite(
@@ -2391,18 +2412,10 @@ export class QAAgent extends Think<Env> {
 
 
 
-  /**
-   * RPC: drive the dashboard's Send Email form end to end, with an attachment.
-   *
-   * qaAndEmailReport already proves EmailAgent can send attachments when called
-   * directly. This proves the *user path*: that the form collects a file, that
-   * /api/dashboard/send-email receives it, and that the UI reports success. The
-   * two failure modes are different, which is why both are worth testing.
-   *
-   * Note the deliberate omission: the browser never waits on a fixed timeout for
-   * the send to settle. sendEmail() is async and the assertion polls the result
-   * element in-page until it shows a terminal state, so a slow send is reported
-   * as slow rather than as a failure.
+    /**
+   * RPC: drive the dashboard's Send Email form end to end, with an
+   * attachment - proof the UI path (not just the agent call) delivers
+   * attachments intact.
    */
   @callable()
   async testEmailAttachmentUI(
@@ -2753,14 +2766,11 @@ export class QAAgent extends Think<Env> {
     }
   }
 
-  /**
-   * RPC: negative and edge-case checks against the dashboard API.
-   *
-   * The existing QA methods only assert the happy path, so a regression that
-   * turned a 401 into a 200 would be invisible. These assert that bad input is
-   * refused with the right status AND a structured JSON body rather than an
-   * HTML error page - the dashboard reports an unparseable 500 as a confusing
-   * JSON parse error to the user, which is a past failure mode here.
+    /**
+   * RPC: negative and edge-case checks against the dashboard API:
+   * bad input must be refused with the right status AND a structured
+   * JSON body, not an HTML error page (the happy-path-only suite
+   * would never see a 401 quietly becoming a 200).
    */
   @callable()
   async qaEdgeCases(
@@ -2871,15 +2881,11 @@ export class QAAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-  /**
-   * Route one A2A message.
-   *
-   * `qa.check` makes the Worker fetch a URL and run a real browser against it, which is
-   * the same capability shape as an SSRF: a caller chooses the destination and this
-   * Worker goes there. It is behind the bearer credential like every other A2A call, and
-   * it is bounded to http(s) - but a caller holding the credential can make the Worker
-   * browse to an internal name. That is a real exposure of extraction, not a theoretical
-   * one, and it is stated on the card rather than left for a reader to infer.
+    /**
+   * Route one A2A message. Note the exposure, stated on the card:
+   * `qa.check` makes the Worker browse to a caller-chosen URL (an
+   * SSRF shape) - it is bearer-gated and bounded to http(s), but a
+   * credential holder can make the Worker browse to an internal name.
    */
   async handleA2AMessage(
     message: any,
@@ -2978,7 +2984,7 @@ export class QAAgent extends Think<Env> {
             data: { ok: false, error: "bad_args" },
           };
         }
-        const result = await this.qaInvestigate(inv.question, inv.url);
+        const result = await this.qaInvestigate(inv.question, inv.url, undefined, args.profile === true);
         if (!result.ok) {
           return {
             text: "Investigation could not complete: " + (result.error ?? "unknown error"),
@@ -3001,13 +3007,30 @@ export class QAAgent extends Think<Env> {
         };
       }
 
+      case "qa.browser_profile": {
+        // Issue #102: manage the persistent browser profile. The
+        // dashboard key comes from the Worker's own env here - this
+        // dispatch already ran behind the A2A bearer gate.
+        const env2 = this.env as Env;
+        const act = typeof args.action === "string" ? args.action : "status";
+        const result = await this.qaBrowserProfile(env2.DASHBOARD_API_KEY ?? "", act);
+        return {
+          text: result.error
+            ? "Browser profile: " + result.error
+            : result.active
+              ? `Browser profile is active (started ${result.createdAt ?? "earlier"}).`
+              : "Browser profile is not active.",
+          data: result,
+        };
+      }
+
       default:
         return {
           text: `Unknown operation: ${op}`,
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit"],
+            supported: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit", "qa.investigate", "qa.browser_profile"],
           },
         };
     }
