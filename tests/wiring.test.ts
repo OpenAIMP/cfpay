@@ -1730,6 +1730,9 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(voice).toContain("WorkersAIFluxSTT");
     expect(voice).toContain("WorkersAITTS");
     expect(voice).toContain("answerQuestion");
+    expect(voice).toContain("withVoice(Think)");
+    expect(read("src/agent-tools.ts")).toContain("voiceAgentTool");
+    expect(read("src/agent.ts")).toContain('voiceAgent: { cls: VoiceAgent');
     expect(a2a).toContain("voiceCard");
     expect(a2a).toContain('A2A_VOICE_RPC_PATH = "/a2a/voice"');
     expect(idx).toContain('export { VoiceAgent } from "./voice-agent"');
@@ -1737,7 +1740,9 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(wrangler).toContain('"tag": "v9"');
     expect(pdata).toContain("deskToggleVoice");
     expect(pdata).toContain("the voice connection timed out");
-    expect(pdata).toContain("@cloudflare/voice@0.5.0/client");
+    expect(pdata).toContain("/agents/voice-agent/desk");
+    expect(pdata).toContain("start_call");
+    expect(pdata).not.toContain("esm.sh/@cloudflare/voice");
     expect(a2aTest).toContain('rpc: "/a2a/voice"');
   });
 

@@ -4,6 +4,7 @@ import {
   chatAgentToolSchema,
   qaAgentToolSchema,
   searchAgentToolSchema,
+  voiceAgentToolSchema,
   orchestratorAgentToolSchema,
   slackAgentToolSchema,
   webhookAgentToolSchema,
@@ -13,6 +14,7 @@ import { PaymentsAgent } from "./payments-agent";
 import { SlackAgent } from "./slack-agent";
 import { QAAgent } from "./qa-agent";
 import { SearchAgent } from "./search-agent";
+import { VoiceAgent } from "./voice-agent";
 import { OrchestratorAgent } from "./orchestrator-agent";
 import { ChatAgent } from "./chat-agent";
 import { WebhookAgent } from "./webhook-agent";
@@ -40,6 +42,7 @@ import {
   emailAgentTool,
   chatAgentTool,
   searchAgentTool,
+  voiceAgentTool,
   orchestratorAgentTool,
   qaAgentTool,
   slackAgentTool,
@@ -93,12 +96,9 @@ import {
 } from "./slack";
 
 /**
- * Tool name -> child agent class.
- *
- * Names carry an `Agent` suffix because the MCP tool namespace already uses the bare
- * names: `email` is the deterministic capability tool, and `emailAgent` is the
- * dispatched agent. Keeping them distinct means the model can be offered both and a
- * reader can tell which is which from the call site.
+ * Tool name -> child agent class. Names carry an `Agent` suffix because the MCP
+ * namespace uses the bare names (`email` = the deterministic tool, `emailAgent` =
+ * the dispatched agent), so the model can be offered both without ambiguity.
  */
 const AGENT_TOOL_DISPATCH = {
   emailAgent: { cls: EmailAgent, displayName: "Email Agent" },
@@ -107,6 +107,7 @@ const AGENT_TOOL_DISPATCH = {
   slackAgent: { cls: SlackAgent, displayName: "Slack Agent" },
   qaAgent: { cls: QAAgent, displayName: "QA Agent" },
   searchAgent: { cls: SearchAgent, displayName: "Search Agent" },
+  voiceAgent: { cls: VoiceAgent, displayName: "Voice Agent" },
   orchestratorAgent: { cls: OrchestratorAgent, displayName: "Orchestrator Agent" },
   chatAgent: { cls: ChatAgent, displayName: "Chat Agent" },
 } as const;
@@ -133,6 +134,7 @@ const agentToolInputSchema = {
   slack: slackAgentToolSchema,
   qa: qaAgentToolSchema,
   search: searchAgentToolSchema,
+  voice: voiceAgentToolSchema,
   orchestrator: orchestratorAgentToolSchema,
   chat: chatAgentToolSchema,
 } as const;
@@ -221,12 +223,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
     ].join(" ");
   }
 
-  /**
-   * The child capability agents, as this agent's own tool set - the same
-   * surface the custom tool loop advertises in its specs, so a model
-   * reaching them through Think and one reaching them through the
-   * dashboard's loop see the same tools.
-   */
+  /** The child capability agents as this agent's tool set - the same surface the custom tool loop advertises in its specs. */
   override getTools(): ToolSet {
     return {
       emailAgent: emailAgentTool,
@@ -235,6 +232,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
       qaAgent: qaAgentTool,
       chatAgent: chatAgentTool,
       searchAgent: searchAgentTool,
+      voiceAgent: voiceAgentTool,
       orchestratorAgent: orchestratorAgentTool,
     };
   }
@@ -2370,12 +2368,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return new HuntStore(this.ctx.storage.sql).get(id);
   }
 
-  /**
-   * Run one capability agent as a tool, through the framework's
-   * runAgentTool. The child validates its own arguments (a malformed
-   * one fails there with a readable error) and returns a summary the
-   * model sees as a normal tool result.
-   */
+  /** Run one capability agent as a tool via runAgentTool; the child validates its own arguments and returns a summary the model sees as a tool result. */
   private async dispatchAgentTool(
     target: { cls: any; displayName: string },
     args: unknown,
@@ -2402,16 +2395,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
-   * Shrink an MCP-provided parameter schema before it is sent to the model.
-   *
-   * Public.com's schemas carry a prose description on nearly every property,
-   * nested several levels deep on the order tools. Sent verbatim, the tool
-   * definitions alone measured ~22k prompt tokens - enough to overflow a
-   * 24k-context model before the question is even asked. Property names,
-   * types, enums and required lists are what the model needs to form a call;
-   * the prose is capped rather than removed, so short guidance survives, and
-   * the $schema declaration (which names a dialect, not a parameter) is
-   * dropped.
+   * Shrink an MCP-provided parameter schema before it is sent to the model:
+   * Public.com's prose-heavy schemas measured ~22k prompt tokens verbatim -
+   * enough to overflow a 24k-context model. Keep names/types/enums/required,
+   * cap the prose, drop the $schema declaration.
    */
   private compactSchema(schema: unknown): unknown {
     if (Array.isArray(schema)) return schema.map((s) => this.compactSchema(s));
@@ -2524,6 +2511,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
         description:
           "Dispatch the search agent (AI Search): search.query = chunks, search.ask = grounded answer.",
         parameters: agentToolInputSchema.search,
+      },
+    });
+
+    specs.push({
+      type: "function",
+      function: {
+        name: "voiceAgent",
+        description:
+          "Dispatch the voice agent: voice.snapshot reports the voice conversation state; voice.ask runs one question through the desk pipeline and returns the speakable answer.",
+        parameters: agentToolInputSchema.voice,
       },
     });
 

@@ -677,10 +677,10 @@ function deskInitViews() {
   }
 
   // Voice control for the desk (issue #168): a Talk toggle in the
-  // composer card. The client loads lazily from the same esm.sh
-  // pattern as the dashboard's AgentClient, pinned to the server
-  // package version; the dashboard key rides the handshake query,
-  // which the /agents route's token check already accepts.
+  // composer card. The client is the thin protocol client further
+  // down this file (deskToggleVoice); the dashboard key rides the
+  // WebSocket handshake query, which the /agents route's token
+  // check already accepts.
   if (chatCard && !document.getElementById('deskVoiceRow')) {
     const row = document.createElement('div');
     row.id = 'deskVoiceRow';
@@ -1168,65 +1168,182 @@ function deskSyncQuestionsClone() {
 }
 
 // ---------------------------------------------------------------------------
-// Voice desk client (issue #168): VoiceClient from @cloudflare/voice,
-// loaded lazily as an ES module from esm.sh (the dashboard's existing
-// pattern for the agents client). One client per call session.
+// Voice desk client (issue #168; thin custom client since the
+// #173 voice fix): speaks the @cloudflare/voice mixin protocol
+// directly over a plain WebSocket instead of the esm.sh VoiceClient
+// build, whose startCall path never reached the microphone in the
+// dashboard. Protocol (from the installed package's types): on open
+// send {type:"hello", protocol_version:1}; the server greets with
+// welcome + status, and on {type:"start_call"} it answers with
+// audio_config and starts listening. Mic audio goes up as binary
+// PCM16 16kHz frames (an AudioWorklet resamples and converts);
+// spoken answers come down as binary audio frames in the
+// audio_config format (mp3 from the Workers AI TTS) plus JSON
+// status/transcript frames. {type:"end_call"} hangs up; a server
+// status of idle after the call started also ends it locally.
 
-let deskVoiceClient = null;
+const DESK_VOICE_WORKLET = [
+  'class AudioCaptureProcessor extends AudioWorkletProcessor {',
+  '  constructor() { super(); this.buffer = []; this.sampleRate = sampleRate; this.targetRate = 16000; this.ratio = this.sampleRate / this.targetRate; }',
+  '  process(inputs) {',
+  '    const input = inputs[0]; if (!input || !input[0]) return true;',
+  '    const channelData = input[0];',
+  '    for (let i = 0; i < channelData.length; i += this.ratio) {',
+  '      const idx = Math.floor(i); const frac = i - idx;',
+  '      if (idx + 1 < channelData.length) this.buffer.push(channelData[idx] * (1 - frac) + channelData[idx + 1] * frac);',
+  '      else if (idx < channelData.length) this.buffer.push(channelData[idx]);',
+  '    }',
+  '    if (this.buffer.length >= 1600) { const chunk = new Float32Array(this.buffer); this.port.postMessage({ type: "audio", samples: chunk }, [chunk.buffer]); this.buffer = []; }',
+  '    return true;',
+  '  }',
+  '}',
+  'registerProcessor("audio-capture-processor", AudioCaptureProcessor);',
+].join("\n");
+
+let deskVoice = null;
+
+function deskVoiceSetStatus(text) {
+  const el = document.getElementById('deskVoiceStatus');
+  if (el) el.textContent = text;
+}
+
+function deskVoiceRenderTranscript(session) {
+  const host = document.getElementById('deskVoiceTranscript');
+  if (!host) return;
+  host.innerHTML = session.messages.slice(-6).map((m) =>
+    '<div style="margin-top:0.3rem;"><strong>' + (m.role === 'user' ? 'You' : 'Desk') + ':</strong> ' + escapeHtml(m.text || '') + '</div>',
+  ).join('');
+}
+
+function deskVoiceStop(sendEnd) {
+  const session = deskVoice;
+  deskVoice = null;
+  const btn = document.getElementById('deskVoiceBtn');
+  if (btn) btn.textContent = '\u{1F399}\ufe0f Talk to the desk';
+  if (!session) return;
+  try { if (sendEnd && session.ws.readyState === WebSocket.OPEN) session.ws.send(JSON.stringify({ type: 'end_call' })); } catch (e) { /* already gone */ }
+  try { session.ws.close(); } catch (e) { /* already gone */ }
+  if (session.stream) session.stream.getTracks().forEach((t) => t.stop());
+  if (session.audioCtx) session.audioCtx.close().catch(() => {});
+  if (session.playCtx) session.playCtx.close().catch(() => {});
+}
+
+function deskVoicePlay(session, data) {
+  const ctx = session.playCtx || (session.playCtx = new AudioContext());
+  const play = (buffer) => {
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    const at = Math.max(ctx.currentTime, session.playAt || 0);
+    src.start(at);
+    session.playAt = at + buffer.duration;
+  };
+  if (session.format === 'pcm16') {
+    const int16 = new Int16Array(data);
+    const buffer = ctx.createBuffer(1, int16.length, session.sampleRate || 16000);
+    const ch = buffer.getChannelData(0);
+    for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 32768;
+    play(buffer);
+  } else {
+    ctx.decodeAudioData(data.slice(0)).then(play).catch(() => { /* undecodable chunk */ });
+  }
+}
+
+async function deskVoiceStartMic(session) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  session.stream = stream;
+  const ctx = new AudioContext();
+  session.audioCtx = ctx;
+  const blob = new Blob([DESK_VOICE_WORKLET], { type: 'application/javascript' });
+  await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
+  const node = new AudioWorkletNode(ctx, 'audio-capture-processor');
+  node.port.onmessage = (e2) => {
+    if (session.ws.readyState !== WebSocket.OPEN) return;
+    const samples = e2.data.samples;
+    const pcm = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      const v = Math.max(-1, Math.min(1, samples[i]));
+      pcm[i] = v < 0 ? v * 32768 : v * 32767;
+    }
+    session.ws.send(pcm.buffer);
+  };
+  const source = ctx.createMediaStreamSource(stream);
+  const mute = ctx.createGain();
+  mute.gain.value = 0;
+  source.connect(node);
+  node.connect(mute);
+  mute.connect(ctx.destination);
+}
 
 async function deskToggleVoice() {
   const btn = document.getElementById('deskVoiceBtn');
-  const status = document.getElementById('deskVoiceStatus');
-  if (deskVoiceClient) {
-    try { deskVoiceClient.endCall(); deskVoiceClient.disconnect(); } catch (e) { /* already gone */ }
-    deskVoiceClient = null;
-    if (btn) btn.textContent = '\u{1F399}\ufe0f Talk to the desk';
-    if (status) status.textContent = 'Voice is off - ask out loud and the desk answers out loud.';
+  if (deskVoice) {
+    deskVoiceStop(true);
+    deskVoiceSetStatus('Voice is off - ask out loud and the desk answers out loud.');
     return;
   }
   const key = localStorage.getItem('cfmail_api_key') || '';
   if (!key) {
-    if (status) status.textContent = 'Sign in with your API key first.';
+    deskVoiceSetStatus('Sign in with your API key first.');
     return;
   }
-  if (status) status.textContent = 'Starting voice...';
-  try {
-    const { VoiceClient } = await import('https://esm.sh/@cloudflare/voice@0.5.0/client');
-    const client = new VoiceClient({ agent: 'voice-agent', name: 'desk', query: { token: key } });
-    deskVoiceClient = client;
-    client.addEventListener('statuschange', (s) => {
-      const el = document.getElementById('deskVoiceStatus');
-      if (el) el.textContent = 'Voice: ' + s + (s === 'listening' ? ' - speak now.' : '');
-    });
-    client.addEventListener('transcriptchange', (messages) => {
-      const host = document.getElementById('deskVoiceTranscript');
-      if (!host || !Array.isArray(messages)) return;
-      host.innerHTML = messages.slice(-6).map((m) =>
-        '<div style="margin-top:0.3rem;"><strong>' + (m.role === 'user' ? 'You' : 'Desk') + ':</strong> ' + escapeHtml(m.text || m.content || '') + '</div>',
-      ).join('');
-    });
-    client.addEventListener('error', (e) => {
-      const el = document.getElementById('deskVoiceStatus');
-      if (el && e) el.textContent = 'Voice error: ' + e;
-    });
-    client.connect();
-    // startCall() refuses while the socket is still opening (it
-    // emits "Cannot start call: not connected" and returns without
-    // touching the microphone), so wait for the connection to open
-    // first. The server greeting (status: idle) arrives on open;
-    // only then can a call actually start.
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('the voice connection timed out')), 15000);
-      client.addEventListener('connectionchange', (open) => {
-        if (open) { clearTimeout(timer); resolve(); }
-      });
-    });
-    await client.startCall();
-    if (btn) btn.textContent = '\u23f9 End voice';
-  } catch (err) {
-    deskVoiceClient = null;
-    if (status) status.textContent = 'Voice could not start: ' + (err && err.message ? err.message : err);
-  }
+  deskVoiceSetStatus('Starting voice...');
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(proto + '//' + location.host + '/agents/voice-agent/desk?token=' + encodeURIComponent(key));
+  ws.binaryType = 'arraybuffer';
+  const session = deskVoice = {
+    ws, stream: null, audioCtx: null, playCtx: null, playAt: 0,
+    format: 'mp3', sampleRate: 16000, messages: [], started: false,
+  };
+  const fail = (msg) => {
+    if (deskVoice !== session) return;
+    deskVoiceStop(false);
+    deskVoiceSetStatus('Voice could not start: ' + msg);
+  };
+  const timer = setTimeout(() => fail('the voice connection timed out'), 15000);
+  ws.onopen = () => {
+    try { ws.send(JSON.stringify({ type: 'hello', protocol_version: 1 })); } catch (e) { /* close handler reports */ }
+  };
+  ws.onmessage = async (ev) => {
+    if (typeof ev.data !== 'string') { deskVoicePlay(session, ev.data); return; }
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg.type === 'welcome') {
+      // The greeting proves socket, token auth, and routing. Only
+      // now start the call, then the microphone - the order the
+      // mixin's own client uses.
+      try {
+        ws.send(JSON.stringify({ type: 'start_call' }));
+        await deskVoiceStartMic(session);
+        clearTimeout(timer);
+        session.started = true;
+        if (btn) btn.textContent = '\u23f9 End voice';
+      } catch (e) {
+        fail(e && e.message ? e.message : 'microphone unavailable');
+      }
+    } else if (msg.type === 'audio_config') {
+      session.format = msg.format || 'mp3';
+      if (msg.sampleRate) session.sampleRate = msg.sampleRate;
+    } else if (msg.type === 'status') {
+      deskVoiceSetStatus('Voice: ' + msg.status + (msg.status === 'listening' ? ' - speak now.' : ''));
+      if (msg.status === 'idle' && session.started) {
+        deskVoiceStop(false);
+        deskVoiceSetStatus('Voice is off - ask out loud and the desk answers out loud.');
+      }
+    } else if (msg.type === 'transcript') {
+      session.messages.push({ role: msg.role, text: msg.text });
+      deskVoiceRenderTranscript(session);
+    } else if (msg.type === 'error') {
+      deskVoiceSetStatus('Voice error: ' + (msg.message || msg.code || 'unknown'));
+    }
+  };
+  ws.onclose = () => {
+    if (deskVoice !== session) return;
+    clearTimeout(timer);
+    const wasStarted = session.started;
+    deskVoiceStop(false);
+    deskVoiceSetStatus(wasStarted ? 'Voice: connection closed.' : 'Voice could not start: the connection closed.');
+  };
 }
 
 

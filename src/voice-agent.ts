@@ -1,4 +1,4 @@
-import { Agent } from "agents";
+import { Think } from "@cloudflare/think";
 import {
   withVoice,
   WorkersAIFluxSTT,
@@ -6,17 +6,19 @@ import {
   type VoiceTurnContext,
 } from "@cloudflare/voice";
 import type { Env } from "./types";
+import { defaultModelId } from "./models";
 import { speakable } from "./voice-text";
 
 // Voice channel for the Public.com desk (issue #168), built on the
 // documented @cloudflare/voice mixin: Workers AI speech-to-text
 // (Deepgram Flux) and text-to-speech (Deepgram Aura) on the existing
-// AI binding - no new keys. The base is the docs' Agent rather than
-// Think on purpose: the voice mixin owns the WebSocket protocol
-// (binary audio frames plus voice JSON), which would collide with
-// Think's chat protocol on the same socket. Everything else follows
-// the other capability agents: its own DO binding, its own A2A card
-// and dispatch, and a read-only snapshot for A2A callers.
+// AI binding - no new keys. The base is Think composed with the
+// voice mixin (issue #173): the mixin owns the voice frames on the
+// socket and forwards everything else to the base handler, so the
+// agent carries the standard Think surface (model, prompt, tools)
+// alongside the channel. Everything else follows the other
+// capability agents: its own DO binding, its own A2A card and
+// dispatch, and a read-only snapshot for A2A callers.
 //
 // The agent's one job is the voice channel. The answers come from
 // the desk pipeline itself, reached the same way the dashboard
@@ -24,11 +26,27 @@ import { speakable } from "./voice-text";
 // exactly the typed pipeline's answer, including its guard rails:
 // order-placing calls still become approval-gated proposals there,
 // never executions.
-const VoiceBase = withVoice(Agent);
+const VoiceBase = withVoice(Think);
 
 export class VoiceAgent extends VoiceBase<Env> {
   transcriber = new WorkersAIFluxSTT(this.env.AI);
   tts = new WorkersAITTS(this.env.AI);
+
+  override getModel(): string {
+    return defaultModelId();
+  }
+
+  override getSystemPrompt(): string {
+    return [
+      "You are the voice capability agent for this Worker: the spoken channel to the Public.com desk.",
+      "voice.snapshot reports the state of the current voice conversation (counts only); voice.ask takes a question, runs it through the desk pipeline, and returns the speakable answer text.",
+      "You never execute trades: the desk pipeline turns order-placing requests into approval-gated proposals, exactly as it does for typed questions.",
+    ].join(" ");
+  }
+
+  override getTools(): Record<string, never> {
+    return {};
+  }
 
   /** Run one question through the desk pipeline; returns speakable prose. */
   async answerQuestion(question: string): Promise<string> {
