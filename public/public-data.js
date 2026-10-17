@@ -646,6 +646,22 @@ function deskInitViews() {
     if (huntHost) huntHost.appendChild(card);
   }
 
+  // Voice control for the desk (issue #168): a Talk toggle in the
+  // composer card. The client loads lazily from the same esm.sh
+  // pattern as the dashboard's AgentClient, pinned to the server
+  // package version; the dashboard key rides the handshake query,
+  // which the /agents route's token check already accepts.
+  if (chatCard && !document.getElementById('deskVoiceRow')) {
+    const row = document.createElement('div');
+    row.id = 'deskVoiceRow';
+    row.style.cssText = 'margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.75rem;';
+    row.innerHTML = '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">'
+      + '<button class="btn" id="deskVoiceBtn" onclick="deskToggleVoice()">\u{1F399}\ufe0f Talk to the desk</button>'
+      + '<span id="deskVoiceStatus" style="color:var(--muted);font-size:0.8rem;">Voice is off - ask out loud and the desk answers out loud.</span></div>'
+      + '<div id="deskVoiceTranscript" style="margin-top:0.5rem;font-size:0.85rem;line-height:1.55;"></div>';
+    chatCard.appendChild(row);
+  }
+
   // The capabilities button leaves the Ask card (issue #166): the
   // catalogue already lives in the Tools view, mirrored from the
   // (hidden) floating card, which stays as the mirror's source.
@@ -1084,5 +1100,56 @@ function deskSyncQuestionsClone() {
     if (sel) sel.removeAttribute('id');
     const lbl = host.querySelector('label[for="publicContext"]');
     if (lbl) lbl.removeAttribute('for');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Voice desk client (issue #168): VoiceClient from @cloudflare/voice,
+// loaded lazily as an ES module from esm.sh (the dashboard's existing
+// pattern for the agents client). One client per call session.
+
+let deskVoiceClient = null;
+
+async function deskToggleVoice() {
+  const btn = document.getElementById('deskVoiceBtn');
+  const status = document.getElementById('deskVoiceStatus');
+  if (deskVoiceClient) {
+    try { deskVoiceClient.endCall(); deskVoiceClient.disconnect(); } catch (e) { /* already gone */ }
+    deskVoiceClient = null;
+    if (btn) btn.textContent = '\u{1F399}\ufe0f Talk to the desk';
+    if (status) status.textContent = 'Voice is off - ask out loud and the desk answers out loud.';
+    return;
+  }
+  const key = localStorage.getItem('cfmail_api_key') || '';
+  if (!key) {
+    if (status) status.textContent = 'Sign in with your API key first.';
+    return;
+  }
+  if (status) status.textContent = 'Starting voice...';
+  try {
+    const { VoiceClient } = await import('https://esm.sh/@cloudflare/voice@0.5.0/client');
+    const client = new VoiceClient({ agent: 'voice-agent', name: 'desk', query: { token: key } });
+    deskVoiceClient = client;
+    client.addEventListener('statuschange', (s) => {
+      const el = document.getElementById('deskVoiceStatus');
+      if (el) el.textContent = 'Voice: ' + s + (s === 'listening' ? ' - speak now.' : '');
+    });
+    client.addEventListener('transcriptchange', (messages) => {
+      const host = document.getElementById('deskVoiceTranscript');
+      if (!host || !Array.isArray(messages)) return;
+      host.innerHTML = messages.slice(-6).map((m) =>
+        '<div style="margin-top:0.3rem;"><strong>' + (m.role === 'user' ? 'You' : 'Desk') + ':</strong> ' + escapeHtml(m.text || m.content || '') + '</div>',
+      ).join('');
+    });
+    client.addEventListener('error', (e) => {
+      const el = document.getElementById('deskVoiceStatus');
+      if (el && e) el.textContent = 'Voice error: ' + e;
+    });
+    client.connect();
+    await client.startCall();
+    if (btn) btn.textContent = '\u23f9 End voice';
+  } catch (err) {
+    deskVoiceClient = null;
+    if (status) status.textContent = 'Voice could not start: ' + (err && err.message ? err.message : err);
   }
 }

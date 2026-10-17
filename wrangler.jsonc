@@ -39,6 +39,10 @@
       {
         "name": "CHAT_AGENT",
         "class_name": "ChatAgent"
+      },
+      {
+        "name": "VOICE_AGENT",
+        "class_name": "VoiceAgent"
       }
     ]
   },
@@ -50,7 +54,8 @@
     { "tag": "v5", "new_sqlite_classes": ["WebhookAgent"] },
     { "tag": "v6", "new_sqlite_classes": ["SlackAgent"] },
   { "tag": "v7", "new_sqlite_classes": ["QAAgent"] },
-    { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] }
+    { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] },
+    { "tag": "v9", "new_sqlite_classes": ["VoiceAgent"] }
   ],
   "workflows": [
     {

@@ -1666,6 +1666,27 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(emailAgent).toContain("html?: string");
   });
 
+  it("the voice agent is wired (issue #168)", () => {
+    const voice = read("src/voice-agent.ts");
+    const a2a = read("src/a2a.ts");
+    const idx = read("src/index.ts");
+    const wrangler = read("wrangler.jsonc");
+    const pdata = read("public/public-data.js");
+    const a2aTest = read("src/a2a-test.ts");
+    expect(voice).toContain("withVoice");
+    expect(voice).toContain("WorkersAIFluxSTT");
+    expect(voice).toContain("WorkersAITTS");
+    expect(voice).toContain("answerQuestion");
+    expect(a2a).toContain("voiceCard");
+    expect(a2a).toContain('A2A_VOICE_RPC_PATH = "/a2a/voice"');
+    expect(idx).toContain('export { VoiceAgent } from "./voice-agent"');
+    expect(wrangler).toContain('"class_name": "VoiceAgent"');
+    expect(wrangler).toContain('"tag": "v9"');
+    expect(pdata).toContain("deskToggleVoice");
+    expect(pdata).toContain("@cloudflare/voice@0.5.0/client");
+    expect(a2aTest).toContain('rpc: "/a2a/voice"');
+  });
+
   it("the notification center is wired (issue #163)", () => {
     const pdata = read("public/public-data.js");
     expect(pdata).toContain("notifyInit");

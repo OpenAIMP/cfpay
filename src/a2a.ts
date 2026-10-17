@@ -67,6 +67,9 @@ export const A2A_SLACK_CARD_PATH = "/a2a/slack/agent-card.json";
 export const A2A_QA_RPC_PATH = "/a2a/qa";
 export const A2A_QA_CARD_PATH = "/a2a/qa/agent-card.json";
 
+export const A2A_VOICE_RPC_PATH = "/a2a/voice";
+export const A2A_VOICE_CARD_PATH = "/a2a/voice/agent-card.json";
+
 export const A2A_CHAT_RPC_PATH = "/a2a/chat";
 export const A2A_CHAT_CARD_PATH = "/a2a/chat/agent-card.json";
 
@@ -492,6 +495,40 @@ export function qaCard(origin: string): AgentCard {
           "Check that https://example.com loads and contains Welcome.",
           "Does the dashboard still render?",
           "Audit https://example.com for accessibility and UX issues.",
+        ],
+      },
+    ],
+  };
+}
+/**
+ * Card for the voice channel (issue #168): the Public.com desk by
+ * voice. voice.ask runs the desk's own pipeline - the same guard
+ * rails as the typed chat apply, so an order-placing call becomes an
+ * approval-gated proposal, never an execution. The card says so.
+ */
+export function voiceCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Voice Agent",
+    description:
+      "The Public.com Autopilot Trading Desk by voice: spoken questions are transcribed (Workers AI), answered by the desk pipeline over live Public.com data, and spoken back. voice.ask runs the same pipeline for A2A callers and returns the speakable answer. Trades are never executed from a voice or A2A turn - order-placing calls become proposals a human approves in the dashboard.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_VOICE_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "voice-desk",
+        name: "Voice desk",
+        description:
+          "Ask the Public.com desk a question (voice.ask) and get the speakable answer, or read the conversation snapshot. All operations require a bearer <redacted>",
+        tags: ["voice", "public", "read"],
+        examples: [
+          "Compare NVDA and AMD for a covered call.",
+          "What is in my portfolio?",
         ],
       },
     ],

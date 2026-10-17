@@ -26,6 +26,8 @@ import {
   A2A_QA_RPC_PATH,
   A2A_CHAT_CARD_PATH,
   A2A_CHAT_RPC_PATH,
+  A2A_VOICE_CARD_PATH,
+  A2A_VOICE_RPC_PATH,
   A2A_RPC_PATH,
   a2aAuthorised,
   cfmailCard,
@@ -59,6 +61,7 @@ export { WebhookAgent } from "./webhook-agent";
 export { SlackAgent } from "./slack-agent";
 export { QAAgent } from "./qa-agent";
 export { ChatAgent } from "./chat-agent";
+export { VoiceAgent } from "./voice-agent";
 export { TradeWorkflow } from "./trade-workflow";
 
 const app = createApp();
@@ -315,6 +318,43 @@ export default {
       const qStub = env.QA_AGENT.get(env.QA_AGENT.idFromName("qa")) as any;
       try {
         const outcome = await qStub.handleA2A(qbody, url.origin);
+        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (outcome.streamed) {
+          const events = Array.isArray(outcome.events) ? outcome.events : [];
+          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+        }
+        return new Response(JSON.stringify(outcome.result), {
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+      }
+    }
+    // Voice channel (issue #168): its own card and its own /a2a endpoint.
+    if (url.pathname === A2A_VOICE_CARD_PATH) {
+      const { voiceCard } = await import("./a2a");
+      return new Response(JSON.stringify(voiceCard(url.origin)), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" },
+      });
+    }
+
+    if (url.pathname === A2A_VOICE_RPC_PATH) {
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key" },
+        });
+      }
+      if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      if (!a2aAuthorised(request, env)) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+      }
+      let vbody: unknown;
+      try { vbody = await request.json(); } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+      }
+      const vStub = env.VOICE_AGENT.get(env.VOICE_AGENT.idFromName("desk")) as any;
+      try {
+        const outcome = await vStub.handleA2A(vbody, url.origin);
         if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
