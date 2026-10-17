@@ -3,7 +3,6 @@ import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence,
 import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mergeDiscoveredTabs } from "./tab-coverage";
 import { openProfileConnection, profileRowClear, profileRowGet, profileRowSet, profileSessionAlive } from "./browser-profile";
 import { A2A_ENDPOINTS, composeA2AEmail, runA2AEndpointTests, testA2AEndpoint } from "./a2a-test";
-import { printTestBody, printTestHtml, printTestSubject } from "./print-test";
 import { postFilesToSlack } from "./slack-files";
 import type { A2ARow } from "./a2a-test";
 import type { BaselineResult, PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
@@ -1315,40 +1314,6 @@ export class QAAgent extends Think<Env> {
     }
     const rows = await runA2AEndpointTests(origin, apiKey);
     return { ok: rows.every((r) => r.ok), results: rows };
-  }
-
-  /**
-   * PDF pipeline test email (post-deploy coverage): print the
-   * canonical test page and email it as a PDF attachment - the same
-   * path the opportunity-hunt report uses.
-   */
-  @callable()
-  async qaPrintTestEmail(
-    toEmail: string,
-    runId?: string,
-  ): Promise<{ ok: boolean; emailed: boolean; error?: string }> {
-    const stamp = new Date().toISOString();
-    const printed = await this.qaPrintPdf(printTestHtml(stamp));
-    if (!printed.ok || !printed.pdfBase64) {
-      return { ok: false, emailed: false, error: printed.error || "PDF rendering failed" };
-    }
-    const { emailAgentStub } = await import("./email-tool");
-    const emailAgent = emailAgentStub(this.env as Env);
-    if (!emailAgent) return { ok: false, emailed: false, error: "Email agent unavailable" };
-    const sendResult = await emailAgent.sendThroughAgent({
-      to: toEmail,
-      subject: printTestSubject(stamp),
-      body: printTestBody(stamp),
-      attachments: [
-        { filename: `pdf-pipeline-test-${stamp.slice(0, 10)}.pdf`, type: "application/pdf", content: printed.pdfBase64 },
-      ],
-    });
-    this.emitLive(runId, { kind: "result", label: "PDF test email", ok: !!sendResult?.ok });
-    return {
-      ok: !!sendResult?.ok,
-      emailed: !!sendResult?.ok,
-      error: sendResult?.ok ? undefined : sendResult?.error || "The email agent refused the send.",
-    };
   }
 
   /** Render standalone HTML to a PDF (issue #135): Page.printToPDF on a data: URL. */
