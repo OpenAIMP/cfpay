@@ -162,7 +162,10 @@ jobs:
     runs-on: ubuntu-24.04
     name: Post-deploy QA
     needs: deploy
-    environment: PROD        # ← add this line    
+    environment: PROD
+    concurrency:
+      group: qa-smoke
+      cancel-in-progress: false
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
