@@ -7,7 +7,7 @@ function fakeFetch(behavior: { cardStatus?: number; unauthStatus?: number; dispa
   return async (url: string, init?: RequestInit): Promise<Response> => {
     const u = String(url);
     if (u.endsWith("agent-card.json")) {
-      return new Response(JSON.stringify({ name: "CFmail QA Agent" }), { status: behavior.cardStatus ?? 200 });
+      return new Response(JSON.stringify({ name: "CFmail QA Agent", description: "Runs browser checks.", skills: [{ id: "browser-qa", name: "Browser QA", tags: ["qa", "browser"] }] }), { status: behavior.cardStatus ?? 200 });
     }
     const authed = !!(init?.headers as Record<string, string> | undefined)?.Authorization;
     if (!authed) return new Response("unauthorized", { status: behavior.unauthStatus ?? 401 });
@@ -30,6 +30,8 @@ describe("testA2AEndpoint", () => {
     const row = await testA2AEndpoint("https://x.test", "key", EP, fakeFetch({}) as never);
     expect(row.ok).toBe(true);
     expect(row.cardName).toBe("CFmail QA Agent");
+    expect(row.cardDescription).toBe("Runs browser checks.");
+    expect(row.cardSkills?.[0]?.name).toBe("Browser QA");
     expect(row.unauthStatus).toBe(401);
     expect(row.reply).toContain("QA status.");
   });
