@@ -160,11 +160,15 @@ jobs:
   # Set repository VARIABLE QA_RUN_ATTACHMENT_CHECK to "true" to also run the
   # check that sends a real email with an attachment. Off by default because it
   # sends mail on every deploy.
+
   qa-smoke:
     runs-on: ubuntu-24.04
     name: Post-deploy QA
     needs: deploy
     environment: PROD
+    permissions:
+      contents: read
+      issues: write
     concurrency:
       group: qa-smoke
       cancel-in-progress: false
