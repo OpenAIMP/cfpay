@@ -617,7 +617,7 @@ function deskInitViews() {
       + '<button class="btn" onclick="deskSearchRun(\'ask\')">Ask</button>'
       + '<button class="btn" onclick="deskSearchRun(\'query\')">Chunks</button></div>'
       + '<div id="deskSearchResult" style="margin-top:0.6rem;"></div>';
-    toolsSection.appendChild(searchCard);
+    toolsSection.insertBefore(searchCard, toolsSection.firstChild);
   }
   // The host MUST be section-scoped: the nav buttons carry the same
   // data-view values and precede the sections in the shell markup, so
