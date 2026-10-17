@@ -1384,6 +1384,15 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(qa).toContain("expectedButtonBg");
   });
 
+  it("investigates failures automatically (issue #102 follow-up)", () => {
+    const qaMod = read("src/qa-agent.ts");
+    const smoke = read("scripts/qa-smoke.mjs");
+    expect(qaMod).toContain("investigateFailure(");
+    expect(qaMod).toContain("qaAndEmailReport(apiKey, toEmail, runId, false)");
+    expect(smoke).toContain("/api/dashboard/qa/investigate");
+    expect(smoke).toContain("investigateFailures");
+  });
+
   it("supports the persistent browser profile (issue #102)", () => {
     const qaMod = read("src/qa-agent.ts");
     const prof = read("src/browser-profile.ts");
