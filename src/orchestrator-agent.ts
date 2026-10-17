@@ -7,12 +7,16 @@ import {
   outcomeFromReply,
   parsePlan,
   parseSupervisorReply,
+  memoryBrief,
+  isUnreliableOp,
   plannerPrompt,
   summarizeOutcomes,
   supervisorPrompt,
   topoWaves,
   MAX_REVISIONS,
   MAX_TOTAL_STEPS,
+  type MemoryJobRow,
+  type MemoryOpStat,
   type PlanStep,
   type StepOutcome,
   type SupervisorVerdict,
@@ -57,6 +61,7 @@ export interface OrchestratorJob {
   plan: PlanStep[];
   outcomes: StepOutcome[];
   result?: string;
+  memoryBrief?: string;
   createdAt: number;
   finishedAt?: number;
 }
@@ -105,6 +110,14 @@ export class OrchestratorAgent extends Think<Env> {
     );
     this.ensureColumn("orchestrate_jobs", "mode", `ALTER TABLE orchestrate_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'plan'`);
     this.ensureColumn("orchestrate_jobs", "revisions", `ALTER TABLE orchestrate_jobs ADD COLUMN revisions INTEGER NOT NULL DEFAULT 0`);
+    this.ensureColumn("orchestrate_jobs", "memory_brief", `ALTER TABLE orchestrate_jobs ADD COLUMN memory_brief TEXT NOT NULL DEFAULT ''`);
+    this.db().exec(
+      `CREATE TABLE IF NOT EXISTS orchestrate_op_stats (
+         operation TEXT PRIMARY KEY, runs INTEGER NOT NULL DEFAULT 0,
+         failures INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+         last_at INTEGER NOT NULL DEFAULT 0
+       )`,
+    );
   }
 
   private origin(): string {
@@ -120,12 +133,48 @@ export class OrchestratorAgent extends Think<Env> {
     return res?.response ?? res?.choices?.[0]?.message?.content ?? "";
   }
 
-  /** Plan a goal into catalog steps. One correction retry, then a named failure. */
-  private async plan(goal: string): Promise<PlanStep[]> {
-    const first = parsePlan(await this.modelText(plannerPrompt(goal)));
+  /**
+   * Read-before-planning (issue #192, item 3): distill past jobs and
+   * per-operation outcomes into the planner's memory brief. Jobs
+   * arrive newest-first; relevance scoring lives in orchestrate.ts.
+   */
+  private readMemoryBrief(goal: string): string {
+    const jobs = this.db()
+      .exec(`SELECT goal, status FROM orchestrate_jobs WHERE status IN ('done', 'partial', 'failed') ORDER BY created_at DESC LIMIT 30`)
+      .toArray() as unknown as MemoryJobRow[];
+    const stats = this.db()
+      .exec(`SELECT operation, runs, failures, last_error AS lastError FROM orchestrate_op_stats`)
+      .toArray() as unknown as MemoryOpStat[];
+    return memoryBrief(goal, jobs, stats);
+  }
+
+  /**
+   * Write-outcomes-back (issue #192, item 3): fold one job's executed
+   * steps into the per-operation reliability counters the next plan
+   * reads. Skipped steps never ran, so they are not counted.
+   */
+  private recordOpStats(outcomes: StepOutcome[]): void {
+    for (const o of outcomes) {
+      if (o.skipped) continue;
+      this.db().exec(
+        `INSERT INTO orchestrate_op_stats (operation, runs, failures, last_error, last_at)
+         VALUES (?, 1, ?, ?, ?)
+         ON CONFLICT(operation) DO UPDATE SET
+           runs = runs + 1,
+           failures = failures + excluded.failures,
+           last_error = COALESCE(excluded.last_error, last_error),
+           last_at = excluded.last_at`,
+        o.operation, o.ok ? 0 : 1, o.ok ? null : String(o.error ?? "failed").slice(0, 200), Date.now(),
+      );
+    }
+  }
+
+  /** Plan a goal into catalog steps (with its memory brief). One correction retry, then a named failure. */
+  private async plan(goal: string, brief?: string): Promise<PlanStep[]> {
+    const first = parsePlan(await this.modelText(plannerPrompt(goal, brief)));
     if (first) return first;
     const second = parsePlan(
-      await this.modelText(plannerPrompt(goal) + "\nYour previous reply was not a valid plan. Reply with ONLY the JSON array."),
+      await this.modelText(plannerPrompt(goal, brief) + "\nYour previous reply was not a valid plan. Reply with ONLY the JSON array."),
     );
     if (second) return second;
     throw new Error("planning_failed: the model did not produce a valid plan from the operation catalog");
@@ -242,13 +291,14 @@ export class OrchestratorAgent extends Think<Env> {
     if (!g) {
       return { id, goal: g, status: "failed", mode: m, revisions: 0, plan: [], outcomes: [], result: "orchestrate.run needs a goal.", createdAt };
     }
+    const brief = this.readMemoryBrief(g);
     this.db().exec(
-      `INSERT INTO orchestrate_jobs (id, goal, status, plan_json, mode, created_at) VALUES (?, ?, 'planning', '[]', ?, ?)`,
-      id, g, m, createdAt,
+      `INSERT INTO orchestrate_jobs (id, goal, status, plan_json, mode, memory_brief, created_at) VALUES (?, ?, 'planning', '[]', ?, ?, ?)`,
+      id, g, m, brief, createdAt,
     );
     let plan: PlanStep[];
     try {
-      plan = await this.plan(g);
+      plan = await this.plan(g, brief);
     } catch (err) {
       const result = String(err);
       this.db().exec(`UPDATE orchestrate_jobs SET status = 'failed', result = ?, finished_at = ? WHERE id = ?`, result, Date.now(), id);
@@ -327,7 +377,8 @@ export class OrchestratorAgent extends Think<Env> {
     }
     const finishedAt = Date.now();
     this.db().exec(`UPDATE orchestrate_jobs SET status = ?, result = ?, revisions = ?, finished_at = ? WHERE id = ?`, status, result, revisions, finishedAt, id);
-    return { id, goal: g, status, mode: m, revisions, plan, outcomes, result, createdAt, finishedAt };
+    this.recordOpStats(outcomes);
+    return { id, goal: g, status, mode: m, revisions, plan, outcomes, result, memoryBrief: brief || undefined, createdAt, finishedAt };
   }
 
   /** Recent jobs, newest first (plans included, outcomes summarized in the job rows). */
@@ -370,17 +421,27 @@ export class OrchestratorAgent extends Think<Env> {
       revisions: Number(r.revisions ?? 0),
       outcomes: [],
       result: (r.result as string) ?? undefined,
+      memoryBrief: (r.memory_brief as string) || undefined,
       createdAt: Number(r.created_at),
       finishedAt: r.finished_at ? Number(r.finished_at) : undefined,
     };
   }
 
-  /** Configuration/state snapshot for A2A callers: counts only. */
-  async a2aSnapshot(): Promise<{ agent: string; jobs: number; lastStatus?: string }> {
+  /** Configuration/state snapshot for A2A callers: counts plus the planning-memory state. */
+  async a2aSnapshot(): Promise<{ agent: string; jobs: number; lastStatus?: string; opsTracked: number; unreliableOps: string[] }> {
     this.ensureTables();
     const rows = this.db().exec(`SELECT COUNT(*) AS n FROM orchestrate_jobs`).toArray() as { n: number }[];
     const last = this.db().exec(`SELECT status FROM orchestrate_jobs ORDER BY created_at DESC LIMIT 1`).toArray() as { status: string }[];
-    return { agent: "orchestrator", jobs: Number(rows[0]?.n ?? 0), lastStatus: last[0]?.status };
+    const stats = this.db()
+      .exec(`SELECT operation, runs, failures FROM orchestrate_op_stats`)
+      .toArray() as unknown as MemoryOpStat[];
+    return {
+      agent: "orchestrator",
+      jobs: Number(rows[0]?.n ?? 0),
+      lastStatus: last[0]?.status,
+      opsTracked: stats.length,
+      unreliableOps: stats.filter((s) => isUnreliableOp(s)).map((s) => s.operation),
+    };
   }
 
   /** A2A entry point, mirroring the other capability agents. */
@@ -426,7 +487,7 @@ export class OrchestratorAgent extends Think<Env> {
     }
     const snapshot = await this.a2aSnapshot();
     return {
-      text: `Orchestrator status. ${snapshot.jobs} job(s) run${snapshot.lastStatus ? `, most recent ${snapshot.lastStatus}` : ""}. Give me a goal (orchestrator.run) and I will plan it across the agents, run the steps, and merge the results.`,
+      text: `Orchestrator status. ${snapshot.jobs} job(s) run${snapshot.lastStatus ? `, most recent ${snapshot.lastStatus}` : ""}. Planning memory: ${snapshot.opsTracked} operation(s) tracked${snapshot.unreliableOps.length ? `, unreliable: ${snapshot.unreliableOps.join(", ")}` : ""}. Give me a goal (orchestrator.run) and I will plan it across the agents, run the steps, and merge the results.`,
       data: snapshot,
     };
   }

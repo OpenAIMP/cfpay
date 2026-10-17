@@ -55,8 +55,8 @@ export interface PlanStep {
   dependsOn?: string[];
 }
 
-/** The planner prompt: goal + the catalog, generated from the catalog itself. */
-export function plannerPrompt(goal: string): string {
+/** The planner prompt: goal + the catalog, generated from the catalog itself. With a memory brief (issue #192), past outcomes ride along. */
+export function plannerPrompt(goal: string, brief?: string): string {
   const lines = OPERATION_CATALOG.map(
     (e) => `- ${e.agent}: ${e.operations.join(", ")} - ${e.blurb}`,
   );
@@ -70,6 +70,7 @@ export function plannerPrompt(goal: string): string {
     "- args carries the operation's inputs (e.g. a url for qa.check, a query for search.ask, to/subject/body for email.send).",
     "- Use dependsOn only when a step truly needs an earlier step's result; independent steps run in parallel.",
     "- At most 8 steps. Prefer the fewest steps that achieve the goal. Read-only summary operations are cheap; browser QA operations are slow.",
+    ...(brief ? ["", brief] : []),
     "",
     `Goal: ${goal}`,
   ].join("\n");
@@ -225,4 +226,74 @@ export function summarizeOutcomes(goal: string, outcomes: StepOutcome[]): string
   );
   const ok = outcomes.filter((o) => o.ok).length;
   return [`Goal: ${goal}`, `${ok}/${outcomes.length} steps succeeded.`, ...lines].join("\n");
+}
+
+/**
+ * Planning memory (issue #192, item 3): the orchestrator used to
+ * plan every goal cold. Past jobs and per-operation outcomes persist
+ * in the agent's tables; this distills them deterministically - no
+ * extra model call - into a short brief for the planner: similar
+ * past goals and how they ended, plus operations carrying a recent
+ * failure record. Retrieval is token overlap; reliability is
+ * counted, not vibes.
+ */
+export interface MemoryJobRow {
+  goal: string;
+  status: string;
+}
+export interface MemoryOpStat {
+  operation: string;
+  runs: number;
+  failures: number;
+  lastError?: string;
+}
+
+const GOAL_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "to", "for", "with", "from",
+  "give", "me", "show", "all", "every", "recent", "state", "status",
+  "report", "summarize", "summary", "check",
+]);
+
+/** Content tokens of a goal: lowercase words of 3+ chars, minus glue words. */
+export function goalTokens(goal: string): Set<string> {
+  const out = new Set<string>();
+  for (const t of String(goal || "").toLowerCase().split(/[^a-z0-9]+/)) {
+    if (t.length >= 3 && !GOAL_STOPWORDS.has(t)) out.add(t);
+  }
+  return out;
+}
+
+/** An operation is unreliable when at least half of its last runs (2+) failed. */
+export function isUnreliableOp(s: MemoryOpStat): boolean {
+  return s.runs >= 2 && s.failures > 0 && s.failures / s.runs >= 0.5;
+}
+
+/**
+ * Build the planner's memory brief. `jobs` arrives newest-first;
+ * relevance is shared content tokens (recency breaks ties). Empty
+ * string when nothing is relevant - the prompt is then unchanged.
+ */
+export function memoryBrief(goal: string, jobs: MemoryJobRow[], stats: MemoryOpStat[]): string {
+  const lines: string[] = [];
+  const tokens = goalTokens(goal);
+  if (tokens.size) {
+    const scored = jobs
+      .map((j) => ({ j, score: [...goalTokens(j.goal)].filter((t) => tokens.has(t)).length }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+    for (const { j } of scored) {
+      lines.push(`- A previous goal "${j.goal.slice(0, 90)}" finished ${j.status}.`);
+    }
+  }
+  const unreliable = stats.filter(isUnreliableOp).sort((a, b) => b.failures - a.failures).slice(0, 4);
+  for (const s of unreliable) {
+    lines.push(
+      `- ${s.operation} has failed ${s.failures} of its last ${s.runs} runs${s.lastError ? ` (last error: ${s.lastError.slice(0, 90)})` : ""}. Avoid it unless the goal requires it; if you use it, expect it may fail.`,
+    );
+  }
+  if (!lines.length) return "";
+  return ["Memory from previous jobs (real outcomes - plan with them, do not repeat a step that already failed the same way):", ...lines]
+    .join("\n")
+    .slice(0, 1200);
 }
