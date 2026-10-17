@@ -1381,6 +1381,21 @@ describe("the generalized UX audit stays wired (issue #94)", () => {
     expect(qa).toContain("expectedButtonBg");
   });
 
+  it("crawls same-origin links and clicks through page states (step 2)", () => {
+    // The spec carries crawl options and per-page steps; the agent
+    // normalizes entries, follows same-origin links within caps, and a
+    // step click that matches nothing is a visible failure line.
+    const specMod = read("src/ux-audit-spec.ts");
+    expect(specMod).toContain("crawl?: { maxPages?: number; maxDepth?: number }");
+    expect(specMod).toContain("pageEntriesOf");
+    expect(specMod).toContain("crawlUrlKey");
+    expect(qa).toContain("matched nothing");
+    expect(qa).toContain("Crawl coverage");
+    const schemas = read("src/agent-tool-schemas.ts");
+    expect(schemas).toContain("crawl");
+    expect(schemas).toContain("steps");
+  });
+
   it("is reachable from its route and the dashboard URL input", () => {
     expect(api).toContain('"/api/dashboard/qa/ux-audit-url"');
     expect(api).toContain("qaUxAuditUrl(spec, runId)");
