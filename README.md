@@ -269,7 +269,7 @@ The QA system does not stop at reporting failures - it tracks them, attempts rep
 - `ENVIRONMENTAL` - browser capacity, Workers AI neuron exhaustion, provider transients: it comments the classification and stops. No code fixes weather.
 - `NEEDS-OWNER` - a dashboard step, a secret, a policy call: it comments exactly what the owner must do and stops.
 
-**3. Review (the human gate).** The fixer never merges. A self-heal PR is reviewed and merged like any other - the same approval pattern the repo applies to trade execution. The merge deploys, the smoke runs, and stage 1 closes the issue when the section passes: detection, diagnosis, tracking, repair, review, and closure, with exactly one human decision in the loop.
+**3. Merge (the machine gate).** By the owner's directive the loop is fully autonomous - there is no human merge step. The fixer merges a self-heal PR (its own or Copilot's) as soon as its required checks pass (type check + the CI test suite; the independently broken Deploy Preview job is not a gate), and comments the merge on the issue. A PR whose checks fail gets one corrective follow-up from the fixer; a second failure leaves it open and escalates to the owner - humans see exceptions, not routine merges. The merge deploys, the smoke runs, and stage 1 closes the issue when the section passes: detection, diagnosis, tracking, repair, merge, and closure, with no human decision in the routine path.
 
 Configuration: the job declares `environment: PROD`, so it uses the PROD environment's secrets — `DASHBOARD_API_KEY` and `QA_TEST_EMAIL` (the inbox that receives the attachment test email) live there, not as repository secrets.
 
