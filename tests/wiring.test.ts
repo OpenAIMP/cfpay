@@ -1613,8 +1613,24 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("raw data from Public.com");
     expect(pdata).toContain("function pTable(");
     expect(pdata).toContain("function pCsv(");
-    expect(idx).toContain("renderToolTrace(trace, answerIdx)");
+    // Since issue #133 the chat carries a summary + jump link and the
+    // full trace (with these downloads) renders in the Logs view.
+    expect(idx).toContain("deskTraceLink(answerIdx)");
+    expect(pdata).toContain("renderToolTrace(entry.trace || [], idx)");
     expect(idx).toContain("pubData.push(");
+  });
+
+  it("the Public tab is split into nav views with a separate Logs view (issue #133)", () => {
+    const pdata = read("public/public-data.js");
+    const idx = read("public/index.html");
+    expect(pdata).toContain("function deskShowView(");
+    expect(pdata).toContain("function deskRenderLogs(");
+    expect(pdata).toContain("function deskTraceLink(");
+    expect(pdata).toContain("function deskSyncToolsView(");
+    expect(pdata).toContain("move('publicDesk', 'trading')");
+    expect(pdata).toContain("move('publicQuestionCard', 'questions')");
+    expect(pdata).toContain("move('publicConnectedBox', 'status')");
+    expect(idx).toContain("deskShowView('trading')");
   });
 
   it("question group headers carry classification chips", () => {

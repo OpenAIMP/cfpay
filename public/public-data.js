@@ -218,6 +218,7 @@ function deskRenderChain(data, symbol, expiry) {
 
 // Draft an Ask question about the clicked contract, from its row cells.
 function deskPickContract(i) {
+  if (window.deskShowView) deskShowView('trading');
   const st = deskChainState;
   const row = st.rows[Number(i)];
   if (!row) return;
@@ -425,3 +426,148 @@ async function toggleBrowserProfile() {
     }
   } catch (e) { setText('Error: ' + e.message); }
 }
+
+
+// ---------------------------------------------------------------------------
+// Public tab views (issue #133): a left nav splits the tab into Trading
+// (desk + chat, answers clean), Questions (the library), Tools (model +
+// MCP catalogue), Logs (full model/MCP traces + downloads), and Status
+// (connection + model). The trading chat no longer inlines the raw
+// trace under every answer - it carries a one-line summary and a
+// "View in Logs" jump; the trace renderer itself is unchanged and now
+// renders inside the Logs view, so downloads work exactly as before.
+
+function deskShowView(name) {
+  document.querySelectorAll('.desk-view').forEach((v) => { v.style.display = v.dataset.view === name ? '' : 'none'; });
+  document.querySelectorAll('.desk-nav-btn').forEach((b) => { b.classList.toggle('active', b.dataset.view === name); });
+  if (name === 'tools') deskSyncToolsView();
+  if (name === 'logs') deskRenderLogs();
+}
+
+function deskTraceLink(idx) {
+  const entry = pubData[idx];
+  const trace = (entry && entry.trace) || [];
+  if (!trace.length) {
+    return '<div class="status-msg error" style="margin-top:0.5rem;">No tools were called. The answer above is not backed by Public.com data.</div>';
+  }
+  const proposed = trace.filter((t) => t.proposed).length;
+  const blocked = trace.filter((t) => t.refused || !t.ok).length;
+  return '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.25rem;">'
+    + '<span style="font-size:0.75rem;color:var(--muted);">' + trace.length + ' tool call' + (trace.length === 1 ? '' : 's') + ' \u00b7 raw Public.com data in Logs</span>'
+    + (proposed ? '<span style="background:#b45309;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;font-size:0.72rem;">' + proposed + ' proposed</span>' : '')
+    + (blocked ? '<span class="badge-failed">' + blocked + ' blocked/error</span>' : '')
+    + '<button class="btn" style="' + pBtn + '" onclick="deskShowLog(' + idx + ')">View in Logs</button></div>';
+}
+
+// Called after each exchange lands in pubData: refresh the Logs view
+// when it is the one on screen.
+function deskLogPush() {
+  const v = document.querySelector('.desk-view[data-view="logs"]');
+  if (v && v.style.display !== 'none') deskRenderLogs();
+}
+
+function deskRenderLogs() {
+  const host = document.getElementById('deskLogsList');
+  if (!host) return;
+  if (!pubData.length) {
+    host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">No exchanges yet this session.</span>';
+    return;
+  }
+  host.innerHTML = pubData.map((entry, idx) => ({ entry, idx })).reverse().map(({ entry, idx }) =>
+    '<div id="deskLog-' + idx + '" style="border:1px solid var(--border);border-radius:6px;padding:0.6rem;margin-bottom:0.6rem;">'
+    + '<div style="font-size:0.85rem;"><strong>Q:</strong> ' + escapeHtml(entry.question || '') + '</div>'
+    + '<div style="color:var(--muted);font-size:0.72rem;margin-top:0.2rem;">' + escapeHtml(entry.model || '')
+    + (entry.finishReason ? ' \u00b7 finish: ' + escapeHtml(entry.finishReason) : '') + '</div>'
+    + renderToolTrace(entry.trace || [], idx)
+    + '</div>').join('');
+}
+
+function deskShowLog(idx) {
+  deskShowView('logs');
+  const el = document.getElementById('deskLog-' + idx);
+  if (el) {
+    el.scrollIntoView({ block: 'start' });
+    el.style.outline = '2px solid var(--accent)';
+    setTimeout(() => { el.style.outline = ''; }, 2000);
+  }
+}
+
+// The Tools view mirrors the capabilities card's rendered catalogue
+// (loadPublicTools fills it), so there is one source of truth.
+async function deskSyncToolsView() {
+  const list = document.getElementById('deskToolsList');
+  if (!list) return;
+  const src = document.getElementById('publicCapsTools');
+  if (!src || !src.innerHTML.trim()) {
+    try { await loadPublicTools(); } catch { /* placeholder stays */ }
+  }
+  if (src && src.innerHTML.trim()) list.innerHTML = src.innerHTML;
+  const msrc = document.getElementById('publicCapsModel');
+  const model = document.getElementById('deskToolsModel');
+  if (model && msrc) model.innerHTML = msrc.innerHTML;
+  const btn = document.getElementById('publicCapsBtn');
+  const count = document.getElementById('deskToolsCount');
+  if (count && btn) {
+    const m = btn.textContent.match(/\((\d+) tools\)/);
+    if (m) count.textContent = '(' + m[1] + ')';
+  }
+}
+
+function deskFilterTools(q) {
+  const list = document.getElementById('deskToolsList');
+  if (!list) return;
+  const needle = String(q || '').toLowerCase();
+  list.querySelectorAll(':scope > div').forEach((d) => {
+    d.style.display = !needle || d.textContent.toLowerCase().includes(needle) ? '' : 'none';
+  });
+}
+
+function deskInitViews() {
+  const panel = document.getElementById('public');
+  if (!panel || document.getElementById('deskShell')) return;
+  const style = document.createElement('style');
+  style.textContent = '.desk-shell{display:flex;gap:1rem;align-items:flex-start;margin-top:1rem;}'
+    + '.desk-nav{display:flex;flex-direction:column;gap:0.35rem;min-width:8.5rem;position:sticky;top:1rem;}'
+    + '.desk-nav-btn{text-align:left;background:var(--bg);color:var(--text);border:1px solid var(--border);}'
+    + '.desk-nav-btn.active{background:var(--accent);color:#fff;border-color:transparent;}'
+    + '.desk-views{flex:1;min-width:0;}'
+    + '.desk-view>.card{margin-bottom:1rem;}'
+    + '@media (max-width:760px){.desk-shell{flex-direction:column;}.desk-nav{flex-direction:row;flex-wrap:wrap;position:static;}}';
+  document.head.appendChild(style);
+  const shell = document.createElement('div');
+  shell.id = 'deskShell';
+  shell.className = 'desk-shell';
+  const navBtn = (k, label) => '<button class="btn desk-nav-btn' + (k === 'trading' ? ' active' : '') + '" data-view="' + k + '" onclick="deskShowView(\'' + k + '\')">' + label + '</button>';
+  shell.innerHTML = '<nav class="desk-nav">'
+    + navBtn('trading', 'Trading') + navBtn('questions', 'Questions') + navBtn('tools', 'Tools') + navBtn('logs', 'Logs') + navBtn('status', 'Status')
+    + '</nav><div class="desk-views">'
+    + '<section class="desk-view" data-view="trading"></section>'
+    + '<section class="desk-view" data-view="questions" style="display:none;"></section>'
+    + '<section class="desk-view" data-view="tools" style="display:none;">'
+    + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Model</h3><div id="deskToolsModel"></div></div>'
+    + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">MCP tools <span id="deskToolsCount" style="color:var(--muted);font-size:0.8rem;"></span></h3>'
+    + '<input type="text" placeholder="Filter tools..." oninput="deskFilterTools(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.5rem;color:var(--text);font-size:0.85rem;box-sizing:border-box;margin-bottom:0.6rem;">'
+    + '<div id="deskToolsList"><span style="color:var(--muted);font-size:0.8rem;">Loading the catalogue...</span></div></div></section>'
+    + '<section class="desk-view" data-view="logs" style="display:none;">'
+    + '<div class="card"><h3 style="font-size:1rem;margin-bottom:0.5rem;">Logs - model &amp; MCP detail</h3><div id="deskLogsList"></div></div></section>'
+    + '<section class="desk-view" data-view="status" style="display:none;"></section>'
+    + '</div>';
+  const intro = panel.querySelector(':scope > .card');
+  if (intro) intro.after(shell); else panel.appendChild(shell);
+  const move = (id, view) => {
+    const el = document.getElementById(id);
+    const host = shell.querySelector('[data-view="' + view + '"]');
+    if (el && host) host.appendChild(el);
+  };
+  move('publicDesk', 'trading');
+  move('publicQuestionCard', 'questions');
+  move('publicConnectedBox', 'status');
+  // The per-answer model/tools meta line is a log line, not trading UI.
+  const meta = document.getElementById('publicTools');
+  const logsCard = shell.querySelector('[data-view="logs"] .card');
+  if (meta && logsCard) logsCard.insertBefore(meta, logsCard.children[1] || null);
+  deskRenderLogs();
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', deskInitViews);
+else deskInitViews();
