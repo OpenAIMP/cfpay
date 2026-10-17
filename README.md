@@ -187,6 +187,15 @@ The Public tab is an analysis and execution desk over a connected Public.com acc
 
 Invariants that follow from the split: no number in any answer or plan originates from the model; no order executes inside a model turn; a budget bounds a *plan*, and only a human approval moves money; the Public access token is used by the tool transport only - it never appears in prompts, run records, or reports.
 
+### Model vs quant, in plain terms
+
+The split above, stated as plainly as it can be:
+
+- **The model proposes** - actions and candidates, never facts or executions. In the desk chat it proposes which tools to call with what arguments, and, with trading on, it proposes *trades*: a proposal record for human approval, not an execution. In the hunt it proposes *candidate trades* - structures with specific legs, strikes, expiry, and the credit it read off the chain.
+- **The model analyzes** - it reads what the tools returned (quotes, chains, portfolio, step findings) and turns it into judgment: comparisons, the synthesis answer, the verifier's verdict on whether the evidence supports the goal, a thesis and invalidation per candidate, and a probability estimate from the deltas. Prose and judgment are its; numbers are not.
+- **What is verified, and why** - a model will state figures that contradict its own tool data (in production it once invented an IV of ~23% against a verified ~48-54% chain, and pitched a deep-in-the-money spread as low-risk because nothing checked it against spot). So the pipeline verifies in two places: the autopilot **verifier** is a separate model pass that re-reads the step evidence against the goal and names the gaps before the answer is written; and in the hunt, code re-verifies every candidate against a **fresh live spot** - moneyness, defined-risk structure, expiry - before sizing. The answer contract adds the floor rule: a figure the tools did not return is `n/a`, never estimated.
+- **Sizing is the quant part** - deciding *how many contracts*, in deterministic code. Per-contract risk is computed from the legs (a 5-wide spread collecting 1.25 risks $375 per contract); contracts are the per-trade risk cap divided by that risk, rounded down, also respecting the per-underlying cap and the total budget. Leftovers stay unallocated. The model never does this arithmetic, and its probability estimate only orders the queue - it cannot enlarge a position past the caps.
+
 ## Post-deploy QA (automated testing)
 
 Every push to `main` deploys the Worker and then runs `scripts/qa-smoke.mjs` against live production (the **Post-deploy QA** job in `.github/workflows/deploy.yml`). A green deploy only proves the upload worked; this job proves the app works. The exit code is the contract — any FAIL fails the job, and a check that cannot run reports SKIP with the reason, never a silent pass.
@@ -201,6 +210,13 @@ What it checks:
 6. UX audit (fixture self-test): the same audit pointed at `public/qa-fixture.html`, a page with exactly four planted violations, must return the exact expected findings. This is the audit testing itself; a miss fails the job.
 7. Attachment check: drives the real Send Email form and sends a real email with an attachment to `QA_TEST_EMAIL`. It runs by default; set `QA_RUN_ATTACHMENT_CHECK=false` to disable it explicitly.
 8. QA report email: the tab check with screenshots, emailed to `QA_TEST_EMAIL` as the 4-PNG report — the same email the dashboard's **Email QA Report** button sends, and the report of record for the run. (The attachment check above is just a form probe; this is the actual report.) It runs by default; set `QA_RUN_REPORT_CHECK=false` to disable it explicitly.
+9. Desk endpoints respond (quotes / portfolio / chain; a disconnected Public account skips).
+10. A2A dispatch: the QA agent's endpoint refuses the unauthenticated (401) and round-trips `qa.summary` and a fixture `qa.ux_audit`.
+11. Desk snapshot email: five screenshots of the whole desk, emailed (`QA_RUN_DESK_CHECK=false` disables).
+12. A2A endpoint test email: every agent's A2A surface probed (card, 401, snapshot dispatch) and the results emailed (`QA_RUN_A2A_CHECK=false` disables). Needs no browser, so it lands even during a merge train.
+13. Autopilot hunt report PDF email: a real opportunity hunt (budget $10,000, SPY) runs on the autopilot pipeline and its report is emailed as a PDF - the autopilot workflow's own output, not a synthetic page (`QA_RUN_PDF_CHECK=false` disables).
+
+Two cross-cutting pieces: any FAIL also hands the failure to QAAgent's investigator, whose diagnosis prints in the log; and at the end of every run the script emails a one-page **summary** (every section's PASS/FAIL/SKIP) to `QA_TEST_EMAIL` through the dashboard's send-email route, so a skipped or failed email is itself reported rather than silent. The report and snapshot screenshots, and the hunt PDF, are additionally mirrored to Slack as file uploads through the bot API when `SLACK_QA_CHANNEL_ID` is configured (Slack's incoming webhook cannot carry files). Browser-bound sections degrade to SKIP when Browser Rendering capacity refuses a session - weather, not a verdict.
 
 Configuration: the job declares `environment: PROD`, so it uses the PROD environment's secrets — `DASHBOARD_API_KEY` and `QA_TEST_EMAIL` (the inbox that receives the attachment test email) live there, not as repository secrets.
 
