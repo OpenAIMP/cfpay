@@ -233,7 +233,9 @@ async function sendSummaryEmail() {
   }
 }
 
-// Self-healing QA loop, phase 1 (issue #193): a gated failure files
+// Self-healing QA loop, phase 1 (issue #193; phase 2, the fixer,
+// is issue #195 - see the README's "The self-healing loop"): a
+// gated failure files
 // ONE GitHub issue per failing section - carrying the detail, the
 // run link, and the investigator's diagnosis - comments on repeats
 // instead of duplicating, and auto-closes an issue when its section
