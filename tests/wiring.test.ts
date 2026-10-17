@@ -1114,8 +1114,9 @@ describe("browser teardown cannot fail a QA run", () => {
     // Every browser teardown goes through the helper. Counted exactly, so both a
     // new raw close() and a removed release are caught.
     const uses = qa.split("closeConnectionQuietly(").length - 1;
-    // Seven teardowns: the six deterministic flows plus qaInvestigate (issue #102).
-    expect(uses, "every browser teardown must use the helper").toBe(7);
+    // Eight teardowns: the six deterministic flows, qaInvestigate
+    // (issue #102), and the desk snapshot email.
+    expect(uses, "every browser teardown must use the helper").toBe(8);
   });
 
   it("keeps the report's tab call inside a guard", () => {
@@ -1314,11 +1315,11 @@ describe("the QA live-view panel stays wired (issue #88)", () => {
     // never arrive through the connection the checks use. Frames are
     // broadcast-only (never buffered or sequenced - either would break the
     // replay buffer or the panel's dedupe), and the stream is started and
-    // stopped beside the session teardown in all five browser flows (the
-    // four deterministic ones plus the investigator, issue #102).
+    // stopped beside the session teardown in all six browser flows (the
+    // four deterministic ones, the investigator, the desk snapshot).
     expect(qa).toContain("private startFrameStream(");
-    expect(qa.split("stopFrames = this.startFrameStream").length - 1).toBe(5);
-    expect(qa.split("stopFrames();").length - 1).toBe(5);
+    expect(qa.split("stopFrames = this.startFrameStream").length - 1).toBe(6);
+    expect(qa.split("stopFrames();").length - 1).toBe(6);
     const start = qa.indexOf("private emitLive(");
     const block = qa.slice(start, start + 2600);
     expect(block).toContain('ev.kind === "frame"');
@@ -1606,5 +1607,27 @@ describe("the agentic investigation stays wired (issue #102)", () => {
     expect(api).toContain("qaInvestigate(question, url, runId)");
     expect(schemas).toContain('"qa.investigate"');
     expect(qa).toContain('case "qa.investigate"');
+  });
+});
+
+describe("the desk snapshot email stays wired", () => {
+  const qa = read("src/qa-agent.ts");
+  const api = read("src/api.ts");
+  const html = read("public/index.html");
+  const pdata = read("public/public-data.js");
+
+  it("captures the five desk views and emails them as its own email", () => {
+    expect(qa).toContain("qaDeskSnapshotEmail");
+    for (const name of ["overview", "chat", "runs", "portfolio", "approvals"]) {
+      expect(qa).toContain(`name: "${name}"`);
+    }
+    expect(qa).toContain("desk-${spec.name}-${dateStr}.png");
+    expect(api).toContain('"/api/dashboard/qa/desk-snapshot"');
+    expect(api).toContain("qaDeskSnapshotEmail(key, toEmail, runId)");
+    expect(html).toContain('onclick="emailDeskSnapshot()"');
+    expect(pdata).toContain("emailDeskSnapshot");
+    // The QA report email is a different product and stays untouched:
+    // its subject prefix must not leak into the snapshot path.
+    expect(qa).toContain("Autopilot Trading Desk Snapshot");
   });
 });
