@@ -5,6 +5,8 @@ import type { Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
 import { ZERO_ADDRESS, formatAmount, formatEthAmount, parsePaymentClaim, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from "./agent";
+import { renderHuntReportHtml } from "./opportunity-hunt";
+import type { HuntRequest } from "./opportunity-hunt";
 import { getAgentByName } from "agents";
 import { timingSafeStringEqual } from "./mcp-auth";
 import { getOAuthUserFromRequest } from "./auth";
@@ -352,6 +354,48 @@ export function createApp() {
   app.get("/api/public/autopilot-runs/:id/session", requireAuth, async (c) => {
     const agent = getAgent(c);
     return c.json({ messages: await agent.getAutopilotRunSession(c.req.param("id")) });
+  });
+
+  // Opportunity hunt (issue #135): a budget-bounded scan whose sizing
+  // is computed in code on the host agent. Report-only.
+  app.post("/api/public/opportunity-hunt", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const budget = Number(body.budget);
+    if (!Number.isFinite(budget) || budget <= 0) {
+      return c.json({ error: "budget (a positive number) is required" }, 400);
+    }
+    const request: HuntRequest = {
+      budget,
+      maxRiskPct: body.maxRiskPct !== undefined ? Number(body.maxRiskPct) : undefined,
+      maxUnderlyingPct: body.maxUnderlyingPct !== undefined ? Number(body.maxUnderlyingPct) : undefined,
+      horizonDays: body.horizonDays !== undefined ? Number(body.horizonDays) : undefined,
+      symbols: Array.isArray(body.symbols) ? body.symbols.map((s: unknown) => String(s).toUpperCase()) : undefined,
+    };
+    const agent = getAgent(c);
+    const token = await agent.getPublicToken();
+    if (!token) return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+    try {
+      const session: McpSession = {};
+      const tools = await listTools(token, session);
+      if (tools.length === 0) return c.json({ error: "Public.com returned no tools for this account." }, 502);
+      const storedModel = await agent.getPublicModel();
+      const result = await agent.runOpportunityHunt(token, request, tools, session, storedModel);
+      return c.json({ hunt: result.hunt, model: result.model });
+    } catch (err) {
+      return c.json({ error: String(err) }, 502);
+    }
+  });
+
+  app.get("/api/public/opportunity-hunts", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    return c.json({ hunts: await agent.listOpportunityHunts() });
+  });
+
+  app.get("/api/public/opportunity-hunts/:id/report", requireAuth, async (c) => {
+    const agent = getAgent(c);
+    const hunt = await agent.getOpportunityHunt(c.req.param("id"));
+    if (!hunt) return c.json({ error: "No such hunt" }, 404);
+    return c.html(renderHuntReportHtml(hunt));
   });
 
   // Trading desk data reads (issue #112 part 2): the desk's panels call
