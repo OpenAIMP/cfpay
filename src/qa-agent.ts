@@ -9,9 +9,9 @@
  * agentTool(). It is reachable three ways: a direct @callable() RPC, an A2A operation
  * at /a2a/qa, and a dispatch from a host agent's tool list.
  */
-import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, summarizeEvidence, viewportListOf } from "./ux-audit-spec";
+import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, sha256Hex, summarizeBaselines, summarizeEvidence, viewportListOf } from "./ux-audit-spec";
 import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mergeDiscoveredTabs } from "./tab-coverage";
-import type { PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
+import type { BaselineResult, PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 export type { UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
 import { callable } from "agents";
 import { emailAgentTool } from "./agent-tools";
@@ -465,21 +465,9 @@ export class QAAgent extends Think<Env> {
     };
   }
   /**
-   * Open a Browser Rendering session, translating a refusal into something
-   * actionable.
-   *
-   * `connectBrowser` reports a failure to open a session as "Browser Rendering
-   * binding did not return a WebSocket. Ensure the 'browser' binding is
-   * configured in wrangler.jsonc."
-   *
-   * That message points at configuration, but the browser binding being absent
-   * is the least likely cause: this Worker declares it, the deploy reports it as
-   * bound, and a request that fails this way has usually already spent seconds
-   * of wall time on browser work. A refusal for concurrency or quota reasons
-   * arrives through the same path, and reads identically. The exact limits are
-   * plan-specific and are NOT asserted here; what is asserted is that this is
-   * not a wrangler.jsonc problem, and that the sessions are short-lived so
-   * waiting and retrying is the first thing to try.
+   * Open a Browser Rendering session, translating a refusal into
+   * something actionable. Retries once after a wait on a capacity
+   * refusal (see isCapacityRefusal); other errors surface at once.
    */
   private async openBrowserSession(env: Env): Promise<CdpLike> {
     const { connectBrowser } = await import("agents/browser");
@@ -666,23 +654,13 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
-   * Live frame stream for a watched run (issue #88 follow-on, 2026-10-15):
-   * while a flow holds a browser session, capture a frame about once a
-   * second and broadcast it, so the panel's large view plays continuously
-   * instead of jumping between stills.
-   *
-   * This is capture polling, NOT Page.startScreencast. The Agents SDK's CDP
-   * client discards protocol events - its message handler returns early on
-   * any payload without a command id, and screencast frames are exactly
-   * that - so real screencast frames can never reach this code through the
-   * connection every check uses. A hand-rolled event-capable CDP client is
-   * the tracked route to true screencast (issue #102); this stream is the
-   * interim step, built only on machinery the checks already prove daily.
-   *
-   * Best-effort by construction: a slow capture skips beats instead of
-   * queueing, a failed capture is silent, and frames never touch the run's
-   * verdicts. Returns the stop function; flows call it in their finally,
-   * beside the connection teardown.
+   * Live frame stream for a watched run (issue #88): capture a frame
+   * about once a second and broadcast it. This is capture polling, NOT
+   * Page.startScreencast - the Agents SDK's CDP client discards protocol
+   * events, so screencast frames can never arrive through it; a
+   * hand-rolled event-capable CDP client is the tracked route to true
+   * screencast (issue #102). Best-effort: slow/failed captures are
+   * silent and never touch verdicts. Returns the stop function.
    */
   private startFrameStream(
     cdp: CdpLike,
@@ -791,22 +769,10 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
-   * RPC: click through the dashboard tabs and verify each renders real data.
-   *
-   * Each tab is checked against the container the dashboard fills for it
-   * (`emailList`, `paymentList`, `webhookList`), not against the page's overall
-   * text. The distinction is the whole point of the check: "Payments" is a tab
-   * label that exists on every page, so searching page text for it reports
-   * success even when the tab is empty, unauthenticated, or broken.
-   *
-   * The dashboard's own empty states ("No emails yet" and friends) are treated
-   * as failures. A tab with no rows is a real result and has to be reported,
-   * not passed over - otherwise the check is green precisely when it has
-   * verified nothing.
-   *
-   * Rows are counted from rendered markup rather than from the API, so this
-   * measures what a user would actually see: auth, fetch, render and empty-state
-   * handling all have to work for a tab to pass.
+   * RPC: click through the dashboard tabs and verify each renders real
+   * data. Known tabs are checked against their containers (see
+   * src/tab-coverage.ts); tabs discovered in the DOM are verified
+   * generically. One session for the whole run.
    */
   @callable()
   async qaDashboardTabs(
@@ -1389,6 +1355,25 @@ export class QAAgent extends Think<Env> {
     return { ok: findings.every((f) => f.passed), checks: findings };
   }
 
+  /** Visual-baseline storage (issue #102): one hash per view label. */
+  private baselineSql() {
+    const sql = this.ctx.storage.sql;
+    sql.exec("CREATE TABLE IF NOT EXISTS ux_baselines (view TEXT PRIMARY KEY, hash TEXT NOT NULL, updated_at TEXT NOT NULL)");
+    return sql;
+  }
+  private baselineHash(view: string): string | null {
+    try {
+      const rows = this.baselineSql().exec("SELECT hash FROM ux_baselines WHERE view = ?", view).toArray() as { hash?: string }[];
+      return rows[0]?.hash ?? null;
+    } catch { return null; }
+  }
+  private baselineStore(view: string, hash: string): boolean {
+    try {
+      this.baselineSql().exec("INSERT OR REPLACE INTO ux_baselines (view, hash, updated_at) VALUES (?, ?, ?)", view, hash, new Date().toISOString());
+      return true;
+    } catch { return false; }
+  }
+
   /**
    * RPC: the generalized UX audit (issue #94, step 1). Audits the pages of
    * one origin named by a target spec — public pages, localStorage-seeded
@@ -1461,6 +1446,8 @@ export class QAAgent extends Think<Env> {
     const evidencePages: PageEvidence[] = [];
     const evidenceOn = spec.evidence !== false;
     const viewports = viewportListOf(spec);
+    const baselineMode = spec.baselines === "record" || spec.baselines === "compare" ? spec.baselines : null;
+    const baselineResults: BaselineResult[] = [];
     const failures: string[] = [];
     try {
       const cdp = await this.openBrowserSession(env);
@@ -1500,6 +1487,7 @@ export class QAAgent extends Think<Env> {
             }
           })();
           const baseLabel = label;
+          let shotData: string | undefined;
           this.emitLive(runId, { kind: "step", label: `Auditing ${label}` });
           for (const vp of viewports) {
             if (vp.width && vp.height) {
@@ -1508,6 +1496,7 @@ export class QAAgent extends Think<Env> {
               await cdp.send("Emulation.clearDeviceMetricsOverride", {}, { sessionId }).catch(() => {});
             }
             label = vp.width ? `${baseLabel} @ ${vp.name}` : baseLabel;
+            shotData = undefined;
           try {
             await cdp.send("Page.navigate", { url: pageUrl }, { sessionId });
             if (!seeded && spec.auth?.mode === "localStorage" && spec.auth.localStorage) {
@@ -1582,10 +1571,23 @@ export class QAAgent extends Think<Env> {
             try {
               const { data } = (await cdp.send("Page.captureScreenshot", { format: "png" }, { sessionId })) as { data?: string };
               if (data) {
+                shotData = data;
                 this.emitLive(runId, { kind: "screenshot", label: `${label} view`, image: `data:image/png;base64,${data}` });
               }
             } catch {
               // Evidence for the panel, never the audit itself.
+            }
+
+            if (baselineMode && shotData) {
+              try {
+                const hash = await sha256Hex(shotData);
+                const status = baselineMode === "record"
+                  ? (this.baselineStore(label, hash) ? "recorded" : "unavailable")
+                  : ((stored) => stored === null ? "new" : stored === hash ? "match" : "changed")(this.baselineHash(label));
+                baselineResults.push({ view: label, status });
+              } catch {
+                baselineResults.push({ view: label, status: "unavailable" });
+              }
             }
           } catch (err) {
             failures.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
@@ -1640,6 +1642,10 @@ export class QAAgent extends Think<Env> {
     }
     if (evidenceOn) {
       for (const f of summarizeEvidence(evidencePages)) addFinding(f.name, f.passed, f.detail);
+    }
+    if (baselineMode) {
+      const f = summarizeBaselines(baselineResults, baselineMode);
+      addFinding(f.name, f.passed, f.detail);
     }
     return {
       ok: findings.every((f) => f.passed),
@@ -2624,24 +2630,12 @@ export class QAAgent extends Think<Env> {
   }
 
   /**
-   * RPC: verify the payment endpoint's guards, without ever paying.
-   *
-   * Deliberately no signing and no funds. A full payment test needs a funded
-   * key and moves real money, so this covers only the parts that are safe to
-   * assert automatically:
-   *
-   *   1. With no PAYMENT-SIGNATURE, /api/process must answer 402 and advertise a
-   *      well-formed challenge (version, accepts[], and a network/asset/amount
-   *      per entry) - the challenge is what a real client pays against, so a
-   *      malformed one is a genuine outage. x402 v2 carries the challenge
-   *      base64-encoded in the PAYMENT-REQUIRED header (this deployment);
-   *      v1 put it in the body. Both are read.
-   *   2. With a syntactically invalid signature, it must still refuse rather
-   *      than accept or 500.
-   *   3. The request must not be processed: no success payload is returned.
-   *
-   * What this does NOT prove: that a valid payment is verified and settled.
-   * That is stated in the result so the suite cannot imply coverage it lacks.
+   * RPC: verify the payment endpoint's guards, without ever paying
+   * (no signing, no funds). Asserts: no PAYMENT-SIGNATURE -> 402 with a
+   * well-formed challenge (x402 v2 carries it base64 in the
+   * PAYMENT-REQUIRED header; v1 in the body - both read); an invalid
+   * signature still refuses; nothing is processed. Does NOT prove a
+   * valid payment settles - stated in the result.
    */
   @callable()
   async qaPaymentFlow(
