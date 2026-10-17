@@ -1114,9 +1114,10 @@ describe("browser teardown cannot fail a QA run", () => {
     // Every browser teardown goes through the helper. Counted exactly, so both a
     // new raw close() and a removed release are caught.
     const uses = qa.split("closeConnectionQuietly(").length - 1;
-    // Nine teardowns: the six deterministic flows, qaInvestigate
-    // (issue #102), the desk snapshot email, and the profile start.
-    expect(uses, "every browser teardown must use the helper").toBe(9);
+    // Ten teardowns: the six deterministic flows, qaInvestigate
+    // (issue #102), the desk snapshot email, the profile start, and
+    // the PDF printer (issue #135).
+    expect(uses, "every browser teardown must use the helper").toBe(10);
   });
 
   it("keeps the report's tab call inside a guard", () => {
@@ -1643,6 +1644,12 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(api).toContain('"/api/public/opportunity-hunts/:id/report"');
     expect(pdata).toContain("runOpportunityHunt()");
     expect(pdata).toContain("huntCard");
+    // Phase 2: the report as an emailed PDF (QAAgent prints, EmailAgent sends).
+    const qaSrc = read("src/qa-agent.ts");
+    expect(qaSrc).toContain("qaPrintPdf");
+    expect(qaSrc).toContain("Page.printToPDF");
+    expect(api).toContain('"/api/public/opportunity-hunts/:id/email"');
+    expect(pdata).toContain("emailHuntReport(");
   });
 
   it("the Public tab's colors resolve through design tokens (issue #133)", () => {
