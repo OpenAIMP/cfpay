@@ -27,7 +27,7 @@ function questionGroupChips(g) {
   const outlookMeta = {
     bullish: { glyph: '\u25B2', color: 'var(--green)' },
     bearish: { glyph: '\u25BC', color: 'var(--red)' },
-    neutral: { glyph: '\u25C6', color: '#d8a13c' },
+    neutral: { glyph: '\u25C6', color: 'var(--gold)' },
     directional: { glyph: '\u21C5', color: 'var(--accent)' },
   };
   const premiumMeta = {
@@ -38,7 +38,7 @@ function questionGroupChips(g) {
   const tierMeta = {
     basic: { glyph: '\u2582', color: undefined },
     intermediate: { glyph: '\u2582\u2584', color: 'var(--blue)' },
-    advanced: { glyph: '\u2582\u2584\u2586', color: '#d8a13c' },
+    advanced: { glyph: '\u2582\u2584\u2586', color: 'var(--gold)' },
     expert: { glyph: '\u2582\u2584\u2586\u2588', color: 'var(--red)' },
   };
   const chip = (text, color) =>
@@ -95,7 +95,7 @@ function autopilotVerdictBanner(run) {
   if (!run || !run.verification) return '';
   const v = run.verification;
   const pct = Math.round((Number(v.confidence) || 0) * 100);
-  return '<div style="margin-top:0.45rem;border-left:3px solid ' + (v.complete ? '#16a34a' : '#b45309') + ';background:var(--bg);padding:0.4rem 0.6rem;font-size:0.8rem;font-weight:600;">'
+  return '<div style="margin-top:0.45rem;border-left:3px solid ' + (v.complete ? 'var(--verified)' : 'var(--amber)') + ';background:var(--bg);padding:0.4rem 0.6rem;font-size:0.8rem;font-weight:600;">'
     + (v.complete ? '\u2713 Verified complete' : '\u26a0 Incomplete') + ' \u2014 confidence ' + pct + '%</div>';
 }
 
@@ -239,7 +239,7 @@ function deskRenderRuns(runs) {
   return runs.map((r) => {
     const when = r.startedAt ? new Date(r.startedAt).toLocaleString() : '';
     const v = r.verification;
-    const chip = v ? '<span style="font-size:0.7rem;font-weight:600;color:' + (v.complete ? 'var(--green)' : '#b45309') + ';">' + (v.complete ? '\u2713 verified' : '\u26a0 incomplete') + ' ' + Math.round((Number(v.confidence) || 0) * 100) + '%</span>' : '';
+    const chip = v ? '<span style="font-size:0.7rem;font-weight:600;color:' + (v.complete ? 'var(--green)' : 'var(--amber)') + ';">' + (v.complete ? '\u2713 verified' : '\u26a0 incomplete') + ' ' + Math.round((Number(v.confidence) || 0) * 100) + '%</span>' : '';
     return '<div style="border:1px solid var(--border);border-radius:6px;padding:0.45rem 0.6rem;margin-bottom:0.4rem;">'
       + '<div style="display:flex;justify-content:space-between;gap:0.5rem;align-items:baseline;"><span style="font-size:0.8rem;font-weight:600;">' + escapeHtml(String(r.goal || '').slice(0, 110)) + '</span>' + chip + '</div>'
       + '<div style="color:var(--muted);font-size:0.72rem;margin-top:0.2rem;">' + escapeHtml(r.status || '') + ' \u00b7 ' + (Array.isArray(r.steps) ? r.steps.length : 0) + ' steps \u00b7 ' + escapeHtml(when) + ' <button class="btn" style="padding:0.1rem 0.5rem;font-size:0.72rem;margin-left:0.4rem;" onclick="deskToggleRun(\'' + escapeHtml(r.id) + '\')">Transcript</button></div>'
@@ -361,7 +361,7 @@ function renderToolTrace(trace, answerIdx = -1) {
   const rows = trace.map((t, i) => {
     const dl = hasIdx ? dlFor(t, i) : '';
     const badge = t.proposed
-      ? '<span style="background:#b45309;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;">proposed</span>'
+      ? '<span style="background:var(--amber);color:var(--on-accent);border-radius:4px;padding:0.05rem 0.35rem;">proposed</span>'
       : t.refused
         ? '<span class="badge-failed">blocked</span>'
         : (t.ok ? '<span class="badge-confirmed">ok</span>' : '<span class="badge-failed">error</span>');
@@ -454,7 +454,7 @@ function deskTraceLink(idx) {
   const blocked = trace.filter((t) => t.refused || !t.ok).length;
   return '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.25rem;">'
     + '<span style="font-size:0.75rem;color:var(--muted);">' + trace.length + ' tool call' + (trace.length === 1 ? '' : 's') + ' \u00b7 raw Public.com data in Logs</span>'
-    + (proposed ? '<span style="background:#b45309;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;font-size:0.72rem;">' + proposed + ' proposed</span>' : '')
+    + (proposed ? '<span style="background:var(--amber);color:var(--on-accent);border-radius:4px;padding:0.05rem 0.35rem;font-size:0.72rem;">' + proposed + ' proposed</span>' : '')
     + (blocked ? '<span class="badge-failed">' + blocked + ' blocked/error</span>' : '')
     + '<button class="btn" style="' + pBtn + '" onclick="deskShowLog(' + idx + ')">View in Logs</button></div>';
 }
@@ -529,7 +529,7 @@ function deskInitViews() {
   style.textContent = '.desk-shell{display:flex;gap:1rem;align-items:flex-start;margin-top:1rem;}'
     + '.desk-nav{display:flex;flex-direction:column;gap:0.35rem;min-width:8.5rem;position:sticky;top:1rem;}'
     + '.desk-nav-btn{text-align:left;background:var(--bg);color:var(--text);border:1px solid var(--border);}'
-    + '.desk-nav-btn.active{background:var(--accent);color:#fff;border-color:transparent;}'
+    + '.desk-nav-btn.active{background:var(--accent);color:var(--on-accent);border-color:transparent;}'
     + '.desk-views{flex:1;min-width:0;}'
     + '.desk-view>.card{margin-bottom:1rem;}'
     + '@media (max-width:760px){.desk-shell{flex-direction:column;}.desk-nav{flex-direction:row;flex-wrap:wrap;position:static;}}';

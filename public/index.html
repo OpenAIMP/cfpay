@@ -9,6 +9,8 @@
       --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a; --text: #e4e4e7;
       --muted: #71717a; --accent: #f6821f; --accent-hover: #e07010;
       --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
+      --amber: #b45309; --gold: #d8a13c; --verified: #16a34a;
+      --on-accent: #fff; --overlay: rgba(0,0,0,0.45);
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
@@ -317,8 +319,8 @@
           <!-- Floating capabilities card: the selected model's capabilities and
                the full MCP tool catalogue, in a panel that floats over the page
                and scrolls internally instead of stretching the tab. -->
-          <div id="publicCapsBackdrop" onclick="togglePublicCaps(false)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:999;"></div>
-          <div id="publicCapsCard" style="display:none;position:fixed;top:4.5rem;right:1rem;width:min(600px,calc(100vw - 2rem));max-height:calc(100vh - 6rem);z-index:1000;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,0.45);flex-direction:column;overflow:hidden;">
+          <div id="publicCapsBackdrop" onclick="togglePublicCaps(false)" style="display:none;position:fixed;inset:0;background:var(--overlay);z-index:999;"></div>
+          <div id="publicCapsCard" style="display:none;position:fixed;top:4.5rem;right:1rem;width:min(600px,calc(100vw - 2rem));max-height:calc(100vh - 6rem);z-index:1000;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 40px var(--overlay);flex-direction:column;overflow:hidden;">
             <div style="display:flex;align-items:center;justify-content:space-between;padding:0.7rem 0.9rem;border-bottom:1px solid var(--border);">
               <div style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Model &amp; MCP capabilities</div>
               <button class="btn" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:0.2rem 0.55rem;" onclick="togglePublicCaps(false)">&times;</button>
@@ -353,7 +355,7 @@
             </div>
             <div id="deskChain" style="margin-top:0.6rem;"><span style="color:var(--muted);font-size:0.8rem;">Pick a symbol and load its chain \u2014 click any contract to draft a question about it.</span></div>
           </div>
-        <div class="card" id="publicTradesCard" style="display:none;border-left:3px solid #b45309;">
+        <div class="card" id="publicTradesCard" style="display:none;border-left:3px solid var(--amber);">
           <h3 style="font-size:1.1rem;margin-bottom:0.35rem;">Trade approvals</h3>
           <p style="color:var(--muted);font-size:0.85rem;line-height:1.6;margin-bottom:0.5rem;">
             Orders the model proposes wait here — nothing runs until you approve it.
@@ -363,7 +365,7 @@
           <div id="publicTrades"></div>
         </div>
 
-        <div class="card" style="border-left:3px solid #b45309;">
+        <div class="card" style="border-left:3px solid var(--amber);">
           <h3 id="publicTradingTitle" style="font-size:1rem;margin-bottom:0.5rem;">Read-only by default</h3>
           <p id="publicTradingBody" style="color:var(--muted);font-size:0.875rem;line-height:1.7;margin:0;">
             Public.com's server also exposes order placement, and their
@@ -704,7 +706,7 @@
         html += '</ul>';
       }
       if (res.investigation && res.investigation.answer) {
-        html += '<div style="margin-top:0.75rem;border-left:3px solid #b45309;padding:0.5rem 0.75rem;background:var(--bg);">'
+        html += '<div style="margin-top:0.75rem;border-left:3px solid var(--amber);padding:0.5rem 0.75rem;background:var(--bg);">'
           + '<p style="margin:0 0 0.35rem;"><strong>Automated investigation</strong> <span style="color:var(--muted);">(' + res.investigation.steps + ' browser steps)</span></p>'
           + '<p style="margin:0;white-space:pre-wrap;">' + escapeHtml(res.investigation.answer) + '</p></div>';
       }
@@ -1690,7 +1692,7 @@ async function loadStats() {
     function renderTradeProposal(p) {
       const status = String(p.status || '');
       const badge = status === 'pending'
-        ? '<span style="background:#b45309;color:#fff;border-radius:4px;padding:0.05rem 0.35rem;font-size:0.68rem;">awaiting approval</span>'
+        ? '<span style="background:var(--amber);color:var(--on-accent);border-radius:4px;padding:0.05rem 0.35rem;font-size:0.68rem;">awaiting approval</span>'
         : status === 'executed'
           ? '<span class="badge-confirmed">executed</span>'
           : (status === 'rejected' || status === 'expired' || status === 'failed')
