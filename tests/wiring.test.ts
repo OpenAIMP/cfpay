@@ -1657,6 +1657,16 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(smoke).toContain("/api/dashboard/send-email");
   });
 
+  it("desk UX round 3 is wired (issue #159)", () => {
+    const pdata = read("public/public-data.js");
+    expect(pdata).toContain("navBtn('chain', 'Option Chain')");
+    expect(pdata).toContain("moveCardOf('deskChain', 'chain')");
+    expect(pdata).toContain("moveCardTo('deskRuns', logsDuo)");
+    expect(pdata).toContain("deskLogsDuo");
+    expect(pdata).toContain("desk-duo");
+    expect(pdata).toContain('onclick="deskLoadQuotes()"');
+  });
+
   it("the desk layout refinements are wired (issue #152)", () => {
     const pdata = read("public/public-data.js");
     const qa = read("src/qa-agent.ts");
