@@ -1657,6 +1657,16 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(smoke).toContain("/api/dashboard/send-email");
   });
 
+  it("pending approvals notify the user (issue #161)", () => {
+    const pdata = read("public/public-data.js");
+    const host = read("src/agent.ts");
+    expect(pdata).toContain("deskUpdateApprovalNotice");
+    expect(pdata).toContain("deskLogsBadge");
+    expect(pdata).toContain("deskApprovalNotice");
+    expect(pdata).toContain("Review on the Logs page");
+    expect(host).toContain("Trade approval pending");
+  });
+
   it("desk UX round 3 is wired (issue #159)", () => {
     const pdata = read("public/public-data.js");
     expect(pdata).toContain("navBtn('chain', 'Option Chain')");

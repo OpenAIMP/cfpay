@@ -1847,6 +1847,15 @@ Do not claim to have completed a payment unless you have received confirmation.`
       throw err;
     }
     await this.writeTradeProposal(proposal);
+    // Notify (best-effort): approvals expire in 24h and the queue lives
+    // on the dashboard's Logs view - do not make the user discover it.
+    if (this.env.SLACK_WEBHOOK_URL) {
+      const bits = Object.entries(proposal.args).slice(0, 4).map(([k, v]) => `${k}=${String(v)}`).join(", ");
+      await sendSlackNotification(
+        this.env.SLACK_WEBHOOK_URL,
+        `\u23f3 Trade approval pending: ${tool}${bits ? ` (${bits})` : ""} - proposed from "${question.slice(0, 100)}". Approve or reject it in the dashboard: Public tab -> Logs -> Trade approvals. It expires in 24 hours.`,
+      ).catch(() => {});
+    }
     return proposal;
   }
 
@@ -1951,17 +1960,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
-   * Answer a question by letting the model call Public.com's MCP tools.
-   *
-   * Returns a full trace so the UI can show which tools ran and what each
-   * returned - without that, a plausible-sounding answer is unverifiable.
-   *
-   * Read-only unless PUBLIC_ALLOW_TRADING is "true": an order-placing tool is
-   * refused before it is called, because their guide warns that a trade through
-   * an MCP client is a real order using real money. With trading enabled, an
-   * order-placing call is still not executed here: it becomes a trade
-   * proposal that a human approves in the dashboard, and a TradeWorkflow
-   * executes it only after approval (see proposeTrade).
+   * Answer a question by letting the model call Public.com's MCP tools,
+   * returning a full trace. Read-only unless PUBLIC_ALLOW_TRADING is
+   * "true"; even then an order-placing call becomes a trade proposal
+   * for human approval, never an in-turn execution (see proposeTrade).
    */
   async answerInstrumentQuestion(
     token: string,
@@ -2620,16 +2622,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
   /**
    * Pay an external x402 endpoint, then record the outgoing payment.
-   *
-   * Keeps the original `{ success, status, response }` contract; `txHash` is
-   * additive.
-   *
-   * Spends real funds, so it fails closed on three independent gates:
-   *   1. PAYMENT_PRIVATE_KEY must be configured.
-   *   2. OUTBOUND_PAY_TO_WHITELIST must be a non-empty comma-separated list, and
-   *      the endpoint's advertised `payTo` must appear in it. The check runs
-   *      BEFORE the transfer is signed, so a non-allowlisted endpoint is never paid.
-   *   3. OUTBOUND_MAX_AMOUNT_ATOMIC, when set, caps the requested amount.
+   * Fails closed: PAYMENT_PRIVATE_KEY required; OUTBOUND_PAY_TO_WHITELIST
+   * must contain the advertised payTo (checked BEFORE signing);
+   * OUTBOUND_MAX_AMOUNT_ATOMIC caps the amount when set.
    *
    * A payment is only written to the ledger when a transaction was actually
    * broadcast, and it records the terms the endpoint requested rather than
