@@ -7,6 +7,7 @@ import {
   voiceAgentToolSchema,
   orchestratorAgentToolSchema,
   scheduledAgentToolSchema,
+  autopilotAgentToolSchema,
   slackAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -47,6 +48,7 @@ import {
   voiceAgentTool,
   orchestratorAgentTool,
   scheduledAgentTool,
+  autopilotAgentTool,
   qaAgentTool,
   slackAgentTool,
   webhookAgentTool,
@@ -143,6 +145,7 @@ const agentToolInputSchema = {
   voice: voiceAgentToolSchema,
   orchestrator: orchestratorAgentToolSchema,
   scheduled: scheduledAgentToolSchema,
+  autopilot: autopilotAgentToolSchema,
   chat: chatAgentToolSchema,
 } as const;
 const DEFAULT_STATE: AgentState = {
@@ -242,6 +245,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
       voiceAgent: voiceAgentTool,
       orchestratorAgent: orchestratorAgentTool,
       scheduledAgent: scheduledAgentTool,
+      autopilotAgent: autopilotAgentTool,
     };
   }
 
