@@ -14,6 +14,7 @@ import { getAgentByName } from "agents";
 import { timingSafeStringEqual } from "./mcp-auth";
 import { getOAuthUserFromRequest } from "./auth";
 import { registerA2ADispatch } from "./a2a-dispatch";
+import { registerCapabilityTests } from "./qa-capability-tests";
 import {
   PUBLIC_MCP_URL,
   callTool,
@@ -2016,5 +2017,7 @@ export function createApp() {
 
   // Interactive A2A endpoint tester backing the QA tab (issue #258).
   registerA2ADispatch(app, requireAuth);
+  // QA capability tests for the non-A2A Slack paths (issue #260).
+  registerCapabilityTests(app, requireAuth);
   return app;
 }
