@@ -537,7 +537,7 @@ export function createApp() {
       }
       return c.json({ tool: "get_quotes", symbols, ...payload, fetchedAt: new Date().toISOString() });
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+      return c.json(errorBody("PUBLIC_UPSTREAM"), errorStatus("PUBLIC_UPSTREAM"));
     }
   });
 
@@ -578,7 +578,7 @@ export function createApp() {
       const payload = asData(await callTool(token, "get_portfolio", args, session));
       return c.json({ tool: "get_portfolio", ...payload, fetchedAt: new Date().toISOString() });
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+      return c.json(errorBody("PUBLIC_UPSTREAM"), errorStatus("PUBLIC_UPSTREAM"));
     }
   });
 
@@ -687,7 +687,7 @@ export function createApp() {
         fetchedAt: new Date().toISOString(),
       });
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+      return c.json(errorBody("PUBLIC_UPSTREAM"), errorStatus("PUBLIC_UPSTREAM"));
     }
   });
 
@@ -1446,7 +1446,7 @@ export function createApp() {
       });
     } catch (error: any) {
       console.error("Dashboard stats error:", error);
-      return c.json({ error: error.message || "Failed to load stats" }, 500);
+      return c.json(errorBody("INTERNAL"), errorStatus("INTERNAL"));
     }
   });
 
@@ -1821,7 +1821,7 @@ export function createApp() {
   // Without MCP_JWT_SECRET (set via CICD) issuance is unavailable.
   app.post("/api/dashboard/mcp/tokens", requireAuth, async (c) => {
     const secret = (c.env.MCP_JWT_SECRET ?? "").trim();
-    if (!secret) return c.json({ error: "MCP_JWT_SECRET is not configured on this deployment." }, 503);
+    if (!secret) return c.json(errorBody("MCP_JWT_NOT_CONFIGURED"), errorStatus("MCP_JWT_NOT_CONFIGURED"));
     const body = await c.req.json().catch(() => ({})) as { subject?: string; scopes?: string[]; expiresInSec?: number };
     const scopes = (body.scopes ?? []).filter((x): x is McpScope => (MCP_SCOPES as readonly string[]).includes(x));
     if (scopes.length === 0) return c.json(errorBody("VALIDATION_FAILED"), 400);
