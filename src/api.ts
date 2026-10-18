@@ -1795,6 +1795,14 @@ export function createApp() {
     return c.json(result);
   });
 
+  app.post("/api/dashboard/scheduled-goals/:id/enabled", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { enabled?: boolean };
+    const scheduled = await getScheduledAgent(c);
+    const result = await scheduled.scheduledSetEnabled(c.req.param("id"), body.enabled === true);
+    if (!result.ok) return c.json(result, result.error === "not_found" ? 404 : 400);
+    return c.json(result);
+  });
+
   app.post("/api/dashboard/scheduled-goals/:id/trigger", requireAuth, async (c) => {
     const scheduled = await getScheduledAgent(c);
     const result = await scheduled.scheduledTrigger(c.req.param("id"));
