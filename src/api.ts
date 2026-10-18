@@ -13,6 +13,7 @@ import type { HuntRequest } from "./opportunity-hunt";
 import { getAgentByName } from "agents";
 import { timingSafeStringEqual } from "./mcp-auth";
 import { getOAuthUserFromRequest } from "./auth";
+import { registerA2ADispatch } from "./a2a-dispatch";
 import {
   PUBLIC_MCP_URL,
   callTool,
@@ -2012,5 +2013,8 @@ export function createApp() {
     const result = await agent.notifySlack(body.message);
     return c.json(result);
   });
+
+  // Interactive A2A endpoint tester backing the QA tab (issue #258).
+  registerA2ADispatch(app, requireAuth);
   return app;
 }
