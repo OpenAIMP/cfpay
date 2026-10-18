@@ -244,8 +244,8 @@ export const orchestratorAgentTool = agentTool<AgentToolInput>(OrchestratorAgent
  */
 export const scheduledAgentTool = agentTool<AgentToolInput>(ScheduledAgent, {
   description: [
-    "Dispatch the scheduled agent to list, create, or delete scheduled goals.",
-    "Use scheduled.create with a goal and a 5-field UTC cron (or @daily/@weekly alias); the goal runs autonomously as an orchestrator job when due. Nothing is scheduled unless created here.",
+    "Dispatch the scheduled agent to list, create, trigger, or delete scheduled goals.",
+    "Use scheduled.create with a goal and a 5-field UTC cron (or @daily/@weekly alias) for a recurring goal, scheduled.once with a goal and an ISO time or delaySeconds for a one-shot, and scheduled.trigger with an id to run a goal immediately; goals run autonomously as orchestrator jobs when due. Nothing is scheduled unless created here.",
     COMMON_NOTE,
   ].join(" "),
   displayName: "Scheduled Agent",

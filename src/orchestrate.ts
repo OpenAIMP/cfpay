@@ -14,6 +14,11 @@
 //   - email.sendWithAttachments (attachment bytes can't be planned)
 //   - webhook.receive (inbound-event simulation, not coordination)
 //   - chat.clear (destructive; orchestration never wipes state)
+//   - scheduled.delete (destructive; deleting a standing goal is an
+//     owner action - but scheduled.create / scheduled.once ARE
+//     plannable since issue #232: when the owner's goal asks for
+//     recurring or one-shot work, a plan may set it up, and
+//     scheduled.trigger may fire an existing goal by id)
 // (slack.post was briefly excluded while the Slack agent refused
 // it over A2A; the owner enabled posting over A2A in issue #188,
 // so it is plannable like the other operations.)
@@ -41,11 +46,10 @@ export const OPERATION_CATALOG: CatalogEntry[] = [
   { agent: "chat", binding: "CHAT_AGENT", instance: "chat", operations: ["chat.summary", "chat.totals", "chat.transcript", "chat.emailTranscript"], blurb: "Conversation history records and transcripts." },
   { agent: "voice", binding: "VOICE_AGENT", instance: "desk", operations: ["voice.snapshot", "voice.ask"], blurb: "The voice channel: voice.ask runs the desk pipeline and returns the speakable answer." },
   { agent: "search", binding: "SEARCH_AGENT", instance: "search", operations: ["search.summary", "search.query", "search.ask"], blurb: "Knowledge-base retrieval over the owner's AI Search index." },
-  // Scheduled goals are READ-ONLY for plans (issue #213): a plan may
-  // report the schedule, but creating or deleting a schedule is an
-  // owner action (dashboard, A2A with the key, or host chat) - a plan
-  // must never be able to make work recur.
-  { agent: "scheduled", binding: "SCHEDULED_AGENT", instance: "scheduler", operations: ["scheduled.summary", "scheduled.list"], blurb: "The owner's scheduled goals (read-only here: what runs autonomously, and when)." },
+  // Scheduled goals (issues #213, #232): plans may read the
+  // schedule, create recurring or one-shot goals, and trigger an
+  // existing goal by id. Deleting a standing goal stays owner-only.
+  { agent: "scheduled", binding: "SCHEDULED_AGENT", instance: "scheduler", operations: ["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.once", "scheduled.trigger"], blurb: "Standing goals on native schedules. scheduled.create {goal, cron} makes one recur; scheduled.once {goal, at|delaySeconds} fires it a single time; scheduled.trigger {id} runs an existing goal now. Deleting goals is not plannable." },
 ];
 
 export function catalogAgent(agent: string): CatalogEntry | undefined {
