@@ -75,6 +75,7 @@ describe("orchestration planning core", () => {
       "host", "email", "payments", "webhooks", "slack", "qa", "chat", "voice",
       "search",
       "scheduled",
+      "autopilot",
     ]);
     const prompt = plannerPrompt("check everything");
     for (const e of OPERATION_CATALOG) expect(prompt).toContain(e.operations[0]);
