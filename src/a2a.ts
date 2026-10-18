@@ -678,7 +678,7 @@ export function scheduledCard(origin: string): AgentCard {
         id: "scheduled-goals",
         name: "Scheduled goals",
         description:
-          "scheduled.list shows the goals; scheduled.create {goal, cron} adds a recurring one (cron is 5-field UTC or an @alias); scheduled.once {goal, at|delaySeconds} adds a one-shot; scheduled.trigger {id} runs a goal immediately without changing its schedule; scheduled.delete {id} removes one. Each goal is a native SDK schedule on the agent, woken by a Durable Object alarm; a firing hands the goal to the orchestrator as a job.",
+          "scheduled.list shows the goals; scheduled.create {goal, cron} adds a recurring one (cron is 5-field UTC or an @alias); scheduled.once {goal, at|delaySeconds} adds a one-shot; scheduled.trigger {id} runs a goal immediately without changing its schedule; scheduled.setEnabled {id, enabled} arms or cancels a goal's schedule (the row is kept); scheduled.delete {id} removes one. Each goal is a native SDK schedule on the agent, woken by a Durable Object alarm; a firing hands the goal to the orchestrator as a job.",
         tags: ["scheduling", "cron", "automation"],
         examples: [
           "List the scheduled goals",
