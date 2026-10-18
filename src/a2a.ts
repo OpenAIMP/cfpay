@@ -255,18 +255,13 @@ export class CapabilityExecutor implements AgentExecutor {
     }
     if (!answer) answer = "The agent produced no answer for that question.";
 
-    const reply: Message = {
-      kind: "message",
-      messageId: crypto.randomUUID(),
-      role: "agent",
-      taskId,
-      contextId,
-      parts: [{ kind: "text", text: answer }],
-    };
-    eventBus.publish(reply);
-
     // Structured outcome, when the capability returned one. A caller that asked
-    // for work to be done reads this instead of parsing the prose reply.
+    // for work to be done reads this instead of parsing the prose reply. It is
+    // published BEFORE the reply Message on purpose: the SDK's result
+    // aggregator treats a Message as the terminal stream event and closes
+    // the stream, so anything published after it never reaches a
+    // message/stream consumer (verified against the transport - this is
+    // why in-process dispatchers read replies via a2aReplyFromOutcome).
     if (resultData !== undefined) {
       eventBus.publish({
         kind: "artifact-update",
@@ -279,6 +274,16 @@ export class CapabilityExecutor implements AgentExecutor {
         },
       } as never);
     }
+
+    const reply: Message = {
+      kind: "message",
+      messageId: crypto.randomUUID(),
+      role: "agent",
+      taskId,
+      contextId,
+      parts: [{ kind: "text", text: answer }],
+    };
+    eventBus.publish(reply);
 
     eventBus.publish({
       kind: "status-update",
@@ -720,6 +725,61 @@ export async function handleCollecting(
     return { streamed: true, events };
   }
   return { streamed: false, events: [], result };
+}
+
+/**
+ * Extract the reply {text, data} from a handleCollecting outcome -
+ * THE way in-process A2A callers must read a dispatch.
+ *
+ * The transport wraps everything in JSON-RPC envelopes: for
+ * message/send the reply Message sits at outcome.result.result
+ * (outcome.result is the envelope, not the Message), and the
+ * structured data part does not survive that mode at all - it is
+ * published as a separate artifact-update event. Callers that need
+ * the data (orchestrator steps, scheduled dispatch, MCP tools) must
+ * dispatch with message/stream and read the collected events: the
+ * reply Message event carries the text, the artifact-update event
+ * carries the data. Reading outcome.result.parts directly was the
+ * fleet-wide bug this replaces: it silently yielded empty text and
+ * no data for every in-process dispatch.
+ */
+export function a2aReplyFromOutcome(outcome: unknown): { text: string; data?: unknown } {
+  const unwrap = (v: unknown): Record<string, unknown> | undefined => {
+    if (!v || typeof v !== "object") return undefined;
+    const o = v as Record<string, unknown>;
+    const inner = o.result;
+    if (inner && typeof inner === "object" && ("kind" in inner || "parts" in inner)) {
+      return inner as Record<string, unknown>;
+    }
+    return o;
+  };
+  const o = (outcome ?? {}) as { result?: unknown; events?: unknown[] };
+  let message = unwrap(o.result);
+  let data: unknown;
+  if (Array.isArray(o.events)) {
+    for (const raw of o.events) {
+      const e = unwrap(raw);
+      if (!e) continue;
+      if (e.kind === "message" && Array.isArray(e.parts)) message = e;
+      if (e.kind === "artifact-update") {
+        const artifact = e.artifact as { parts?: { kind: string; data?: unknown }[] } | undefined;
+        const part = artifact?.parts?.find((p) => p.kind === "data");
+        if (part) data = part.data;
+      }
+    }
+  }
+  const parts = (Array.isArray(message?.parts) ? message.parts : []) as {
+    kind: string;
+    text?: string;
+    data?: unknown;
+  }[];
+  const text = parts
+    .filter((p) => p.kind === "text")
+    .map((p) => p.text ?? "")
+    .join(" ")
+    .trim();
+  if (data === undefined) data = parts.find((p) => p.kind === "data")?.data;
+  return { text, data };
 }
 
 /** SSE frame writer, matching the example's format. */
