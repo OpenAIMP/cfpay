@@ -83,6 +83,7 @@ import {
   payX402EndpointWithReceipt,
   type X402AcceptedPayment,
 } from "./payments";
+import { budgetRefusal, budgetSnapshot, loadBudget, makeBudgetRequest, recordBudgetSpend, saveBudgetPolicy, type BudgetPolicy, type BudgetSnapshot, type OutboundPaymentRequest } from "./budget-guard";
 import {
   sendSlackNotification,
   sendSlackNotificationDetailed,
@@ -961,9 +962,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return await pa.processPaidRequest(senderEmail, request, claim, card);
   }
 
-  // ===========================================================================
+  // ========================================
   // Stripe card payments: checkout state and idempotent fulfilment
-  // ===========================================================================
+  // ========================================
 
   /**
    * Record an intent to pay by card, before any Stripe session exists.
@@ -1064,15 +1065,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
-   * Fulfil a card payment exactly once.
-   *
-   * Called only from the signature-verified Stripe webhook, after the caller has
-   * checked payment_status, mode, currency and amount. Idempotency comes from
-   * three independent guards, because Stripe retries for up to three days and
-   * may deliver events out of order:
-   *   1. the event id must be new,
-   *   2. the checkout must not already be fulfilled,
-   *   3. no payment may already be recorded for this payment reference.
+   * Fulfil a card payment exactly once. Called only from the
+   * signature-verified Stripe webhook, after payment_status, mode,
+   * currency and amount checks. Idempotency comes from three guards
+   * (Stripe retries for days, out of order): new event id; checkout not
+   * already fulfilled; no payment recorded for this reference.
    */
   @callable()
   async fulfilStripeCheckout(params: {
@@ -1251,9 +1248,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return await this.getEmails(direction, limit);
   }
 
-  // ===========================================================================
+  // ========================================
   // A2A protocol
-  // ===========================================================================
+  // ========================================
 
     /**
    * The payments capability agent. Returns null when the binding is
@@ -1666,9 +1663,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return slackMessages.slice(-limit).reverse();
   }
 
-  // ===========================================================================
+  // ========================================
   // Public.com chat
-  // ===========================================================================
+  // ========================================
 
   /**
    * The active Public.com credential: the OAuth access token when the user
@@ -1914,15 +1911,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
-   * Workflow callback: the deterministic side effect. Executes the recorded
-   * call against Public.com exactly as approved.
-   *
-   * Fail-closed in three places: the proposal must be in `approved` state,
-   * trading must still be enabled on the deployment, and the claim to
-   * `executing` is persisted BEFORE the call goes out, so a workflow retry
-   * cannot place the order a second time (a replayed step returns the
-   * recorded outcome). The credential is re-read here, through the OAuth
-   * refresh path, rather than carried in workflow params.
+   * Workflow callback: execute the recorded call against Public.com
+   * exactly as approved. Fail-closed in three places: the proposal must
+   * be `approved`, trading must still be enabled, and the claim to
+   * `executing` is persisted BEFORE the call (a replayed step returns the
+   * recorded outcome instead of re-ordering). The credential is re-read
+   * here via the OAuth refresh path, never carried in workflow params.
    */
   @callable()
   async executeTradeProposal(proposalId: string): Promise<{ ok: boolean; output: string }> {
@@ -2605,13 +2599,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
-   * Answer one dashboard chat message.
-   *
-   * Named chatRpc, not chat: Think declares `chat(userMessage, callback): Promise<void>`
-   * as its streaming turn API, and this is a request/response call with a different
-   * contract. Overriding Think's would keep the name and lose the framework's chat
-   * machinery, so the two are kept separate. Think's chat is what a Think turn uses;
-   * this is what the dashboard's REST route calls.
+   * Answer one dashboard chat message. Named chatRpc, not chat: Think
+   * declares `chat(...)` as its streaming turn API; overriding it would
+   * lose the framework machinery. This request/response call is what
+   * the dashboard's REST route uses.
    */
   @callable()
   async chatRpc(
@@ -2637,13 +2628,12 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
   /**
    * Pay an external x402 endpoint, then record the outgoing payment.
-   * Fails closed: PAYMENT_PRIVATE_KEY required; OUTBOUND_PAY_TO_WHITELIST
-   * must contain the advertised payTo (checked BEFORE signing);
-   * OUTBOUND_MAX_AMOUNT_ATOMIC caps the amount when set.
-   *
-   * A payment is only written to the ledger when a transaction was actually
-   * broadcast, and it records the terms the endpoint requested rather than
-   * hard-coded values.
+   * Fails closed: PAYMENT_PRIVATE_KEY required; the payTo must be in
+   * OUTBOUND_PAY_TO_WHITELIST (checked BEFORE signing);
+   * OUTBOUND_MAX_AMOUNT_ATOMIC caps the amount when set; the budget
+   * guard (issue #211) adds cumulative daily/per-agent caps from the
+   * stored policy. A payment reaches the ledger only when a
+   * transaction was actually broadcast, on the terms requested.
    */
   @callable()
   async payExternalEndpoint(
@@ -2696,6 +2686,13 @@ Do not claim to have completed a payment unless you have received confirmation.`
       }
     }
 
+    // Budget guard (issue #211): loaded now; the validator below is sync.
+    const budgetSql = this.ctx.storage.sql;
+    const budget = loadBudget(budgetSql, this.env);
+    let budgetRequest: OutboundPaymentRequest | undefined;
+    let serviceHost = url;
+    try { serviceHost = new URL(url).hostname; } catch { /* keep the raw url */ }
+
     // Captured by the validator below; only set once a term passed every gate.
     let approved: X402AcceptedPayment | undefined;
 
@@ -2717,6 +2714,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
               `Refusing to pay ${payment.amount}: exceeds OUTBOUND_MAX_AMOUNT_ATOMIC (${maxAmount}).`,
             );
           }
+          budgetRequest = makeBudgetRequest(crypto.randomUUID(), "host", serviceHost, payment.payTo, payment.amount, budget.state.dayKey);
+          const refusal = budgetRefusal(budget.policy, budget.state, budgetRequest);
+          if (refusal) throw new Error(`Refusing to pay ${payment.payTo}: ${refusal}.`);
           approved = payment;
         },
       );
@@ -2766,6 +2766,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
         );
       }
       await pa.recordPayment(payment);
+      if (budgetRequest) recordBudgetSpend(budgetSql, budget.policy, budget.state, budgetRequest);
 
       return {
         success: response.ok,
@@ -2784,9 +2785,22 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
-  // ===========================================================================
+  /** Stored budget policy + today's spend (issue #211). */
+  @callable()
+  async getBudget(): Promise<BudgetSnapshot> {
+    return budgetSnapshot(this.ctx.storage.sql, this.env);
+  }
+
+  /** Replace the budget policy (issue #211); applies from the next payment. */
+  @callable()
+  async setBudgetPolicy(policy: BudgetPolicy): Promise<BudgetSnapshot> {
+    saveBudgetPolicy(this.ctx.storage.sql, policy);
+    return budgetSnapshot(this.ctx.storage.sql, this.env);
+  }
+
+  // ========================================
   // Webhooks: Incoming webhook handler (onRequest)
-  // ===========================================================================
+  // ========================================
   async onRequest(request: Request): Promise<Response> {
     // Webhooks are handled via the handleWebhookRpc @callable() method (RPC),
     // not through here. This handles other direct HTTP requests.
@@ -2808,22 +2822,17 @@ Do not claim to have completed a payment unless you have received confirmation.`
     );
   }
 
-  // ===========================================================================
+  // ========================================
   // Stripe: fulfil a completed card payment
-  // ===========================================================================
+  // ========================================
 
   /**
-   * Turn a completed Checkout Session into delivered work.
-   *
-   * Only reached through the signature-verified webhook. Every condition below
-   * is checked BEFORE anything is fulfilled, so an unpaid, partial, wrong-currency
-   * or foreign-account event cannot release work:
-   *   - the event is one of the three completion types we accept,
-   *   - the session is a paid, one-off payment (not a subscription or setup),
-   *   - payment_status is "paid" (async methods report otherwise at this point),
-   *   - currency and amount_total match our own server-side price exactly,
-   *   - and the session carries our own cfmail_request_id marker.
-   *
+   * Turn a completed Checkout Session into delivered work. Only reached
+   * through the signature-verified webhook; every condition is checked
+   * BEFORE fulfilment (accepted event type; paid one-off session;
+   * payment_status "paid"; currency + amount_total matching our own
+   * server-side price; our cfmail_request_id marker), so an unpaid,
+   * partial, wrong-currency or foreign-account event releases nothing.
    * Idempotency is enforced in fulfilStripeCheckout.
    */
   private async handleStripeWebhook(payload: any, eventId: string): Promise<void> {
@@ -2948,9 +2957,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
       return null;
     }
   }
-  // ===========================================================================
+  // ========================================
   // Webhooks: Process a verified webhook event
-  // ===========================================================================
+  // ========================================
   private async processWebhookEvent(provider: "github" | "stripe" | "slack", payload: any) {
     // Card payment fulfilment runs first. It is idempotent and every condition
     // is validated internally, so it cannot release work without a paid session.
@@ -3059,9 +3068,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
     }
   }
 
-  // ===========================================================================
+  // ========================================
   // RPC: GitHub webhook delivery dedup
-  // ===========================================================================
+  // ========================================
   /**
    * Reject replayed GitHub webhook deliveries. Returns true when this delivery
    * ID was already seen (the caller must reject the request); otherwise records
@@ -3112,9 +3121,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return { ok: true, status: 200, message: "OK" };
   }
 
-  // ===========================================================================
+  // ========================================
   // RPC: Autonomous QA via Cloudflare Browser tools (issue #32)
-  // ===========================================================================
+  // ========================================
   /**
    * Run a QA check against a URL: loads the page, extracts text and takes a
    * screenshot. Uses stateless Quick Actions (no browser session held).
@@ -3221,16 +3230,15 @@ Do not claim to have completed a payment unless you have received confirmation.`
     });
   }
 
-  // ===========================================================================
+  // ========================================
   // RPC: OAuth refresh-token rotation
-  // ===========================================================================
+  // ========================================
   /**
-   * Consume one OAuth refresh-token id (single-use rotation). Returns
-   * { ok: true } on first presentation and records the id; returns
-   * { ok: false, reused: true } when the id was already consumed, which the
-   * token endpoint treats as suspected token theft. Entries older than the
-   * refresh-token lifetime cannot be replayed usefully and are pruned.
-   * Check-and-record is atomic under the Durable Object input gate.
+   * Consume one OAuth refresh-token id (single-use rotation): first
+   * presentation records it and returns { ok: true }; a repeat returns
+   * { ok: false, reused: true } (treated as suspected theft). Entries
+   * older than the refresh lifetime are pruned. Atomic under the DO
+   * input gate.
    */
   @callable()
   async rotateOAuthRefreshToken(jti: string): Promise<{ ok: boolean; reused?: boolean }> {
@@ -3251,9 +3259,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return { ok: true };
   }
 
-  // ===========================================================================
+  // ========================================
   // RPC: Get webhook events
-  // ===========================================================================
+  // ========================================
   @callable()
   async debugWebhookState(): Promise<{ eventCount: number; totalReceived: number; hasState: boolean }> {
     const state = this.ensureState();
@@ -3275,9 +3283,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return filtered.slice(-limit).reverse();
   }
 
-  // ===========================================================================
+  // ========================================
   // RPC: Send an outgoing Slack notification
-  // ===========================================================================
+  // ========================================
   @callable()
   async notifySlack(
     message: string,
@@ -3294,9 +3302,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return ok ? { success: true } : { success: false, error: detail };
   }
 
-  // ===========================================================================
+  // ========================================
   // RPC: Send a signed outgoing webhook
-  // ===========================================================================
+  // ========================================
   @callable()
   async sendWebhook(url: string, payload: unknown): Promise<{ success: boolean }> {
     // This RPC can make the Worker fetch an arbitrary URL, so an optional
