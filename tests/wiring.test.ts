@@ -1825,6 +1825,95 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(api).toContain('body.kind === "once"');
   });
 
+  it("the AutopilotAgent owns the portfolio objective (issue #242 P1)", () => {
+    const agent = read("src/autopilot-agent.ts");
+    const core = read("src/autopilot-core.ts");
+    const index = read("src/index.ts");
+    const wrangler = read("wrangler.jsonc");
+    const api = read("src/api.ts");
+    const a2a = read("src/a2a.ts");
+    // pure core: validation edges live in the unit tests, pinned here
+    expect(core).toContain("validateObjective");
+    expect(core).toContain("AUTOPILOT_CYCLE_GOAL_TEXT");
+    expect(agent).toContain("class AutopilotAgent extends Think");
+    // the A2A surface lives on the class - a rewrite that drops it
+    // 500s every operation (issue #229); pin its presence
+    expect(agent).toContain("async handleA2A(");
+    expect(agent).toContain("async handleA2AMessage(");
+    expect(agent).toContain("createA2ATransport");
+    expect(agent).toContain("autopilotCard");
+    // own SQL tables for the objective and the cycle record
+    expect(agent).toContain("autopilot_objective");
+    expect(agent).toContain("autopilot_cycles");
+    // arming goes through ScheduledAgent's own A2A op, and the
+    // exact goal text is the shared contract with the orchestrator
+    expect(agent).toContain("scheduled.create");
+    expect(agent).toContain("scheduled.delete");
+    expect(core).toContain("Run the AutopilotAgent discovery cycle (autopilot.runCycle).");
+    // dispatch follows the fleet contract: streamed bodies read by
+    // the shared extractor, never outcome.result.parts
+    expect(agent).toContain("a2aReplyFromOutcome");
+    expect(agent).toContain('"message/stream"');
+    expect(agent).not.toContain("outcome.result.parts");
+    // notifications are best-effort: a failed Slack/Email send is
+    // recorded, never fatal to the cycle
+    expect(agent).toContain("bestEffortNotify");
+    expect(agent).toContain("bestEffortEmail");
+    // wiring
+    expect(index).toContain('export { AutopilotAgent } from "./autopilot-agent";');
+    expect(index).toContain("A2A_AUTOPILOT_RPC_PATH");
+    expect(index).toContain('env.AUTOPILOT_AGENT.get(env.AUTOPILOT_AGENT.idFromName("autopilot"))');
+    expect(wrangler).toContain('"name": "AUTOPILOT_AGENT"');
+    expect(wrangler).toContain('"class_name": "AutopilotAgent"');
+    expect(wrangler).toContain('"tag": "v13"');
+    expect(a2a).toContain("autopilotCard");
+    expect(a2a).toContain('"/a2a/autopilot"');
+    // dashboard API
+    expect(api).toContain("/api/dashboard/autopilot");
+    expect(api).toContain("/api/dashboard/autopilot/objective");
+    expect(api).toContain("/api/dashboard/autopilot/run-cycle");
+    expect(api).toContain("autopilotObjectiveSet");
+    // orchestrator catalog: plans may read and run cycles; setting
+    // or clearing the objective stays owner-only (the scheduled.delete
+    // precedent)
+    const catalog = read("src/orchestrate.ts");
+    expect(catalog).toContain('"autopilot.summary", "autopilot.objective.get", "autopilot.cycles", "autopilot.runCycle"');
+    expect(catalog).not.toContain(String.raw`"autopilot.objective.set"`);
+    expect(catalog).not.toContain(String.raw`"autopilot.objective.clear"`);
+    // host tool
+    const tools = read("src/agent-tools.ts");
+    expect(tools).toContain("autopilotAgentTool");
+    const schemas = read("src/agent-tool-schemas.ts");
+    expect(schemas).toContain("autopilotAgentToolSchema");
+    // the five A2A operations and their dispatch switch entries
+    for (const op of [
+      'op === "autopilot.summary"',
+      'op === "autopilot.objective.get"',
+      'op === "autopilot.objective.set"',
+      'op === "autopilot.objective.clear"',
+      'op === "autopilot.cycles"',
+      'op === "autopilot.runCycle"',
+    ]) expect(agent).toContain(op);
+    // MCP specs: summary/objective.get/cycles read, runCycle action,
+    // objective.set/objective.clear write
+    const mcp = read("src/mcp-agent-tools.ts");
+    expect(mcp).toContain('"autopilot.summary", "read"');
+    expect(mcp).toContain('"autopilot.runCycle", "action"');
+    expect(mcp).toContain('"autopilot.objective.set", "write"');
+    expect(mcp).toContain('"autopilot.objective.clear", "write"');
+    // desk UI card in the Orchestrate view
+    const desk = read("public/public-data.js");
+    expect(desk).toContain("deskApLoad");
+    expect(desk).toContain("/api/dashboard/autopilot");
+    // README: matrix row + the fifth objectives row
+    const readme = read("README.md");
+    expect(readme).toContain("| autopilot |");
+    expect(readme).toContain("Standing portfolio objective");
+    // no order placement anywhere in the new agent
+    expect(agent).not.toContain("placeOrder");
+    expect(agent).not.toContain("executeTrade");
+  });
+
   it("error catalog phase 2: A2A failures carry codes; dispatch errors are catalog bodies (issue #209)", () => {
     const a2a = read("src/a2a.ts");
     const index = read("src/index.ts");
