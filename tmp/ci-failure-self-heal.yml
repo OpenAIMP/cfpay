@@ -1,0 +1,93 @@
+name: CI Failure Self-Heal
+
+# Event-driven filing bridge for the self-healing QA loop (issue #195).
+# Adapted from OpenAIMP/cfagent's ci-failure-self-heal.yml for cfpay.
+#
+# cfpay's post-deploy smoke already files [QA self-heal] issues for
+# failing production checks, but a failed CI or Deploy run itself files
+# nothing — it just sits red. This workflow closes that gap: the moment
+# a watched workflow finishes with a failure conclusion, a deduped
+# [QA self-heal] issue lands in the same queue the Muse fixer cron
+# and the Copilot assignment workflow already share.
+#
+# INSTALL (owner, via the GitHub web UI — the assistant's integration
+# cannot write workflow files): create .github/workflows/ci-failure-self-heal.yml
+# with exactly this content and commit it to main. No new secrets.
+
+on:
+  workflow_run:
+    workflows: ["CI", "Deploy CFmail Agent"]
+    types: [completed]
+
+jobs:
+  file-issue:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: File self-heal issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+
+            // For the Deploy workflow: Post-deploy QA failures are already
+            // filed per-section by the smoke job itself, and Deploy Preview
+            // is known-broken and excluded from the merge gate. Skip filing
+            // when nothing else failed, so the queue gets one issue per
+            // real problem instead of a duplicate generic one.
+            if (run.name === 'Deploy CFmail Agent') {
+              const { data } = await github.rest.actions.listJobsForWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+              const failed = data.jobs.filter(j => j.conclusion === 'failure');
+              const covered = new Set(['Post-deploy QA', 'Deploy Preview']);
+              const real = failed.filter(j => !covered.has(j.name));
+              if (real.length === 0) {
+                console.log('Only covered/excluded jobs failed; skipping.');
+                return;
+              }
+            }
+
+            const sha = run.head_sha.substring(0, 8);
+            const title = `[QA self-heal] ${run.name} failure on ${sha}`;
+
+            // Dedup: check for existing open issue with same title
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.find(i => i.title === title);
+            if (existing) {
+              console.log(`Issue already exists: #${existing.number}`);
+              return;
+            }
+
+            const body = [
+              '## CI Failure Self-Heal',
+              '',
+              `**Workflow:** ${run.name}`,
+              `**Commit:** ${run.head_sha}`,
+              `**Branch:** ${run.head_branch}`,
+              `**Run:** ${run.html_url}`,
+              `**Conclusion:** ${run.conclusion}`,
+              '',
+              'This issue was auto-filed by the CI Failure Self-Heal workflow.',
+              'A fixer (the Muse self-heal fixer or the Copilot assignment workflow) will claim it from the [QA self-heal] queue.',
+            ].join('\n');
+
+            const { data: issue } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['self-heal', 'ci-failure'],
+            });
+            console.log(`Created issue #${issue.number}`);
