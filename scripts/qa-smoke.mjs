@@ -823,6 +823,7 @@ async function runSections() {
       ["search.summary", "/a2a/search", "search.summary"],
       ["orchestrator.summary", "/a2a/orchestrator", "orchestrator.summary"],
       ["scheduled.summary", "/a2a/scheduled", "scheduled.summary"],
+      ["autopilot.summary", "/a2a/autopilot", "autopilot.summary"],
     ];
     const bad = [];
     for (const [label, path, operation] of rows) {
@@ -856,7 +857,7 @@ async function runSections() {
     record(
       "agent A2A operations answer (all agents)",
       bad.length === 0,
-      bad.length ? bad.join("; ") : "10 read ops + slack.post write ok",
+      bad.length ? bad.join("; ") : `${rows.length} read ops + slack.post write ok`,
     );
   } catch (err) {
     record("agent A2A operations answer (all agents)", false, err.message);

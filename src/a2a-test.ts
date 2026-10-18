@@ -27,6 +27,7 @@ export const A2A_ENDPOINTS: A2AEndpoint[] = [
   { agent: "Search", rpc: "/a2a/search", card: "/a2a/search/agent-card.json" },
   { agent: "Orchestrator", rpc: "/a2a/orchestrator", card: "/a2a/orchestrator/agent-card.json" },
   { agent: "Scheduled", rpc: "/a2a/scheduled", card: "/a2a/scheduled/agent-card.json" },
+  { agent: "Autopilot", rpc: "/a2a/autopilot", card: "/a2a/autopilot/agent-card.json" },
 ];
 
 export interface A2ARow {
