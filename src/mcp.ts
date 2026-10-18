@@ -2,16 +2,28 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 import type { Env } from "./types";
+import {
+  MCP_AGENT_TOOLS,
+  MCP_DESK_TOOLS,
+  MCP_FIELDS,
+  type McpAgentToolSpec,
+  type McpFieldDef,
+} from "./mcp-agent-tools";
 
 /**
  * Remote MCP server for the CFmail agent, exposed at POST/GET /mcp using the
  * stateless Streamable HTTP handler from agents/mcp (the MCP SDK v2 lane).
  *
- * Phase 1 is deliberately READ-ONLY: every tool below only reads records the
- * agent already stores. Nothing here can send email, spend funds, or trigger an
- * outbound request. The endpoint itself is protected by the credential check in
- * src/mcp-auth.ts (see MCP_AUTH_MODE); the read-only tool surface is defense
- * in depth.
+ * The original tools are READ-ONLY record reads. Issue #173 added
+ * the agent-operation tools (src/mcp-agent-tools.ts): every agent's
+ * A2A operations as MCP tools, dispatched through the owning agent's
+ * own A2A handler so its gates apply unchanged. Write-class tools
+ * (send / post / process / create / delete) are gated for JWT
+ * callers by mcp:tools:write (src/mcp-jwt.ts WRITE_TOOLS, built
+ * from the same table). The endpoint itself is protected by the
+ * credential check in src/mcp-auth.ts (see MCP_AUTH_MODE).
+ * Trade decisions stay dashboard-only - the desk tools list
+ * proposals and hunts, nothing more.
  *
  * In particular these are intentionally NOT exposed:
  *   - payExternalEndpoint  (broadcasts a real EVM transfer)
@@ -287,5 +299,129 @@ export function createCfmailMcpHandler(env: Env) {
       };
     },
   );
+  // ---- Agent operations as MCP tools (issue #173) ----
+  // Every spec in src/mcp-agent-tools.ts becomes a tool that
+  // dispatches through the owning agent's own A2A handler, with
+  // the same message/send body the orchestrator builds.
+  const zodField = (def: McpFieldDef) => {
+    switch (def.kind) {
+      case "string":
+        return z.string().optional().describe(def.describe);
+      case "number":
+        return z.number().optional().describe(def.describe);
+      case "boolean":
+        return z.boolean().optional().describe(def.describe);
+      case "object":
+        return z.record(z.string(), z.unknown()).optional().describe(def.describe);
+      case "array":
+        return z.array(z.record(z.string(), z.unknown())).optional().describe(def.describe);
+    }
+  };
+
+  const dispatchAgentOperation = async (
+    toolSpec: McpAgentToolSpec,
+    input: Record<string, unknown>,
+  ): Promise<{ text: string; data: unknown }> => {
+    const ns = (env as unknown as Record<string, DurableObjectNamespace>)[toolSpec.binding];
+    if (!ns) throw new Error(`${toolSpec.binding} binding is absent`);
+    const stub = ns.get(ns.idFromName(toolSpec.instance)) as unknown as {
+      handleA2A: (b: unknown, o: string) => Promise<unknown>;
+    };
+    const { args: extra, ...fields } = input ?? {};
+    const data: Record<string, unknown> = { operation: toolSpec.operation };
+    for (const [k, v] of Object.entries(fields)) if (v !== undefined) data[k] = v;
+    if (extra && typeof extra === "object") Object.assign(data, extra as Record<string, unknown>);
+    const textValue = [data.text, data.question, data.message, data.goal].find(
+      (v): v is string => typeof v === "string" && v.length > 0,
+    );
+    const parts: unknown[] = [];
+    if (textValue) parts.push({ kind: "text", text: textValue });
+    parts.push({ kind: "data", data });
+    const body = {
+      jsonrpc: "2.0",
+      id: `mcp-${toolSpec.tool}`,
+      method: "message/send",
+      params: {
+        message: {
+          kind: "message",
+          role: "user",
+          messageId: `mcp-${Date.now()}`,
+          parts,
+        },
+      },
+    };
+    const outcome = (await stub.handleA2A(body, "https://mcp.internal")) as {
+      result?: { parts?: { kind: string; text?: string; data?: unknown }[] };
+    };
+    const rparts = outcome?.result?.parts ?? [];
+    const text = rparts
+      .filter((p) => p.kind === "text")
+      .map((p) => p.text ?? "")
+      .join(" ")
+      .trim();
+    const rdata = rparts.find((p) => p.kind === "data")?.data;
+    return { text, data: rdata };
+  };
+
+  for (const toolSpec of MCP_AGENT_TOOLS) {
+    const inputSchema: Record<string, z.ZodType> = {};
+    for (const f of toolSpec.fields) inputSchema[f] = zodField(MCP_FIELDS[f]);
+    inputSchema.args = z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("Escape hatch: extra operation arguments, merged over the named fields.");
+    server.registerTool(
+      toolSpec.tool,
+      {
+        title: `${toolSpec.operation} (${toolSpec.agent})`,
+        description: `${toolSpec.blurb} Dispatches the ${toolSpec.operation} A2A operation through the ${toolSpec.agent} agent's own handler.`,
+        inputSchema,
+        annotations: {
+          readOnlyHint: toolSpec.access === "read",
+          destructiveHint:
+            toolSpec.operation === "chat.clear" || toolSpec.operation === "scheduled.delete",
+          idempotentHint: toolSpec.access === "read",
+          openWorldHint: false,
+        },
+      },
+      async (input: Record<string, unknown>) => {
+        const { text, data } = await dispatchAgentOperation(toolSpec, input ?? {});
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ operation: toolSpec.operation, text, data }, null, 2),
+            },
+          ],
+        };
+      },
+    );
+  }
+
+  // Desk listings (read-only; decisions stay on the dashboard).
+  for (const desk of MCP_DESK_TOOLS) {
+    server.registerTool(
+      desk.tool,
+      {
+        title: desk.tool,
+        description: desk.blurb,
+        inputSchema: {},
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async () => {
+        const rows =
+          desk.tool === "cfpay_desk_hunts_list"
+            ? await agent.listOpportunityHunts()
+            : await agent.listTradeProposals();
+        return { content: [{ type: "text" as const, text: JSON.stringify(rows, null, 2) }] };
+      },
+    );
+  }
+
   return createMcpHandler(server, { route: "/mcp" });
 }
