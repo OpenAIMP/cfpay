@@ -6,6 +6,7 @@ import {
   errorSpec,
   errorStatus,
   isErrorCode,
+  a2aErrorCode,
   mapUnknownError,
 } from "../src/errors";
 
@@ -81,4 +82,23 @@ describe("mapUnknownError (issue #209)", () => {
     expect(mapUnknownError(undefined)).toBe("INTERNAL");
     expect(mapUnknownError("a bare string")).toBe("INTERNAL");
   });
+  it("maps A2A failure tokens to catalog codes (phase 2)", () => {
+    expect(a2aErrorCode("unknown_operation")).toBe("BAD_REQUEST");
+    expect(a2aErrorCode("not_found")).toBe("NOT_FOUND");
+    expect(a2aErrorCode("already_fired")).toBe("CONFLICT");
+    expect(a2aErrorCode("goal_required")).toBe("VALIDATION_FAILED");
+    expect(a2aErrorCode("invalid_cron")).toBe("VALIDATION_FAILED");
+    expect(a2aErrorCode("missing_fields")).toBe("VALIDATION_FAILED");
+    expect(a2aErrorCode("bad_url")).toBe("VALIDATION_FAILED");
+    expect(a2aErrorCode("ai_search_not_found")).toBe("SEARCH_NOT_CONFIGURED");
+    expect(a2aErrorCode("send quota exceeded for today")).toBe("RATE_LIMITED");
+    expect(a2aErrorCode("something unrecognized")).toBe("INTERNAL");
+    expect(a2aErrorCode(undefined)).toBe("INTERNAL");
+  });
+
+  it("the catalog carries the MCP token config code", () => {
+    expect(isErrorCode("MCP_JWT_NOT_CONFIGURED")).toBe(true);
+    expect(errorStatus("MCP_JWT_NOT_CONFIGURED")).toBe(503);
+  });
 });
+
