@@ -192,12 +192,14 @@ export const scheduledAgentToolSchema = {
   properties: {
     operation: {
       type: "string",
-      enum: ["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.delete"],
+      enum: ["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.once", "scheduled.trigger", "scheduled.delete"],
       description: "Which scheduled-goals operation to perform.",
     },
-    goal: { type: "string", description: "The goal text. Required for scheduled.create." },
+    goal: { type: "string", description: "The goal text. Required for scheduled.create and scheduled.once." },
     cron: { type: "string", description: "5-field cron in UTC, or @hourly/@daily/@weekly/@monthly. Required for scheduled.create." },
-    id: { type: "string", description: "The scheduled goal id. Required for scheduled.delete." },
+    at: { type: "string", description: "For scheduled.once: an ISO-8601 fire time, or a relative offset like +2m / +1h / +3d." },
+    delaySeconds: { type: "number", description: "For scheduled.once: fire this many seconds from now (alternative to at)." },
+    id: { type: "string", description: "The scheduled goal id. Required for scheduled.delete and scheduled.trigger." },
   },
   required: ["operation"],
 } as const;
