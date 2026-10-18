@@ -202,8 +202,9 @@ jobs:
     needs: typecheck
     if: github.event_name == 'pull_request'
 
+    # Uses the PROD environment so the job can read the Cloudflare secrets (scoped to PROD); the deploy itself targets the separate cfmail-agent-preview Worker via wrangler.preview.jsonc.
     environment:
-      name: preview
+      name: PROD
 
     steps:
       - name: Check out repository
@@ -224,4 +225,4 @@ jobs:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
           wranglerVersion: "4"
-          command: deploy --name cfmail-agent-preview
+          command: deploy --config wrangler.preview.jsonc --name cfmail-agent-preview

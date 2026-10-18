@@ -51,6 +51,14 @@
       {
         "name": "ORCHESTRATOR_AGENT",
         "class_name": "OrchestratorAgent"
+      },
+      {
+        "name": "SCHEDULED_AGENT",
+        "class_name": "ScheduledAgent"
+      },
+      {
+        "name": "AUTOPILOT_AGENT",
+        "class_name": "AutopilotAgent"
       }
     ]
   },
@@ -61,22 +69,41 @@
       "remote": true
     }
   ],
+  // Preview migrations deliberately DIFFER from production's v1..v13 chain:
+  // the preview Worker is a brand-new script on every first deploy, and
+  // Cloudflare no longer permits CREATING key-value-backed DO namespaces
+  // (production's v1 "new_classes" entry). The API rejects the whole deploy
+  // with code 10097 ("In order to use Durable Objects with a free plan, you
+  // must create a namespace using a new_sqlite_classes migration"). A single
+  // v1 tag declaring every class with the SQLite backend is the standard
+  // shape for a fresh Worker; production keeps its historical chain untouched.
   "migrations": [
-    { "tag": "v1", "new_classes": ["CfmailAgent"] },
-    { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] },
-    { "tag": "v3", "new_sqlite_classes": ["PaymentsAgent"] },
-{ "tag": "v4", "new_sqlite_classes": ["EmailAgent"] },
-    { "tag": "v5", "new_sqlite_classes": ["WebhookAgent"] },
-    { "tag": "v6", "new_sqlite_classes": ["SlackAgent"] },
-  { "tag": "v7", "new_sqlite_classes": ["QAAgent"] },
-    { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] },
-    { "tag": "v9", "new_sqlite_classes": ["VoiceAgent"] },
-    { "tag": "v10", "new_sqlite_classes": ["SearchAgent"] },
-    { "tag": "v11", "new_sqlite_classes": ["OrchestratorAgent"] }
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CfmailAgentSQLite",
+        "PaymentsAgent",
+        "EmailAgent",
+        "WebhookAgent",
+        "SlackAgent",
+        "QAAgent",
+        "ChatAgent",
+        "VoiceAgent",
+        "SearchAgent",
+        "OrchestratorAgent",
+        "ScheduledAgent",
+        "AutopilotAgent"
+      ]
+    }
   ],
   "workflows": [
     {
-      "name": "trade-workflow",
+      // Preview workflow name is deliberately DIFFERENT from production's
+      // "trade-workflow": workflow names are unique per account, and deploying
+      // this config under production's name would REASSIGN the workflow away
+      // from the live cfmail-agent Worker, breaking real trade approvals.
+      // The code binding (TRADE_WORKFLOW) is identical.
+      "name": "trade-workflow-preview",
       "binding": "TRADE_WORKFLOW",
       "class_name": "TradeWorkflow"
     }
@@ -96,8 +123,10 @@
   },
   // Preview deploy: NO routes block - the production custom domain
   // (pay.openaimp.com) can attach to only one Worker, so the preview
-  // Worker must not try to claim it. Keep the rest in sync with
-  // wrangler.jsonc when bindings or migrations change.
+  // Worker must not try to claim it. Bindings and migrations are kept in
+  // sync with production wrangler.jsonc; the workflow above is renamed
+  // (never reassign production's trade-workflow). Vars are the same
+  // non-secret config values as production.
   "vars": {
     "EMAIL_DOMAIN": "cfmail.openaimp.com",
     "PAYMENT_DESCRIPTION": "Agent service request via cfmail",
@@ -106,19 +135,18 @@
     "X402_FACILITATOR_URL": "https://x402.org/facilitator",
     "APP_BASE_URL": "https://pay.openaimp.com",
     "PAYMENT_CONFIG": "{\"networks\":{\"eip155:8453\":{\"chainId\":\"0x2105\",\"name\":\"Base\",\"usdc\":\"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"},\"eip155:84532\":{\"chainId\":\"0x14a34\",\"name\":\"Base Sepolia\",\"usdc\":\"0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"},\"eip155:11155111\":{\"chainId\":\"0xaa36a7\",\"name\":\"Ethereum Sepolia\",\"usdc\":\"0x1a25de0b1c1be0fc1de4ad99e9c8a24f1c2e0c24\",\"ethAmount\":\"1000000000000000\",\"usdcAmount\":\"10000\"}}}"
-  }
-,
+  },
   "browser": {
     "binding": "BROWSER"
-  },
+  }
   // NO worker_loaders binding, deliberately.
   //
   // It looked like the right thing to add: createBrowserTools() spawns its
   // sandbox through this binding, so the model-driven browser tools need it.
-  // But Dynamic Workers require a PAID plan - "In order to use Dynamic Workers,
-  // you must switch to a paid plan at ... [code: 10195]" - and this account is
-  // on the Free plan, so declaring it made every production deploy fail at the
-  // Cloudflare API.
+  // But Dynamic Workers ("worker_loaders") broke every production deploy at
+  // the Cloudflare API (code 10195) when the account was on the Free plan.
+  // The account moved to Workers Paid on 2026-10-17, but the binding stays
+  // off by agreement - re-adding it is a deliberate decision, not a plan fix.
   //
   // `wrangler deploy --dry-run` does NOT catch this: it validates the build and
   // the binding's shape, not the account's entitlement to use it. The failure
@@ -127,9 +155,5 @@
   // Nothing is lost for now. QAAgent.getTools() guards on `env.BROWSER &&
   // env.LOADER` and skips the browser tools when the binding is absent, so the
   // deterministic CDP checks - which are what the QA suite actually relies on -
-  // are unaffected. Add this binding back if and when the account moves to a
-  // paid plan.
-  "browser": {
-    "binding": "BROWSER"
-  }
+  // are unaffected.
 }
