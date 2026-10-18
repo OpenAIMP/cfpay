@@ -38,8 +38,14 @@ export const SCOPE_SETS: Record<"READONLY" | "STANDARD" | "FULL", McpScope[]> = 
   FULL: ["mcp:tools:list", "mcp:tools:call", "mcp:tools:write", "mcp:read"],
 };
 
-/** Tools that mutate state; calling one needs mcp:tools:write. None exist yet. */
-export const WRITE_TOOLS = new Set<string>([]);
+/**
+ * Tools that mutate state; calling one needs mcp:tools:write.
+ * Built from the MCP agent-tool table (issue #173): every spec
+ * classified "write" in src/mcp-agent-tools.ts lands here, so the
+ * JWT gate and the tool registry can never drift apart.
+ */
+import { MCP_WRITE_TOOL_NAMES } from "./mcp-agent-tools";
+export const WRITE_TOOLS = new Set<string>(MCP_WRITE_TOOL_NAMES);
 
 /**
  * The scopes a JSON-RPC call requires, as an any-of list (one is

@@ -46,6 +46,26 @@ A production-grade, fully agentic solution that:
   ETH / USDC on 3 EVM networks (outbound email) (AI responses)
 ```
 
+### Agent surfaces (issue #173)
+
+Every agent ships the same five surfaces; the wiring tests guard them, so a new agent cannot land without its row. MCP tools are generated from `src/mcp-agent-tools.ts` and dispatch through each agent's own A2A handler; write-class tools need the `mcp:tools:write` JWT scope.
+
+| Agent | Think base | A2A endpoint | Host tool | MCP tools (`cfpay_*`) | Dashboard |
+|---|---|---|---|---|---|
+| cfmail (host) | yes | `/a2a` | - (the host itself) | `cfpay_cfmail_*` + desk listings | the desk itself |
+| email | yes | `/a2a/email` | emailAgent | `cfpay_email_*` | Emails view |
+| payments | yes | `/a2a/payments` | paymentAgent | `cfpay_payments_*` | Payments view |
+| webhook | yes | `/a2a/webhooks` | webhookAgent | `cfpay_webhook_*` | Webhooks view |
+| slack | yes | `/a2a/slack` | slackAgent | `cfpay_slack_*` | Logs / Slack actions |
+| qa | yes | `/a2a/qa` | qaAgent | `cfpay_qa_*` | QA actions + snapshots |
+| chat | yes | `/a2a/chat` | chatAgent | `cfpay_chat_*` | Questions view |
+| voice | yes (`withVoice(Think)`) | `/a2a/voice` | voiceAgent | `cfpay_voice_*` | Talk control |
+| search | yes | `/a2a/search` | searchAgent | `cfpay_search_*` | Knowledge search card |
+| orchestrator | yes | `/a2a/orchestrator` | orchestratorAgent | `cfpay_orchestrator_*` | Orchestrate view |
+| scheduled | yes | `/a2a/scheduled` | scheduledAgent | `cfpay_scheduled_*` | scheduled-goals API |
+
+Deliberate exceptions: trade decisions stay dashboard-only (MCP lists proposals, never decides); desk ask / hunt runs are not MCP tools (they need the caller's Public.com session, owned by the API layer); the TradeWorkflow is a Workflow, not an agent.
+
 ## Webhook Setup
 
 ### GitHub
