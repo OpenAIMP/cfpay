@@ -56,6 +56,71 @@ async function fetchWithTimeout(doFetch: FetchFn, url: string, init: RequestInit
   }
 }
 
+/**
+ * Issue #264: HTTP probe of the deployment's own surface, issued from the
+ * Durable Object context. Dashboard API routes cannot HTTP self-fetch the
+ * Worker's own domain from the plain fetch-handler context (Cloudflare 522
+ * in production); QAAgent's DO context can — the §12 probes above prove it
+ * every deploy. The path allowlist keeps this from becoming a general
+ * proxy: only QA-probed paths are served, GET/POST only.
+ */
+export interface QaProbeRequest {
+  origin: string;
+  path: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+export interface QaProbeResult {
+  status: number;
+  text: string;
+}
+
+const QA_PROBE_PATH_PREFIXES = ["/a2a/", "/webhooks/", "/api/dashboard/"];
+const QA_PROBE_EXACT_PATHS = ["/a2a", "/mcp", "/slack/events"];
+
+/** Pure: is this path allowed through the probe? (unit-pinned in tests/qa-probe.test.ts) */
+export function qaProbePathAllowed(path: string): boolean {
+  const p = String(path ?? "");
+  if (QA_PROBE_EXACT_PATHS.includes(p)) return true;
+  return QA_PROBE_PATH_PREFIXES.some((prefix) => p.startsWith(prefix));
+}
+
+/** Perform the probe. Returns {status, text} — never throws (status 0 on fetch failure). */
+export async function probeOwnOrigin(req: QaProbeRequest): Promise<QaProbeResult> {
+  const fail = (message: string): QaProbeResult => ({
+    status: 400,
+    text: JSON.stringify({ error: `qaHttpProbe: ${message}` }),
+  });
+  const origin = String(req?.origin ?? "");
+  if (!/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?$/i.test(origin)) return fail("bad origin");
+  const path = String(req?.path ?? "");
+  if (!path.startsWith("/") || !qaProbePathAllowed(path)) return fail("path not allowed");
+  const method = String(req?.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "POST") return fail("method not allowed");
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(req?.headers ?? {})) {
+    if (typeof k === "string" && typeof v === "string") headers[k] = v;
+  }
+  try {
+    const res = await fetchWithTimeout(
+      fetch,
+      origin + path,
+      {
+        method,
+        headers,
+        ...(method === "POST" ? { body: req?.body ?? "" } : {}),
+      },
+      20000,
+    );
+    const text = await res.text().catch(() => "");
+    return { status: res.status, text };
+  } catch (err) {
+    return { status: 0, text: JSON.stringify({ error: `qaHttpProbe: fetch failed: ${String(err)}` }) };
+  }
+}
+
 /** Probe one A2A surface: card, unauthenticated refusal, snapshot dispatch. */
 export async function testA2AEndpoint(
   origin: string,
