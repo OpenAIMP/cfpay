@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { postFilesToSlack } from "./slack-files";
-import { errorBody, errorStatus, mapUnknownError, ERROR_CATALOG } from "./errors";
+import { errorBody, errorBodyAs, errorStatus, mapUnknownError, ERROR_CATALOG } from "./errors";
 import { issueToken, MCP_SCOPES, type McpScope } from "./mcp-jwt";
 import { safeStringify } from "./browser-lifecycle";
 import Stripe from "stripe";
@@ -336,7 +336,7 @@ export function createApp() {
   app.get("/api/public/tools", requireAuth, async (c) => {
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
-    if (!token) return c.json({ error: "Not connected." }, 409);
+    if (!token) return c.json(errorBodyAs("PUBLIC_NOT_CONNECTED", "Not connected."), 409);
     try {
       const tools = await listTools(token, {});
       // Full definitions, not just names: the Public tab renders these as a
@@ -380,7 +380,7 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const budget = Number(body.budget);
     if (!Number.isFinite(budget) || budget <= 0) {
-      return c.json({ error: "budget (a positive number) is required" }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "budget (a positive number) is required"), 400);
     }
     const request: HuntRequest = {
       budget,
@@ -414,7 +414,7 @@ export function createApp() {
   app.get("/api/public/opportunity-hunts/:id/report", requireAuth, async (c) => {
     const agent = getAgent(c);
     const hunt = await agent.getOpportunityHunt(c.req.param("id"));
-    if (!hunt) return c.json({ error: "No such hunt" }, 404);
+    if (!hunt) return c.json(errorBodyAs("NOT_FOUND", "No such hunt"), 404);
     return c.html(renderHuntReportHtml(hunt));
   });
 
@@ -424,20 +424,20 @@ export function createApp() {
     const body = await c.req.json<{ toEmail?: string }>().catch(() => ({}) as { toEmail?: string });
     const toEmail = String(body.toEmail || "").trim();
     if (!/^[^@\s]+@[^@\s]+$/.test(toEmail)) {
-      return c.json({ error: "A valid toEmail is required." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "A valid toEmail is required."), 400);
     }
     const agent = getAgent(c);
     const hunt = await agent.getOpportunityHunt(c.req.param("id"));
-    if (!hunt) return c.json({ error: "No such hunt" }, 404);
+    if (!hunt) return c.json(errorBodyAs("NOT_FOUND", "No such hunt"), 404);
     const qaAgent = await getQAAgent(c);
     const printed = await qaAgent.qaPrintPdf(renderHuntReportHtml(hunt));
     if (!printed.ok || !printed.pdfBase64) {
-      return c.json({ error: printed.error || "PDF rendering failed" }, 502);
+      return c.json(errorBodyAs("INTERNAL", printed.error || "PDF rendering failed"), 502);
     }
     const { emailAgentStub } = await import("./email-tool");
     const emailAgent = emailAgentStub(c.env as any);
     if (!emailAgent) {
-      return c.json({ error: "The email agent is unavailable, so nothing was sent." }, 503);
+      return c.json(errorBody("EMAIL_AGENT_UNAVAILABLE"), 503);
     }
     const plan = hunt.plan;
     const lines = [
@@ -497,19 +497,19 @@ export function createApp() {
   app.get("/api/public/quotes", requireAuth, async (c) => {
     const symbols = parseSymbolsParam(c.req.query("symbols"));
     if (!symbols.length) {
-      return c.json({ error: "Pass ?symbols=NVDA,AMD with at least one valid symbol." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Pass ?symbols=NVDA,AMD with at least one valid symbol."), 400);
     }
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
     if (!token) {
-      return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+      return c.json(errorBodyAs("PUBLIC_NOT_CONNECTED", "Not connected to Public.com. Paste an access token first."), 409);
     }
     try {
       const session: McpSession = {};
       const tools = await listTools(token, session);
       const tool = tools.find((t) => t.name === "get_quotes");
       if (!tool) {
-        return c.json({ error: "Public.com did not offer get_quotes for this account." }, 502);
+        return c.json(errorBodyAs("PUBLIC_UPSTREAM", "Public.com did not offer get_quotes for this account."), 502);
       }
       const declared = Object.keys(schemaProps(tool.inputSchema).properties).join(", ");
       const list = pickArgs(tool.inputSchema, {
@@ -524,7 +524,7 @@ export function createApp() {
         });
         if (!probe.matched.symbol) {
           return c.json(
-            { error: "get_quotes declares no symbols/symbol parameter (it declares: " + declared + ")." },
+            { ...errorBodyAs("PUBLIC_UPSTREAM", "get_quotes declares no symbols/symbol parameter (it declares: " + declared + ").") },
             502,
           );
         }
@@ -548,14 +548,14 @@ export function createApp() {
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
     if (!token) {
-      return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+      return c.json(errorBodyAs("PUBLIC_NOT_CONNECTED", "Not connected to Public.com. Paste an access token first."), 409);
     }
     try {
       const session: McpSession = {};
       const tools = await listTools(token, session);
       const tool = tools.find((t) => t.name === "get_portfolio");
       if (!tool) {
-        return c.json({ error: "Public.com did not offer get_portfolio for this account." }, 502);
+        return c.json(errorBodyAs("PUBLIC_UPSTREAM", "Public.com did not offer get_portfolio for this account."), 502);
       }
       const args: Record<string, unknown> = {};
       const { properties, required } = schemaProps(tool.inputSchema);
@@ -565,7 +565,7 @@ export function createApp() {
         const accountId = extractAccountId(accounts);
         if (!accountId) {
           return c.json(
-            { error: "get_portfolio requires an account id, but none could be read from get_accounts." },
+            { ...errorBodyAs("PUBLIC_UPSTREAM", "get_portfolio requires an account id, but none could be read from get_accounts.") },
             502,
           );
         }
@@ -574,7 +574,7 @@ export function createApp() {
       const missing = missingRequired(tool.inputSchema, args);
       if (missing.length) {
         return c.json(
-          { error: "get_portfolio requires unsupported parameters: " + missing.join(", ") + "." },
+          { ...errorBodyAs("PUBLIC_UPSTREAM", "get_portfolio requires unsupported parameters: " + missing.join(", ") + ".") },
           502,
         );
       }
@@ -588,23 +588,23 @@ export function createApp() {
   app.get("/api/public/chain", requireAuth, async (c) => {
     const symbol = (c.req.query("symbol") || "").trim().toUpperCase();
     if (!/^[A-Z0-9][A-Z0-9.\-]{0,11}$/.test(symbol)) {
-      return c.json({ error: "Pass ?symbol=SMH (and optionally &expiry=YYYY-MM-DD)." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Pass ?symbol=SMH (and optionally &expiry=YYYY-MM-DD)."), 400);
     }
     let expiry = c.req.query("expiry") || "";
     if (expiry && !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-      return c.json({ error: "expiry must be YYYY-MM-DD." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "expiry must be YYYY-MM-DD."), 400);
     }
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
     if (!token) {
-      return c.json({ error: "Not connected to Public.com. Paste an access token first." }, 409);
+      return c.json(errorBodyAs("PUBLIC_NOT_CONNECTED", "Not connected to Public.com. Paste an access token first."), 409);
     }
     try {
       const session: McpSession = {};
       const tools = await listTools(token, session);
       const chainTool = tools.find((t) => t.name === "get_option_chain");
       if (!chainTool) {
-        return c.json({ error: "Public.com did not offer get_option_chain for this account." }, 502);
+        return c.json(errorBodyAs("PUBLIC_UPSTREAM", "Public.com did not offer get_option_chain for this account."), 502);
       }
       // The option tools require the account id (production-verified:
       // get_option_expirations rejects a symbol-only call with
@@ -660,7 +660,7 @@ export function createApp() {
       if (!picked.matched.symbol) {
         const declared = Object.keys(schemaProps(chainTool.inputSchema).properties).join(", ");
         return c.json(
-          { error: "get_option_chain declares no symbol parameter (it declares: " + declared + ")." },
+          { ...errorBodyAs("PUBLIC_UPSTREAM", "get_option_chain declares no symbol parameter (it declares: " + declared + ").") },
           502,
         );
       }
@@ -705,7 +705,7 @@ export function createApp() {
       .json<{ approved?: boolean; notes?: string }>()
       .catch(() => ({}) as { approved?: boolean; notes?: string });
     if (typeof body.approved !== "boolean") {
-      return c.json({ error: "approved (boolean) is required." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "approved (boolean) is required."), 400);
     }
     const agent = getAgent(c);
     try {
@@ -745,7 +745,7 @@ export function createApp() {
     const chosen = resolveModelId(requested);
     if (chosen !== requested) {
       return c.json(
-        { error: "Unknown model: " + requested + ". Pick one from /api/public/models." },
+        { ...errorBodyAs("VALIDATION_FAILED", "Unknown model: " + requested + ". Pick one from /api/public/models.") },
         400,
       );
     }
@@ -770,7 +770,7 @@ export function createApp() {
   app.post("/api/public/chat", requireAuth, async (c) => {
     const body = await c.req.json<{ message?: string; autopilot?: boolean }>();
     const message = (body.message || "").trim();
-    if (!message) return c.json({ error: "message is required" }, 400);
+    if (!message) return c.json(errorBodyAs("VALIDATION_FAILED", "message is required"), 400);
 
     const agent = getAgent(c);
     const token = await agent.getPublicToken();
@@ -842,7 +842,7 @@ export function createApp() {
         e instanceof Error ? e.message : e,
         safeStringify(result),
       );
-      return c.json({ error: "Failed to serialize result", route: label }, 500);
+      return c.json({ ...errorBodyAs("INTERNAL", "Failed to serialize result"), route: label }, 500);
     }
   }
 
@@ -1214,13 +1214,13 @@ export function createApp() {
       c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() ??
       "unknown";
     if (isStripeCheckoutRateLimited(clientIp)) {
-      return c.json({ error: "Too many requests. Please try again in a minute." }, 429);
+      return c.json(errorBodyAs("RATE_LIMITED", "Too many requests. Please try again in a minute."), 429);
     }
 
     const config = getStripeConfig(c.env);
     if (!config) {
       return c.json(
-        { error: "Card payments are not configured on this deployment." },
+        { ...errorBodyAs("FEATURE_NOT_CONFIGURED", "Card payments are not configured on this deployment.") },
         503,
       );
     }
@@ -1229,20 +1229,20 @@ export function createApp() {
     try {
       body = await c.req.json();
     } catch {
-      return c.json({ error: "Invalid JSON body." }, 400);
+      return c.json(errorBodyAs("INVALID_JSON", "Invalid JSON body."), 400);
     }
 
     const email = typeof body.email === "string" ? body.email.trim() : "";
     const request = typeof body.request === "string" ? body.request.trim() : "";
 
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-      return c.json({ error: "A valid email address is required." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "A valid email address is required."), 400);
     }
     if (!request) {
-      return c.json({ error: "A request description is required." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "A request description is required."), 400);
     }
     if (request.length > 2000) {
-      return c.json({ error: "Request is too long." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Request is too long."), 400);
     }
 
     const requestId = generateRequestId();
@@ -1251,7 +1251,7 @@ export function createApp() {
     const intent = await agent.createStripeCheckoutIntent(requestId, email, request);
     if (!intent || !intent.ok) {
       return c.json(
-        { error: (intent && intent.error) || "Could not start a checkout." },
+        { ...errorBodyAs("CONFLICT", (intent && intent.error) || "Could not start a checkout.") },
         409,
       );
     }
@@ -1277,7 +1277,7 @@ export function createApp() {
       });
 
       if (!session.url) {
-        return c.json({ error: "Stripe did not return a checkout URL." }, 502);
+        return c.json(errorBodyAs("STRIPE_UPSTREAM", "Stripe did not return a checkout URL."), 502);
       }
 
       await agent.attachStripeSession(requestId, session.id, session.url);
@@ -1285,7 +1285,7 @@ export function createApp() {
       return c.json({ url: session.url, requestId, sessionId: session.id });
     } catch (error) {
       console.error("Stripe checkout creation failed:", safeStripeError(error));
-      return c.json({ error: "Could not create the checkout session." }, 502);
+      return c.json(errorBodyAs("STRIPE_UPSTREAM", "Could not create the checkout session."), 502);
     }
   });
 
@@ -1309,7 +1309,7 @@ export function createApp() {
     const paymentHeader = c.req.header("PAYMENT-SIGNATURE");
     if (!paymentHeader) {
       return c.json(
-        { error: "Payment required" },
+        { ...errorBody("PAYMENT_REQUIRED") },
         402,
         buildPaymentChallenge(c.env, c.env.PAYMENT_DESCRIPTION, new URL(c.req.url).origin),
       );
@@ -1321,7 +1321,7 @@ export function createApp() {
       new URL(c.req.url).origin,
     );
     if (!verification.verified) {
-      return c.json({ error: "Payment verification failed", details: verification.error }, 402);
+      return c.json({ ...errorBodyAs("PAYMENT_REQUIRED", "Payment verification failed"), details: verification.error }, 402);
     }
     const body = await c.req.json<{ email: string; request: string }>();
     const agent = getAgent(c);
@@ -1351,7 +1351,7 @@ export function createApp() {
     const paymentHeader = c.req.header("PAYMENT-SIGNATURE");
     if (!paymentHeader) {
       return c.json(
-        { error: "Payment required" },
+        { ...errorBody("PAYMENT_REQUIRED") },
         402,
         buildPaymentChallenge(c.env, "Access to stored email history", new URL(c.req.url).origin),
       );
@@ -1363,7 +1363,7 @@ export function createApp() {
       new URL(c.req.url).origin,
     );
     if (!verification.verified) {
-      return c.json({ error: "Payment verification failed", details: verification.error }, 402);
+      return c.json({ ...errorBodyAs("PAYMENT_REQUIRED", "Payment verification failed"), details: verification.error }, 402);
     }
     const agent = getAgent(c);
     const emails = await agent.getEmails(null, 50);
@@ -1376,7 +1376,7 @@ export function createApp() {
     const paymentHeader = c.req.header("PAYMENT-SIGNATURE");
     if (!paymentHeader) {
       return c.json(
-        { error: "Payment required" },
+        { ...errorBody("PAYMENT_REQUIRED") },
         402,
         buildPaymentChallenge(c.env, "Process email request via MCP tool", new URL(c.req.url).origin),
       );
@@ -1388,7 +1388,7 @@ export function createApp() {
       new URL(c.req.url).origin,
     );
     if (!verification.verified) {
-      return c.json({ error: "Payment verification failed", details: verification.error }, 402);
+      return c.json({ ...errorBodyAs("PAYMENT_REQUIRED", "Payment verification failed"), details: verification.error }, 402);
     }
     const body = await c.req.json<{ email: string; request: string }>();
     const agent = getAgent(c);
@@ -1487,7 +1487,7 @@ export function createApp() {
     const { emailAgentStub } = await import("./email-tool");
     const emailAgent = emailAgentStub(c.env as any);
     if (!emailAgent) {
-      return c.json({ error: "The email agent is unavailable, so nothing was sent." }, 503);
+      return c.json(errorBody("EMAIL_AGENT_UNAVAILABLE"), 503);
     }
     const result = await emailAgent.sendThroughAgent({
       to: body.to,
@@ -1611,7 +1611,7 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const url = body.url as string;
     if (!url || !/^https?:\/\//.test(url)) {
-      return c.json({ error: "Valid http(s) url required" }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Valid http(s) url required"), 400);
     }
     // X-API-Key is what the dashboard sends and what requireAuth checks. Reading
     // Authorization instead meant this was always undefined, so the QA check ran with no
@@ -1653,7 +1653,7 @@ export function createApp() {
       // check needs one because it seeds localStorage before navigating, so without it
       // the check would visit the login page and report a confusing failure.
       return c.json(
-        { error: "The tab check needs an X-API-Key header; session auth is not enough." },
+        { ...errorBodyAs("VALIDATION_FAILED", "The tab check needs an X-API-Key header; session auth is not enough.") },
         400,
       );
     }
@@ -1674,7 +1674,7 @@ export function createApp() {
     const apiKey = presented || authHeader || undefined;
     if (!apiKey) {
       return c.json(
-        { error: "The UX audit needs an X-API-Key header; session auth is not enough." },
+        { ...errorBodyAs("VALIDATION_FAILED", "The UX audit needs an X-API-Key header; session auth is not enough.") },
         400,
       );
     }
@@ -1693,7 +1693,7 @@ export function createApp() {
     const spec = body.spec;
     if (!spec || !Array.isArray(spec.pages) || spec.pages.length === 0) {
       return c.json(
-        { error: "Body must carry spec.pages: at least one URL, all on one origin." },
+        { ...errorBodyAs("VALIDATION_FAILED", "Body must carry spec.pages: at least one URL, all on one origin.") },
         400,
       );
     }
@@ -1711,7 +1711,7 @@ export function createApp() {
     const question = typeof body.question === "string" ? body.question : "";
     const url = typeof body.url === "string" ? body.url : "";
     if (!question || !url) {
-      return c.json({ error: "Body must carry question and url." }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Body must carry question and url."), 400);
     }
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
     const qaAgent = await getQAAgent(c);
@@ -1723,7 +1723,7 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const toEmail = body.toEmail as string;
     if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
-      return c.json({ error: "Valid toEmail required" }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Valid toEmail required"), 400);
     }
     // X-API-Key is what the dashboard sends and what requireAuth checks. Reading
     // Authorization instead meant this was always undefined, so the QA check ran with no
@@ -1732,7 +1732,7 @@ export function createApp() {
     const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const apiKey = presented || bearer || undefined;
     if (!apiKey) {
-      return c.json({ error: "API key required" }, 401);
+      return c.json(errorBodyAs("UNAUTHORIZED", "API key required"), 401);
     }
     const qaAgent = await getQAAgent(c);
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
@@ -1746,13 +1746,13 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const toEmail = body.toEmail as string;
     if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
-      return c.json({ error: "Valid toEmail required" }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Valid toEmail required"), 400);
     }
     const presented = c.req.header("X-API-Key") || "";
     const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const key = presented || auth || undefined;
     if (!key) {
-      return c.json({ error: "API key required" }, 401);
+      return c.json(errorBodyAs("UNAUTHORIZED", "API key required"), 401);
     }
     const qaAgent = await getQAAgent(c);
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
@@ -1765,13 +1765,13 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const toEmail = body.toEmail as string;
     if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
-      return c.json({ error: "Valid toEmail required" }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Valid toEmail required"), 400);
     }
     const presented = c.req.header("X-API-Key") || "";
     const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const key = presented || auth || undefined;
     if (!key) {
-      return c.json({ error: "API key required" }, 401);
+      return c.json(errorBodyAs("UNAUTHORIZED", "API key required"), 401);
     }
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaA2ATestEmail(key, toEmail, body.runId as string | undefined);
@@ -1784,7 +1784,7 @@ export function createApp() {
   app.post("/api/dashboard/orchestrate", requireAuth, async (c) => {
     const body = await c.req.json().catch(() => ({})) as { goal?: string; mode?: string };
     const goal = (body.goal || "").trim();
-    if (!goal) return c.json({ error: "goal is required" }, 400);
+    if (!goal) return c.json(errorBodyAs("VALIDATION_FAILED", "goal is required"), 400);
     const orchestrator = await getOrchestratorAgent(c);
     const job = await orchestrator.orchestrateRun(goal, body.mode === "supervise" ? "supervise" : "plan");
     return c.json(job as Record<string, unknown>);
@@ -1902,7 +1902,7 @@ export function createApp() {
   app.post("/api/dashboard/search", requireAuth, async (c) => {
     const body = await c.req.json().catch(() => ({})) as { query?: string; mode?: string; limit?: number };
     const query = (body.query || "").trim();
-    if (!query) return c.json({ error: "query is required" }, 400);
+    if (!query) return c.json(errorBodyAs("VALIDATION_FAILED", "query is required"), 400);
     const searchAgent = await getSearchAgent(c);
     const result = body.mode === "query"
       ? await searchAgent.searchQuery(query, body.limit)
@@ -1916,7 +1916,7 @@ export function createApp() {
     const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const key = presented || auth || undefined;
     if (!key) {
-      return c.json({ error: "API key required" }, 401);
+      return c.json(errorBodyAs("UNAUTHORIZED", "API key required"), 401);
     }
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaA2AProbe(key, body.rpc as string | undefined);
@@ -1929,13 +1929,13 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const toEmail = body.toEmail as string;
     if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
-      return c.json({ error: "Valid toEmail required" }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "Valid toEmail required"), 400);
     }
     const presented = c.req.header("X-API-Key") || "";
     const auth = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const key = presented || auth || undefined;
     if (!key) {
-      return c.json({ error: "API key required" }, 401);
+      return c.json(errorBodyAs("UNAUTHORIZED", "API key required"), 401);
     }
     const qaAgent = await getQAAgent(c);
     const result = await qaAgent.qaAutopilotHuntTest(key, toEmail, body.runId as string | undefined);
@@ -1964,13 +1964,13 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const toEmail = body.toEmail as string;
     if (!toEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail)) {
-      return c.json({ error: "A valid toEmail is required" }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "A valid toEmail is required"), 400);
     }
     const presented = c.req.header("X-API-Key") || "";
     const bearer = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const apiKey = presented || bearer || undefined;
     if (!apiKey) {
-      return c.json({ error: "API key required" }, 401);
+      return c.json(errorBodyAs("UNAUTHORIZED", "API key required"), 401);
     }
     const qaAgent = await getQAAgent(c);
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;
@@ -2003,13 +2003,13 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({}));
     const toEmail = (body.toEmail as string) || undefined;
     if (toEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail)) {
-      return c.json({ error: "toEmail is not a valid email address" }, 400);
+      return c.json(errorBodyAs("VALIDATION_FAILED", "toEmail is not a valid email address"), 400);
     }
     const presented = c.req.header("X-API-Key") || "";
     const authHeader = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "");
     const apiKey = presented || authHeader || undefined;
     if (!apiKey) {
-      return c.json({ error: "API key required" }, 401);
+      return c.json(errorBodyAs("UNAUTHORIZED", "API key required"), 401);
     }
     const qaAgent = await getQAAgent(c);
     const runId = typeof body.runId === "string" && body.runId ? body.runId : undefined;

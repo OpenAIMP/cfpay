@@ -1,3 +1,4 @@
+import { errorResponseAs } from "./errors";
 import type { Env } from "./types";
 
 /**
@@ -71,10 +72,7 @@ export function buildResourceMetadata(
  */
 export function handleResourceMetadata(request: Request, env: Env): Response {
   if (!allowsDiscovery(env)) {
-    return new Response(JSON.stringify({ error: "Not found" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
+    return errorResponseAs("NOT_FOUND", "Not found");
   }
 
   return new Response(JSON.stringify(buildResourceMetadata(request, env)), {

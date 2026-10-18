@@ -2,6 +2,7 @@ import type { Env } from "./types";
 import { allowsDiscovery, resourceMetadataUrl } from "./mcp-oauth";
 import { isAcceptedAccessToken } from "./mcp-oauth-server";
 import { looksLikeJwt, requiredScopesForCall, verifyToken, WRITE_TOOLS } from "./mcp-jwt";
+import { errorBody, errorBodyAs } from "./errors";
 
 /**
  * Authorisation for the /mcp endpoint.
@@ -228,7 +229,7 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
     console.error(
       'MCP_AUTH_MODE is not one of "either", "static", "github", "jwt" or "none"; refusing /mcp.',
     );
-    return jsonResponse({ error: "MCP authorisation is misconfigured." }, 503);
+    return jsonResponse(errorBodyAs("FEATURE_NOT_CONFIGURED", "MCP authorisation is misconfigured."), 503);
   }
 
   // Explicit opt-out, and deliberately loud: this serves the tool surface openly.
@@ -244,7 +245,7 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
     if (method === "tools/call" && toolName && WRITE_TOOLS.has(toolName)) {
       console.warn(`MCP_AUTH_MODE=none: refused unauthenticated write tool call (${toolName}).`);
       return jsonResponse(
-        { error: "Write tools require authentication; MCP_AUTH_MODE=none serves read and action tools only." },
+        errorBodyAs("UNAUTHORIZED", "Write tools require authentication; MCP_AUTH_MODE=none serves read and action tools only."),
         401,
       );
     }
@@ -266,7 +267,7 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
     console.error(
       `MCP authorisation is enabled (mode=${mode}) but no usable credential is configured; refusing /mcp.`,
     );
-    return jsonResponse({ error: "MCP is not configured." }, 503);
+    return jsonResponse(errorBodyAs("FEATURE_NOT_CONFIGURED", "MCP is not configured."), 503);
   }
 
   const header = request.headers.get("Authorization") ?? "";
@@ -308,7 +309,7 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
         const required = requiredScopesForCall(method, toolName);
         if (required && !verified.hasAnyScope(...required)) {
           return jsonResponse(
-            { error: "Insufficient scope", code: "INSUFFICIENT_SCOPE", required },
+            { ...errorBody("INSUFFICIENT_SCOPE"), required },
             403,
           );
         }
@@ -335,5 +336,5 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
       }
     : {};
 
-  return jsonResponse({ error: "Unauthorized" }, 401, challenge);
+  return jsonResponse(errorBodyAs("UNAUTHORIZED", "Unauthorized"), 401, challenge);
 }

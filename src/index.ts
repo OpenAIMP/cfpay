@@ -1,5 +1,5 @@
 import { routeAgentEmail, getAgentByName, routeAgentRequest } from "agents";
-import { errorBody, errorStatus, mapUnknownError } from "./errors";
+import { errorBody, errorResponse, errorResponseAs, errorStatus, mapUnknownError } from "./errors";
 import {
   createSecureReplyEmailResolver,
 } from "agents/email";
@@ -174,16 +174,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let pbody: unknown;
       try { pbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const pStub = env.PAYMENTS_AGENT.get(env.PAYMENTS_AGENT.idFromName("payments")) as any;
       try {
         const outcome = await pStub.handleA2A(pbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -216,16 +216,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let ebody: unknown;
       try { ebody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const eStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName("email")) as any;
       try {
         const outcome = await eStub.handleA2A(ebody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -256,16 +256,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let wbody: unknown;
       try { wbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const wStub = env.WEBHOOK_AGENT.get(env.WEBHOOK_AGENT.idFromName("webhooks")) as any;
       try {
         const outcome = await wStub.handleA2A(wbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -296,16 +296,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let sbody: unknown;
       try { sbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const sStub = env.SLACK_AGENT.get(env.SLACK_AGENT.idFromName("slack")) as any;
       try {
         const outcome = await sStub.handleA2A(sbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -336,16 +336,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let qbody: unknown;
       try { qbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const qStub = env.QA_AGENT.get(env.QA_AGENT.idFromName("qa")) as any;
       try {
         const outcome = await qStub.handleA2A(qbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -373,16 +373,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let vbody: unknown;
       try { vbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const vStub = env.VOICE_AGENT.get(env.VOICE_AGENT.idFromName("desk")) as any;
       try {
         const outcome = await vStub.handleA2A(vbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -410,16 +410,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let sbody: unknown;
       try { sbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const sStub = env.SEARCH_AGENT.get(env.SEARCH_AGENT.idFromName("search")) as any;
       try {
         const outcome = await sStub.handleA2A(sbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -447,16 +447,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let obody: unknown;
       try { obody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const oStub = env.ORCHESTRATOR_AGENT.get(env.ORCHESTRATOR_AGENT.idFromName("orchestrator")) as any;
       try {
         const outcome = await oStub.handleA2A(obody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -484,16 +484,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let sbody: unknown;
       try { sbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const sStub = env.SCHEDULED_AGENT.get(env.SCHEDULED_AGENT.idFromName("scheduler")) as any;
       try {
         const outcome = await sStub.handleA2A(sbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -521,16 +521,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let abody: unknown;
       try { abody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const aStub = env.AUTOPILOT_AGENT.get(env.AUTOPILOT_AGENT.idFromName("autopilot")) as any;
       try {
         const outcome = await aStub.handleA2A(abody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -561,16 +561,16 @@ export default {
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" } });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
       let cbody: unknown;
       try { cbody = await request.json(); } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
       const cStub = env.CHAT_AGENT.get(env.CHAT_AGENT.idFromName("chat")) as any;
       try {
         const outcome = await cStub.handleA2A(cbody, url.origin);
-        if (!outcome) return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+        if (!outcome) return errorResponse("NO_HANDLER");
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
           return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
@@ -596,10 +596,7 @@ export default {
         return new Response("Method not allowed", { status: 405 });
       }
       if (!a2aAuthorised(request, env)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" },
-        });
+        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
 
       // Handling runs inside the Durable Object, which owns the SQL handle the
@@ -612,13 +609,13 @@ export default {
       try {
         body = await request.json();
       } catch {
-        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+        return errorResponse("INVALID_JSON");
       }
 
       try {
         const outcome = await doStub.handleA2A(body, url.origin);
         if (!outcome) {
-          return new Response(JSON.stringify({ error: "No handler" }), { status: 500 });
+          return errorResponse("NO_HANDLER");
         }
         // The DO cannot return a stream across RPC, so it collects events and we
         // frame them as SSE here when the method was a streaming one.

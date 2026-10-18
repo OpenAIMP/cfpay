@@ -1,3 +1,4 @@
+import { errorResponseAs } from "./errors";
 import type { Env } from "./types";
 
 /**
@@ -192,10 +193,7 @@ export async function handleAuthMe(request: Request): Promise<Response> {
     if (getCookie(request, TOKEN_COOKIE)) {
       headers["Set-Cookie"] = clearCookie(TOKEN_COOKIE, secure);
     }
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json", ...headers },
-    });
+    return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "Content-Type": "application/json", ...headers });
   }
   return new Response(JSON.stringify(user), {
     headers: { "Content-Type": "application/json", ...noStoreHeaders() },

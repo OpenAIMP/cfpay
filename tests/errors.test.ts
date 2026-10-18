@@ -102,3 +102,42 @@ describe("mapUnknownError (issue #209)", () => {
   });
 });
 
+describe("errorBodyAs / errorResponse helpers (issue #269 cluster C3)", () => {
+  it("errorBodyAs keeps the route's exact string under the catalog contract", async () => {
+    const { errorBodyAs, errorResponseAs, errorResponse } = await import("../src/errors");
+    const body = errorBodyAs("UNAUTHORIZED", "API key required");
+    expect(body).toEqual({
+      error: "API key required",
+      code: "UNAUTHORIZED",
+      hint: errorSpec("UNAUTHORIZED").hint,
+      retryable: false,
+    });
+    // The C3 contract strings survive verbatim:
+    expect(errorBodyAs("INVALID_JSON", "Invalid JSON").error).toBe("Invalid JSON");
+    expect(errorBodyAs("NO_HANDLER", "No handler").error).toBe("No handler");
+  });
+
+  it("errorResponse carries the catalog status and JSON content type", async () => {
+    const { errorResponse, errorResponseAs } = await import("../src/errors");
+    const res = errorResponse("INVALID_JSON");
+    expect(res.status).toBe(400);
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    const res2 = errorResponseAs("UNAUTHORIZED", "Unauthorized", {
+      "WWW-Authenticate": "Bearer",
+    });
+    expect(res2.status).toBe(401);
+    expect(res2.headers.get("WWW-Authenticate")).toBe("Bearer");
+    expect((await res2.json()).error).toBe("Unauthorized");
+  });
+
+  it("the C3 codes carry the statuses the old hand-rolled bodies used", () => {
+    expect(errorStatus("INVALID_JSON")).toBe(400);
+    expect(errorStatus("NO_HANDLER")).toBe(500);
+    expect(errorStatus("PAYMENT_REQUIRED")).toBe(402);
+    expect(errorStatus("INSUFFICIENT_SCOPE")).toBe(403);
+    expect(errorStatus("EMAIL_AGENT_UNAVAILABLE")).toBe(503);
+    expect(errorStatus("FEATURE_NOT_CONFIGURED")).toBe(503);
+    expect(errorStatus("STRIPE_UPSTREAM")).toBe(502);
+  });
+});
+
