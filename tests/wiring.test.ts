@@ -655,13 +655,40 @@ describe("chat is an operation, not a resource-less agent", () => {
     }
   });
 
-  it("routes the three chat operations and refuses anything else", () => {
+  it("routes the chat and desk operations and refuses anything else", () => {
     const start = agent.indexOf("async handleA2AMessage(");
     const boundary = agent.slice(start);
-    for (const op of ['case "chat.summary"', 'case "chat.facts"', 'case "chat.send"']) {
+    for (const op of ['case "chat.summary"', 'case "chat.facts"', 'case "chat.send"', 'case "desk.hunt"', 'case "desk.autopilot"']) {
       expect(boundary).toContain(op);
     }
     expect(boundary).toContain("unknown_operation");
+  });
+
+  it("desk operations reuse the stored Public token path (#242 P0)", () => {
+    // desk.hunt / desk.autopilot must resolve (token, tools, session) the
+    // same way POST /api/public/opportunity-hunt and /api/public/chat do:
+    // getPublicToken -> listTools -> runOpportunityHunt / runAutopilot.
+    // No browser user is available inside an A2A call, so a pasted-token
+    // fallback would be a silent dead end - the stored token is the only path.
+    const start = agent.indexOf("async handleA2AMessage(");
+    const boundary = agent.slice(start);
+    const huntCase = boundary.slice(boundary.indexOf('case "desk.hunt"'));
+    expect(huntCase).toContain("runOpportunityHunt");
+    const autopilotCase = boundary.slice(boundary.indexOf('case "desk.autopilot"'));
+    expect(autopilotCase).toContain("runAutopilot");
+    // The case bodies were extracted verbatim to src/desk-ops.ts (the
+    // agent.ts push-size limit); both resolve (token, tools, session)
+    // through its exported deskBackend helper, which mirrors the dashboard
+    // route path.
+    expect(boundary).toContain("deskHunt(this, args, text)");
+    expect(boundary).toContain("deskAutopilot(this, args, text)");
+    const desk = read("src/desk-ops.ts");
+    const helper = desk.slice(desk.indexOf("export async function deskBackend("));
+    expect(helper).toContain("host.getPublicToken");
+    expect(helper).toContain("listTools(token, session)");
+    expect(helper).toContain("host.getPublicModel");
+    expect(helper).toContain("PUBLIC_NOT_CONNECTED");
+    expect(helper).toContain("PUBLIC_NO_TOOLS");
   });
 
   it("offers a path with no model in it", () => {

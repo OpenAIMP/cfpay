@@ -341,7 +341,7 @@ export function cfmailCard(origin: string): AgentCard {
   return {
     name: "CFmail Agent",
     description:
-      "The chat channel and the aggregate view: asks and answers questions about mail, payments and webhook events across this Worker. Read-only. Cannot send mail, post to Slack, move funds or change anything.",
+      "The chat channel, the aggregate view, and the desk analysis pipelines. Asks and answers questions about mail, payments and webhook events across this Worker; chat.summary/chat.facts/chat.send are read-only. desk.hunt runs a budget-bounded defined-risk opportunity scan and desk.autopilot runs a multi-step research answer - both heavyweight, report-only pipelines that spend Workers AI tokens and persist records but cannot send mail, post to Slack, move funds, or place orders.",
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_RPC_PATH,
@@ -361,6 +361,17 @@ export function cfmailCard(origin: string): AgentCard {
           "How many emails has this agent handled?",
           "What payments are on the ledger?",
           "Which webhook providers have sent events recently?",
+        ],
+      },
+      {
+        id: "desk",
+        name: "Desk analysis pipelines",
+        description:
+          "Heavyweight, report-only pipelines over the Public.com desk. desk.hunt runs a budget-bounded defined-risk opportunity scan (args: budget required, maxRiskPct, maxUnderlyingPct, horizonDays, symbols) and desk.autopilot answers a question with the multi-step autopilot research pipeline (args: goal). They spend Workers AI tokens and persist hunt/run records, but they place no orders and send nothing.",
+        tags: ["analysis", "hunt", "autopilot", "report-only", "public"],
+        examples: [
+          "Run a $10,000 SPY opportunity hunt.",
+          "Research covered-call candidates on NVDA with the autopilot pipeline.",
         ],
       },
     ],

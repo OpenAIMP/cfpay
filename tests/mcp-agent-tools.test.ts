@@ -14,12 +14,14 @@ describe("MCP agent tools (issue #173)", () => {
     expect(mcpToolName("chat", "chat.summary")).toBe("cfpay_chat_summary");
     expect(mcpToolName("email", "email.sendWithAttachments")).toBe("cfpay_email_send_with_attachments");
     expect(mcpToolName("scheduled", "scheduled.setEnabled")).toBe("cfpay_scheduled_set_enabled");
+    expect(mcpToolName("cfmail", "desk.hunt")).toBe("cfpay_cfmail_desk_hunt");
+    expect(mcpToolName("cfmail", "desk.autopilot")).toBe("cfpay_cfmail_desk_autopilot");
   });
 
   it("has unique tool names and unique (agent, operation) pairs", () => {
     expect(new Set(MCP_AGENT_TOOLS.map((t) => t.tool)).size).toBe(MCP_AGENT_TOOLS.length);
     expect(new Set(MCP_AGENT_TOOLS.map((t) => `${t.agent}:${t.operation}`)).size).toBe(MCP_AGENT_TOOLS.length);
-    expect(MCP_AGENT_TOOLS.length).toBe(53);
+    expect(MCP_AGENT_TOOLS.length).toBe(55); // +2 desk ops (#242 P0)
   });
 
   it("classifies writes; the JWT write set is built from the same table", () => {
@@ -34,9 +36,22 @@ describe("MCP agent tools (issue #173)", () => {
     }
   });
 
+  it("classifies the desk analysis ops as action, not write (#242 P0)", () => {
+    // desk.hunt / desk.autopilot run heavyweight analysis but place no orders and
+    // send nothing - the qa.* precedent (action), not the write class.
+    for (const op of ["desk.hunt", "desk.autopilot"]) {
+      const spec = MCP_AGENT_TOOLS.find((t) => t.operation === op);
+      expect(spec, `spec for ${op}`).toBeDefined();
+      expect(spec?.agent).toBe("cfmail");
+      expect(spec?.access).toBe("action");
+    }
+    expect(MCP_WRITE_TOOL_NAMES).not.toContain("cfpay_cfmail_desk_hunt");
+    expect(MCP_WRITE_TOOL_NAMES).not.toContain("cfpay_cfmail_desk_autopilot");
+  });
+
   it("COVERAGE GUARD: every A2A operation in every agent source has an MCP tool", () => {
     const covered = new Set(MCP_AGENT_TOOLS.map((t) => t.operation));
-    const opPattern = /"(chat|email|ledger|payments|payment|checkout|webhook|slack|qa|voice|search|scheduled|orchestrator)\.[A-Za-z_]+"/g;
+    const opPattern = /"(chat|email|ledger|payments|payment|checkout|webhook|slack|qa|voice|search|scheduled|orchestrator|desk)\.[A-Za-z_]+"/g;
     const agentFiles = [
       "src/agent.ts",
       "src/email-agent.ts",

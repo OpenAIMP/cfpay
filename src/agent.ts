@@ -70,6 +70,7 @@ import {
   parseCandidates,
   sizePlan,
 } from "./opportunity-hunt";
+import { deskAutopilot, deskHunt } from "./desk-ops";
 import type { HuntRequest, StoredHunt } from "./opportunity-hunt";
 import {
   computeCost,
@@ -1493,7 +1494,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     return await handleCollecting(a2a.transport, body);
   }
 
-    /**
+  /**
    * Route one A2A message for the chat channel. Chat owns no resource,
    * so it is an operation here, not a fifth agent - and THE SURFACE
    * REMAINS READ-ONLY: chat.send produces a reply and mutates nothing
@@ -1555,13 +1556,19 @@ Do not claim to have completed a payment unless you have received confirmation.`
         }
       }
 
+      case "desk.hunt":
+        return deskHunt(this, args, text);
+
+      case "desk.autopilot":
+        return deskAutopilot(this, args, text);
+
       default:
         return {
           text: `Unknown operation: ${op}`,
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["chat.summary", "chat.facts", "chat.send"],
+            supported: ["chat.summary", "chat.facts", "chat.send", "desk.hunt", "desk.autopilot"],
           },
         };
     }
