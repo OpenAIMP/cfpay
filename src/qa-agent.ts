@@ -16,6 +16,7 @@ import { closeConnectionQuietly } from "./browser-lifecycle";
 // point the tool set is built.
 import { createBrowserTools } from "agents/browser/ai";
 import { budgetSynthesis, contextWindowFor, defaultModelId, normaliseToolCalls, readCompletion } from "./models";
+import { runRouted } from "./model-routing";
 import {
   INVESTIGATE_MAX_CALLS,
   INVESTIGATE_MAX_TURNS,
@@ -1805,9 +1806,12 @@ export class QAAgent extends Think<Env> {
             const est = Math.ceil((JSON.stringify(messages).length + JSON.stringify(specs).length) / 3.5);
             maxTokens = Math.max(384, Math.min(1024, contextWindow - est - 512));
           }
-          const response: any = await env.AI.run(
-            modelId as never,
-            { messages, tools: specs, max_tokens: maxTokens } as never,
+          // Model selection is owned by the routing policy (issue #269,
+          // cluster C2): transient provider errors retry and fall through
+          // the "chat" chain. Quota (4006) and other errors propagate to
+          // the outer catch unchanged, exactly as before.
+          const { result: response } = await runRouted<any>("chat", (mid) =>
+            env.AI.run(mid as never, { messages, tools: specs, max_tokens: maxTokens } as never),
           );
           const completion = readCompletion(response);
           const toolCalls = normaliseToolCalls(completion.toolCalls);
@@ -1845,6 +1849,9 @@ export class QAAgent extends Think<Env> {
         }
 
         if (!answer) {
+          // NAMED EXCEPTION (issue #269, cluster C2): budgetSynthesis is
+          // the shared single-owner no-tools synthesis adapter; it honors
+          // the caller's chosen model and is left unrouted by design.
           const synth = await budgetSynthesis(env.AI, modelId, messages, contextWindow);
           if (synth) answer = synth.text;
         }
