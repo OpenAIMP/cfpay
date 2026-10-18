@@ -34,8 +34,8 @@
 import { Agent, callable } from "agents";
 import { Think } from "@cloudflare/think";
 import { defaultModelId } from "./models";
-import type { Env, EmailRecord } from "./types";
-import { generateId } from "./payments";
+import type { Env, EmailRecord, SlackMechanism, SlackVia } from "./types";
+import { buildSlackRecord, type SlackRecordInput } from "./slack-record";
 
 /** Bound on stored Slack messages, matching the monolith's shared limit. */
 const MAX_STORED_SLACK_MESSAGES = 500;
@@ -223,11 +223,12 @@ export class SlackAgent extends Think<Env, SlackState> {
   /* -------------------------------- history ------------------------------- */
 
   /**
-   * Record an inbound Slack message.
+   * Record a Slack message in this agent's history (what `slack.list` reads).
    *
-   * Called by the monolith after it has generated a reply, because the reply text is
-   * produced by the shared AI responder and this agent has no model in its path. The
-   * record is what the dashboard reads.
+   * Originally "called by the monolith after it has generated a reply" — that call
+   * never materialized, so this store held only adopted legacy records. Issue #262
+   * wires it in for real. `labels` is optional; omitted, the record keeps the legacy
+   * shape (direction inbound, no via/mechanism).
    */
   @callable()
   async recordMessage(
@@ -235,25 +236,43 @@ export class SlackAgent extends Think<Env, SlackState> {
     channel: string,
     text: string,
     aiResponse?: string,
+    labels?: {
+      id?: string;
+      direction?: EmailRecord["direction"];
+      via?: SlackVia;
+      mechanism?: SlackMechanism;
+    },
   ): Promise<{ id: string }> {
+    return this.recordLocal({ user, channel, text, aiResponse, ...labels });
+  }
+
+  /** Internal record path: the post handler calls this directly, not via RPC. */
+  private recordLocal(input: SlackRecordInput): { id: string } {
     const s = this.state_();
-    const record: EmailRecord = {
-      id: generateId(),
-      from: `slack:${user}`,
-      to: `slack:${channel}`,
-      subject: text.slice(0, 50),
-      body: text,
-      direction: "inbound",
-      receivedAt: new Date().toISOString(),
-      paid: false,
-      aiResponse,
-    };
+    const record = buildSlackRecord(input);
     this.commit({
       ...s,
       messages: [...s.messages, record].slice(-MAX_STORED_SLACK_MESSAGES),
-      totalReceived: s.totalReceived + 1,
+      totalReceived:
+        input.direction === "outbound" ? s.totalReceived : s.totalReceived + 1,
     });
     return { id: record.id };
+  }
+
+  /**
+   * Record an outbound A2A post in this agent's history (issue #262): history
+   * covers sends, not just receives. Call only after a successful send. The
+   * webhook path does not know its channel: recorded as "" (honest), never invented.
+   */
+  private recordOutboundPost(text: string, channel: string, mechanism: SlackMechanism): void {
+    this.recordLocal({
+      user: mechanism === "bot" ? "bot" : "webhook",
+      channel: mechanism === "bot" ? channel : "",
+      text,
+      direction: "outbound",
+      via: "a2a",
+      mechanism,
+    });
   }
 
   /** Newest first. */
@@ -411,11 +430,13 @@ export class SlackAgent extends Think<Env, SlackState> {
         const channel = String(args.channel || "").trim();
         if (channel) {
           const r = await this.postMessage(channel, postText);
+          if (r.ok) this.recordOutboundPost(postText, channel, "bot");
           return r.ok
             ? { text: `Posted to Slack channel ${channel} via the bot.`, data: { ok: true, via: "bot", channel } }
             : { text: `Slack post failed: ${r.error}`, data: { ok: false, error: r.error } };
         }
         const r = await this.notifyViaWebhook(postText);
+        if (r.ok) this.recordOutboundPost(postText, "", "webhook");
         return r.ok
           ? { text: "Posted to Slack via the incoming webhook.", data: { ok: true, via: "webhook" } }
           : { text: `Slack post failed: ${r.error} Pass a channel argument to post via the bot instead.`, data: { ok: false, error: r.error } };
