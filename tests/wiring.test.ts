@@ -1721,6 +1721,19 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("Knowledge search");
   });
 
+  it("scoped JWTs are wired into MCP auth and issuance (issue #214)", () => {
+    const auth = read("src/mcp-auth.ts");
+    const jwt = read("src/mcp-jwt.ts");
+    const api = read("src/api.ts");
+    expect(jwt).toContain("export async function verifyToken");
+    expect(jwt).toContain("mcp:tools:write");
+    expect(auth).toContain('from "./mcp-jwt"');
+    expect(auth).toContain('"jwt"');
+    expect(auth).toContain("INSUFFICIENT_SCOPE");
+    expect(api).toContain("/api/dashboard/mcp/tokens");
+    expect(api).toContain("issueToken(secret");
+  });
+
   it("the ScheduledAgent is wired end to end (issue #213)", () => {
     const agent = read("src/scheduled-agent.ts");
     const index = read("src/index.ts");

@@ -36,6 +36,7 @@ describe("resolveMcpAuthMode", () => {
   it("resolves known modes case-insensitively", () => {
     expect(resolveMcpAuthMode("static")).toBe("static");
     expect(resolveMcpAuthMode("github")).toBe("github");
+    expect(resolveMcpAuthMode("jwt")).toBe("jwt");
     expect(resolveMcpAuthMode("either")).toBe("either");
     expect(resolveMcpAuthMode("none")).toBe("none");
     expect(resolveMcpAuthMode("  STATIC  ")).toBe("static");

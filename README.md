@@ -374,7 +374,7 @@ Every error the deployment returns comes from **`src/errors.json`** - one catalo
 | `/health` | GET | — | Health check |
 | `/api/process` | POST | x402 ($0.01 USDC) | Process request + send email |
 | `/api/emails` | GET | x402 ($0.01 USDC) | Retrieve email history |
-| `/mcp` | POST/GET | **none (phase 1)** | Remote MCP server (Streamable HTTP). Read-only tools. |
+| `/mcp` | POST/GET | MCP_AUTH_MODE: static key, GitHub token, built-in OAuth, or scoped JWT (`jwt` mode; scopes enforced per call, issue #214) | Remote MCP server (Streamable HTTP). Read-only tools. Scoped tokens are minted at `POST /api/dashboard/mcp/tokens` (dashboard key; needs `MCP_JWT_SECRET` via CICD). |
 | `/mcp/tools/process` | POST | x402 ($0.01 USDC) | Legacy paid alias for agent-to-agent calls (not a real MCP server) |
 | `/api/dashboard/*` | GET/POST | API Key | Dashboard endpoints |
 | `/agents/*` | GET/POST/WS | Token or API Key | Agent routes (guarded by auth hooks) |

@@ -97,6 +97,12 @@ export interface Env {
   // "none". "none" serves without authentication and must be set explicitly; an
   // unset or unrecognised value is not treated as "none".
   MCP_AUTH_MODE?: string;
+  // Scoped JWTs for /mcp (issue #214): HMAC secret for issuing and
+  // verifying mcp-jwt tokens. Set ONLY via CICD. Issuer/audience are
+  // enforced at verification when set.
+  MCP_JWT_SECRET?: string;
+  MCP_JWT_ISSUER?: string;
+  MCP_JWT_AUDIENCE?: string;
   // When "false", every unauthenticated /mcp request is refused, including the
   // handshake. Anything else (or unset) lets the handshake through so MCP clients
   // do not mistake this for an OAuth-protected server.

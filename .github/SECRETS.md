@@ -25,6 +25,7 @@ This project uses **GitHub Environments** to manage secrets for CI/CD deployment
 | `SLACK_APP_TOKEN` | App-level token for Socket Mode connections | Slack App → Basic Information → App-Level Tokens (scope `connections:write`, `xapp-...`) |
 | `SLACK_CLIENT_ID` | OAuth client ID used by the `/slack/install` redirect | Slack App → Basic Information → App Credentials → Client ID |
 | `SLACK_QA_CHANNEL_ID` | Channel that receives QA file posts (report/desk screenshots, hunt report PDF) via the bot's file-upload API | Slack: open the channel → About → **Channel ID** (bottom); the bot must be a member of the channel |
+| `MCP_JWT_SECRET` | HMAC secret that signs and verifies scoped MCP JWTs (issue #214). Optional: without it, the `jwt` MCP auth path and `POST /api/dashboard/mcp/tokens` stay off; other MCP auth modes are unaffected. Needs a matching `printf ... secret put MCP_JWT_SECRET` line in deploy.yml's secret step (repo-owner edit) | Generate any long random string (e.g. `openssl rand -hex 32`) and store it as the GitHub `PROD` environment secret |
 
 ### Cloudflare API Token Permissions
 
