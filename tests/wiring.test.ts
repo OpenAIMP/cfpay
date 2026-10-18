@@ -1721,6 +1721,19 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("Knowledge search");
   });
 
+  it("the budget guard gates the host's external payments (issue #211)", () => {
+    const agent = read("src/agent.ts");
+    const guard = read("src/budget-guard.ts");
+    expect(guard).toContain("export function validateOutboundPayment");
+    expect(guard).toContain("PER_CALL_CAP_EXCEEDED");
+    expect(agent).toContain('from "./budget-guard"');
+    // enforced inside the x402 validator, before signing
+    expect(agent).toContain("budgetRefusal(budget.policy, budget.state, budgetRequest)");
+    expect(agent).toContain("recordBudgetSpend(budgetSql, budget.policy, budget.state, budgetRequest)");
+    expect(agent).toContain("async getBudget(");
+    expect(agent).toContain("async setBudgetPolicy(");
+  });
+
   it("the error catalog is wired front and back (issue #209)", () => {
     const api = read("src/api.ts");
     const pdata = read("public/public-data.js");
