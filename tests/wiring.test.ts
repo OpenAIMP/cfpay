@@ -1793,6 +1793,8 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(agent).toContain('op === "scheduled.trigger"');
     expect(agent).toContain('op === "scheduled.once"');
     expect(api).toContain("scheduled-goals/:id/trigger");
+    expect(agent).toContain('op === "scheduled.setEnabled"');
+    expect(api).toContain("scheduled-goals/:id/enabled");
     expect(api).toContain('body.kind === "once"');
   });
 
