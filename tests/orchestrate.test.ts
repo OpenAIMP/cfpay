@@ -33,6 +33,13 @@ describe("orchestration planning core", () => {
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "nope", operation: "qa.summary" }]))).toBeNull();
     // The deliberate exclusions are not plannable either.
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "chat", operation: "chat.clear" }]))).toBeNull();
+    // scheduled.create / scheduled.once / scheduled.trigger ARE
+    // plannable since issue #232 (the owner directed that other
+    // agents consume scheduling); scheduled.delete stays owner-only.
+    expect(parsePlan(JSON.stringify([{ id: "s1", agent: "scheduled", operation: "scheduled.create", args: { goal: "daily qa summary", cron: "@daily" } }]))).not.toBeNull();
+    expect(parsePlan(JSON.stringify([{ id: "s1", agent: "scheduled", operation: "scheduled.once", args: { goal: "check qa", delaySeconds: 120 } }]))).not.toBeNull();
+    expect(parsePlan(JSON.stringify([{ id: "s1", agent: "scheduled", operation: "scheduled.trigger", args: { id: "sched-abc" } }]))).not.toBeNull();
+    expect(parsePlan(JSON.stringify([{ id: "s1", agent: "scheduled", operation: "scheduled.delete", args: { id: "sched-abc" } }]))).toBeNull();
     // slack.post IS plannable since issue #188 enabled it over A2A.
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "slack", operation: "slack.post", args: { text: "hi" } }]))).not.toBeNull();
     expect(parsePlan(JSON.stringify([{ id: "s1", agent: "webhooks", operation: "webhook.receive" }]))).toBeNull();
