@@ -1,3 +1,4 @@
+import { errorBodyAs } from "./errors";
 import type { Env } from "./types";
 import { timingSafeStringEqual } from "./mcp-auth";
 
@@ -126,7 +127,7 @@ export function buildAsMetadata(request: Request, env: Env): Record<string, unkn
 }
 
 export function handleAsMetadata(request: Request, env: Env): Response {
-  if (!oauthEnabled(env)) return json({ error: "Not found" }, 404);
+  if (!oauthEnabled(env)) return json(errorBodyAs("NOT_FOUND", "Not found"), 404);
   return new Response(JSON.stringify(buildAsMetadata(request, env)), {
     status: 200,
     headers: {
@@ -161,7 +162,7 @@ function isSafeRedirectUri(uri: string): boolean {
 }
 
 export async function handleRegister(request: Request, env: Env): Promise<Response> {
-  if (!oauthEnabled(env)) return json({ error: "Not found" }, 404);
+  if (!oauthEnabled(env)) return json(errorBodyAs("NOT_FOUND", "Not found"), 404);
   if (request.method !== "POST") return oauthError("invalid_request", "POST required", 405);
 
   let body: any;
@@ -240,7 +241,7 @@ async function resolveAuthorizeRequest(
 }
 
 export async function handleAuthorize(request: Request, env: Env): Promise<Response> {
-  if (!oauthEnabled(env)) return json({ error: "Not found" }, 404);
+  if (!oauthEnabled(env)) return json(errorBodyAs("NOT_FOUND", "Not found"), 404);
 
   if (request.method === "GET") {
     const params = new URL(request.url).searchParams;
@@ -348,7 +349,7 @@ async function issue(scope: string, env: Env, clientId: string): Promise<Record<
 }
 
 export async function handleToken(request: Request, env: Env): Promise<Response> {
-  if (!oauthEnabled(env)) return json({ error: "Not found" }, 404);
+  if (!oauthEnabled(env)) return json(errorBodyAs("NOT_FOUND", "Not found"), 404);
   if (request.method !== "POST") return oauthError("invalid_request", "POST required", 405);
 
   const form = new URLSearchParams(await request.text());

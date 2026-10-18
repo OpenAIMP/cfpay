@@ -54,6 +54,53 @@ export function errorBody(code: ErrorCode): {
 }
 
 /**
+ * The catalog contract around a route's exact user-facing string (issue #269
+ * cluster C3). Some error strings are load-bearing — tests and external A2A
+ * clients key on them ("Invalid JSON", "API key required") — so the string
+ * stays identical while the body gains the catalog's code/hint/retryable.
+ * Prefer a dedicated catalog code for strings that repeat across sites; use
+ * this only when the call site's wording must survive verbatim.
+ */
+export function errorBodyAs(
+  code: ErrorCode,
+  error: string,
+): {
+  error: string;
+  code: ErrorCode;
+  hint: string;
+  retryable: boolean;
+} {
+  const spec = ERROR_CATALOG[code];
+  return { error, code, hint: spec.hint, retryable: spec.retryable };
+}
+
+/**
+ * Build the HTTP Response for a catalog error: status from the catalog,
+ * JSON content type, optional extra headers (e.g. WWW-Authenticate on 401s).
+ */
+export function errorResponse(
+  code: ErrorCode,
+  headers?: Record<string, string>,
+): Response {
+  return new Response(JSON.stringify(errorBody(code)), {
+    status: errorStatus(code),
+    headers: { "Content-Type": "application/json", ...(headers ?? {}) },
+  });
+}
+
+/** errorResponse for a route whose exact error string must survive (see errorBodyAs). */
+export function errorResponseAs(
+  code: ErrorCode,
+  error: string,
+  headers?: Record<string, string>,
+): Response {
+  return new Response(JSON.stringify(errorBodyAs(code, error)), {
+    status: errorStatus(code),
+    headers: { "Content-Type": "application/json", ...(headers ?? {}) },
+  });
+}
+
+/**
  * Map an unknown thrown value to the closest catalog code. Known
  * platform failures get precise codes; anything else is INTERNAL
  * (the caller logs the original). Matching is on the provider's
