@@ -289,10 +289,73 @@
     );
   }
 
+  function buildCapabilityTests(qaPanel) {
+    if (document.getElementById("cap-events")) return; // already built
+    var card = el("div", null, { class: "card" });
+    card.appendChild(el("h3", "Capability Tests", { style: "margin-bottom:1rem;" }));
+    card.appendChild(
+      el(
+        "p",
+        "Exercise the Slack paths that never touch an A2A endpoint: inbound event signature verification and recording, and the file-post path the QA report mirror uses. The synthetic event uses a clearly-fake channel, so nothing is written to any channel a human reads.",
+        { style: "color:var(--muted);font-size:0.8rem;margin-bottom:1rem;" },
+      ),
+    );
+
+    function runButton(id, label, route) {
+      var row = el("div", null, { class: "form-group" });
+      var btn = el("button", label, { class: "btn", id: id, type: "button" });
+      var result = el("div", null, { id: id + "-result", style: "margin-top:0.5rem;" });
+      btn.addEventListener("click", function () {
+        clear(result);
+        result.appendChild(el("div", "Running…", { class: "loading" }));
+        if (typeof api !== "function") {
+          clear(result);
+          result.appendChild(el("div", "Dashboard api() helper is not available.", { class: "status-msg error" }));
+          return;
+        }
+        api(route, "POST", {}).then(function (res) {
+          clear(result);
+          var okLine = "No response.";
+          var cls = "status-msg error";
+          if (res) {
+            if (res.ok) {
+              okLine = "PASS";
+              cls = "status-msg success";
+            } else if (res.configured === false) {
+              okLine = "Not configured";
+              cls = "status-msg";
+            } else {
+              okLine = "FAIL";
+            }
+          }
+          result.appendChild(el("div", okLine, { class: cls }));
+          if (res && res.error) {
+            result.appendChild(
+              el("div", res.error, { style: "font-size:0.8rem;color:var(--muted);margin:0.25rem 0;" }),
+            );
+          }
+          var pre = el("pre", null, {
+            style: "font-size:0.75rem;overflow-x:auto;background:var(--bg-subtle,#161e2e);padding:0.5rem;border-radius:4px;",
+          });
+          pre.textContent = JSON.stringify(res, null, 2);
+          result.appendChild(pre);
+        });
+      });
+      row.appendChild(btn);
+      row.appendChild(result);
+      return row;
+    }
+
+    card.appendChild(runButton("cap-events", "Test Slack events (inbound)", "/api/dashboard/qa/slack-events-test"));
+    card.appendChild(runButton("cap-file", "Test Slack file post", "/api/dashboard/qa/slack-file-test"));
+    qaPanel.appendChild(card);
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     var qa = document.getElementById("qa");
     if (!qa) return;
     if (document.getElementById("a2a-run")) return; // already built
     buildTester(qa);
+    buildCapabilityTests(qa);
   });
 })();
