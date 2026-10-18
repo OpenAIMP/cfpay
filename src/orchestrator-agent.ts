@@ -240,7 +240,7 @@ export class OrchestratorAgent extends Think<Env> {
     const body = {
       jsonrpc: "2.0",
       id: `orch-${step.id}`,
-      method: "message/send",
+      method: "message/stream",
       params: {
         message: {
           kind: "message",
@@ -256,9 +256,8 @@ export class OrchestratorAgent extends Think<Env> {
         handleA2A: (b: unknown, o: string) => Promise<{ result?: { parts?: { kind: string; text?: string; data?: unknown }[] } }>;
       };
       const outcome = await stub.handleA2A(body, this.origin());
-      const parts = outcome?.result?.parts ?? [];
-      const text = parts.filter((p) => p.kind === "text").map((p) => p.text ?? "").join(" ").trim();
-      const data = parts.find((p) => p.kind === "data")?.data;
+      const { a2aReplyFromOutcome } = await import("./a2a");
+      const { text, data } = a2aReplyFromOutcome(outcome);
       return outcomeFromReply(step, text, data);
     } catch (err) {
       return { stepId: step.id, agent: step.agent, operation: step.operation, ok: false, error: String(err).slice(0, 300) };

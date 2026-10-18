@@ -411,7 +411,7 @@ export class ScheduledAgent extends Think<Env> {
     const body = {
       jsonrpc: "2.0",
       id: `sched-${Date.now()}`,
-      method: "message/send",
+      method: "message/stream",
       params: {
         message: {
           role: "user",
@@ -425,8 +425,9 @@ export class ScheduledAgent extends Think<Env> {
       },
     };
     const outcome = await stub.handleA2A(body, "https://scheduled-agent.internal");
-    const dataPart = outcome.result?.parts?.find((p) => p.kind === "data");
-    return dataPart?.data?.id ?? null;
+    const { a2aReplyFromOutcome } = await import("./a2a");
+    const { data } = a2aReplyFromOutcome(outcome);
+    return (data as { id?: string } | undefined)?.id ?? null;
   }
 
   async a2aSnapshot(): Promise<Record<string, unknown>> {
