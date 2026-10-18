@@ -835,7 +835,7 @@ async function runSections() {
         data?.ok !== false &&
         !data?.error;
       console.log(`      ${okRow ? "ok  " : "BAD "} ${label} (status=${r.status})`);
-      if (!okRow) bad.push(`${label}: ${data?.error || `status=${r.status}`}`);
+      if (!okRow) bad.push(`${label}: ${data?.error || `status=${r.status}`}${data?.code ? ` (code=${data.code})` : ""}`);
     }
     if (RUN_SLACK_POST) {
       const p = await a2aOp("/a2a/slack", {
