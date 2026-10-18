@@ -1733,7 +1733,11 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(orch).toContain('from "./vector-memory"');
     expect(orch).toContain("memoryBriefWithRecall");
     expect(orch).toContain("rememberJobInVectorMemory");
-    expect(wrangler).toContain('"index_name": "cfpay-memory"');
+    // the binding ships only after the owner creates the index:
+    // wrangler refuses to deploy a Vectorize binding whose index
+    // does not exist (deploy run 39085164116), so it stays out of
+    // wrangler.jsonc until then and the module runs dark.
+    expect(wrangler).not.toContain('"index_name": "cfpay-memory"');
   });
 
   it("scoped JWTs are wired into MCP auth and issuance (issue #214)", () => {
