@@ -678,7 +678,7 @@ export function scheduledCard(origin: string): AgentCard {
         id: "scheduled-goals",
         name: "Scheduled goals",
         description:
-          "scheduled.list shows the goals; scheduled.create {goal, cron} adds one (cron is 5-field UTC or an @alias); scheduled.delete {id} removes one. Due goals dispatch to the orchestrator, capped per tick, and always advance to their next slot.",
+          "scheduled.list shows the goals; scheduled.create {goal, cron} adds one (cron is 5-field UTC or an @alias); scheduled.delete {id} removes one. Each goal is a native SDK schedule on the agent, woken by a Durable Object alarm; a firing hands the goal to the orchestrator as a job.",
         tags: ["scheduling", "cron", "automation"],
         examples: [
           "List the scheduled goals",

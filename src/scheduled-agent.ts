@@ -345,6 +345,61 @@ export class ScheduledAgent extends Think<Env> {
       scheduler: "agents-sdk (native schedules + DO alarms)",
     };
   }
+
+  async handleA2A(body: unknown, origin: string): Promise<unknown> {
+    const { createA2ATransport, handleCollecting, scheduledCard } = await import("./a2a");
+    const a2a = createA2ATransport(this.ctx.storage.sql, origin, scheduledCard(origin), {
+      card: scheduledCard,
+      handle: (message: any, context: { taskId: string; contextId: string }) =>
+        this.handleA2AMessage(message, context),
+    });
+    return await handleCollecting(a2a.transport, body);
+  }
+
+  /** Route one A2A message: scheduled.list/create/delete; no operation = summary. */
+  async handleA2AMessage(
+    message: any,
+    _context: { taskId: string; contextId: string },
+  ): Promise<{ text: string; data?: unknown }> {
+    const parts: any[] = Array.isArray(message?.parts) ? message.parts : [];
+    const dataPart = parts.find(
+      (x) => x && x.kind === "data" && x.data && typeof x.data === "object",
+    );
+    const op = dataPart ? String((dataPart.data as any).operation || "") : "";
+    const args = (dataPart?.data as any) ?? {};
+    if (op === "scheduled.list") {
+      const { goals } = await this.scheduledList();
+      return {
+        text: goals.length
+          ? goals.map((g) => `${g.id} [${g.enabled ? "on" : "off"}] ${g.cron} - ${g.goal}`).join("\n")
+          : "No scheduled goals. Create one with scheduled.create {goal, cron}.",
+        data: goals,
+      };
+    }
+    if (op === "scheduled.create") {
+      const res = await this.scheduledCreate(String(args.goal || ""), String(args.cron || ""));
+      return res.ok
+        ? {
+            text: `Scheduled ${res.goal!.id}: "${res.goal!.goal}" on ${res.goal!.cron}; first run ${res.goal!.nextRunAt ? new Date(res.goal!.nextRunAt).toISOString() : "n/a"}.`,
+            data: res.goal,
+          }
+        : { text: `Could not schedule that: ${res.error}.`, data: { ok: false, error: res.error } };
+    }
+    if (op === "scheduled.delete") {
+      const res = await this.scheduledDelete(String(args.id || ""));
+      return res.ok
+        ? { text: `Deleted scheduled goal ${String(args.id || "")}.`, data: { ok: true } }
+        : { text: `Could not delete that goal: ${res.error}.`, data: { ok: false, error: res.error } };
+    }
+    if (op && op !== "scheduled.summary") {
+      return { text: `Unknown operation: ${op}`, data: { ok: false, error: "unknown_operation" } };
+    }
+    const snapshot = await this.a2aSnapshot();
+    return {
+      text: `Scheduler status. ${snapshot.goals} goal(s), ${snapshot.enabled} enabled, ${snapshot.runs} run(s) so far${snapshot.nextDue ? `; next due ${snapshot.nextDue}` : ""}. Nothing runs until a goal is created.`,
+      data: snapshot,
+    };
+  }
 }
 
 export const scheduledAgentToolSchema = z.object({

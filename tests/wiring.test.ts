@@ -1764,6 +1764,11 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(agent).toContain('this.schedule(row.cron, SCHEDULE_CALLBACK, { goalId: row.id })');
     expect(agent).toContain('const SCHEDULE_CALLBACK = "runScheduledGoal"');
     expect(agent).toContain("async runScheduledGoal(");
+    // the A2A surface lives on the class - a rewrite that drops it
+    // 500s every operation (issue #229); pin its presence
+    expect(agent).toContain("async handleA2A(");
+    expect(agent).toContain("async handleA2AMessage(");
+    expect(agent).toContain("createA2ATransport");
     expect(agent).toContain("this.cancelSchedule(row.scheduleId)");
     expect(agent).toContain("orchestrator.run");
     expect(agent).not.toContain("scheduledTick");
