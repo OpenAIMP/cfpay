@@ -105,6 +105,10 @@ Payment requirements use CAIP-2 network IDs (`eip155:8453`, `eip155:84532`, and 
 
 The dashboard displays the configured payment amount for the selected network and currency. Paid requests are recorded as confirmed only after payment verification, with the transaction hash retained in the payment record.
 
+### Budget guard for outbound payments (issue #211)
+
+The host's `payExternalEndpoint` already fails closed on env gates (`PAYMENT_PRIVATE_KEY`, `OUTBOUND_PAY_TO_WHITELIST`, `OUTBOUND_MAX_AMOUNT_ATOMIC`). On top of those sits a cumulative budget guard (`src/budget-guard.ts`, a pure validator): a stored policy caps spend per call, per day, and per agent per day, with an optional enforced allowlist and named refusal codes (`PER_CALL_CAP_EXCEEDED`, `DAILY_CAP_EXCEEDED`, `AGENT_DAILY_CAP_EXCEEDED`, ...). The check runs inside the x402 validator - after the endpoint names its price, before anything is signed - and a completed payment is recorded into the day's state in the host's own SQL. With no policy stored, no cumulative caps apply (the snapshot reports `configured: false`) and the env gates remain the protection; the owner sets a policy through the host's `getBudget` / `setBudgetPolicy` callables on the authenticated WebSocket surface.
+
 ## Agent-to-Agent Payments
 
 The agent can also **pay other x402-gated services** using the `payExternalEndpoint` RPC method. This uses `viem` to sign and send USDC transfers on Base, then retries the request with payment proof.
