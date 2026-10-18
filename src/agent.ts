@@ -85,6 +85,8 @@ import {
   readCompletion,
   resolveModelId,
 } from "./models";
+import { routedToolTurn } from "./routed-chat";
+import { runRouted } from "./model-routing";
 import {
   formatAmount,
   generateId,
@@ -498,23 +500,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
       const toolSpecs = this.toAiToolSpecs([]);
 
       for (let turn = 0; turn < 6; turn++) {
-        let completion;
-        try {
-          const response: any = await this.env.AI.run(
-            defaultModelId() as never,
-            { messages, tools: toolSpecs, max_tokens: 2048 } as never,
-          );
-          completion = readCompletion(response);
-        } catch (modelError) {
-          // The fallback is deliberately NOT given the tools: it is a smaller model, and a
-          // failed tool round should degrade to plain text rather than to a different set
-          // of capabilities the operator did not choose.
-          console.warn("Primary model failed mid-turn, falling back without tools:", modelError);
-          const fallback: any = await this.env.AI.run(
-            "@cf/meta/llama-3.1-8b-instruct" as never,
-            { messages } as never,
-          );
-          text = readCompletion(fallback).text.trim();
+        // Model selection and the fallback policy are owned by
+        // routedToolTurn (issue #269, cluster C2): the primary call runs
+        // the "chat" chain with tools, and a chain exhausted by transient
+        // provider errors degrades to plain text without tools. The
+        // account-level neuron quota (4006) is terminal and surfaces via
+        // the error catalog instead of burning fallback attempts.
+        const outcome = await routedToolTurn(this.env.AI, messages, toolSpecs, 2048);
+        const completion = outcome.completion;
+        if (outcome.degraded) {
+          text = completion.text.trim();
           break;
         }
 
@@ -635,18 +630,24 @@ Do not claim to have completed a payment unless you have received confirmation.`
    */
   private async generateAiInsight(prompt: string): Promise<string> {
     try {
-      const response = await this.env.AI.run(
-        defaultModelId() as never,
-        {
-          messages: [
-            {
-              role: "system",
-              content:
-                "You analyse inbound webhook events for the CFmail agent. Give a brief summary and any recommended actions.",
-            },
-            { role: "user", content: prompt },
-          ],
-        } as never,
+      // Model selection is owned by the routing policy (issue #269,
+      // cluster C2): transient provider errors retry and fall through
+      // the "synthesize" chain; the quota error (4006) throws and lands
+      // in the same catch below, preserving the never-throws contract.
+      const { result: response } = await runRouted("synthesize", (modelId) =>
+        this.env.AI.run(
+          modelId as never,
+          {
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You analyse inbound webhook events for the CFmail agent. Give a brief summary and any recommended actions.",
+              },
+              { role: "user", content: prompt },
+            ],
+          } as never,
+        ),
       );
       return (
         (response as { response?: string }).response ??
@@ -710,21 +711,25 @@ Do not claim to have completed a payment unless you have received confirmation.`
     let aiSummary: string | undefined;
 
     try {
-      const summaryResponse = await this.env.AI.run(
-        defaultModelId() as never,
-        {
-          messages: [
-            {
-              role: "system",
-              content: "Summarize this email in one or two sentences.",
-            },
+      // Model selection is owned by the routing policy (issue #269,
+      // cluster C2). The catch below is unchanged: a summary failure
+      // leaves aiSummary undefined, exactly as before.
+      const { result: summaryResponse } = await runRouted("synthesize", (modelId) =>
+        this.env.AI.run(
+          modelId as never,
+          {
+            messages: [
+              {
+                role: "system",
+                content: "Summarize this email in one or two sentences.",
+              },
             {
               role: "user",
               content: `Subject: ${parsed.subject || "(no subject)"}\n\n${parsed.text || ""}`,
             },
           ],
         } as never,
-      );
+      ));
 
       aiSummary = (summaryResponse as { response?: string }).response;
     } catch (error) {
@@ -1445,9 +1450,14 @@ Do not claim to have completed a payment unless you have received confirmation.`
       "Recent webhook types: " + (snap.recentWebhookTypes.join("; ") || "none"),
     ].join("\n");
     try {
-      const response: any = await this.env.AI.run(
-        "@cf/openai/gpt-oss-120b" as never,
-        {
+      // Model selection is owned by the routing policy (issue #269,
+      // cluster C2): the hardcoded gpt-oss-120b becomes the "synthesize"
+      // chain's first model, with transient fall-through. The catch
+      // below is unchanged: facts are the fallback, exactly as before.
+      const { result: response } = await runRouted<any>("synthesize", (modelId) =>
+        this.env.AI.run(
+          modelId as never,
+          {
           messages: [
             {
               role: "system",
@@ -1461,7 +1471,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
           ],
           max_tokens: 400,
         } as never,
-      );
+      ));
       const text = String(response?.response ?? "").trim();
       if (text) return text;
       if (Array.isArray(response?.choices) && response.choices.length) {
@@ -2066,6 +2076,13 @@ Do not claim to have completed a payment unless you have received confirmation.`
       }
       let response: any = undefined;
       try {
+        // NAMED EXCEPTION (issue #269, cluster C2): this call is
+        // deliberately NOT routed. modelId is the operator's explicit
+        // choice on the Public tab (resolveModelId), and the routing
+        // policy would silently substitute a different model. The
+        // bespoke recovery here is the context-length retry, not a
+        // fallback chain; quota and other errors propagate to the
+        // error catalog unchanged.
         response = await this.env.AI.run(
           modelId as never,
           { messages, tools: toolSpecs, max_tokens: maxTokens } as never,
@@ -2280,6 +2297,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const modelId = resolveModelId(model);
     return runAutopilotPipeline(
       {
+        // NAMED EXCEPTION (issue #269, cluster C2): deliberately NOT
+        // routed. The pipeline threads its own per-step model ids (mid);
+        // a per-call chain router would silently substitute models the
+        // pipeline chose, breaking its model threading and cost tracing.
         aiRun: (mid, messages, maxTokens) =>
           this.env.AI.run(mid as never, { messages, max_tokens: maxTokens } as never),
         runStep: (question) =>
@@ -2313,6 +2334,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const modelId = resolveModelId(model);
     const result = await runAutopilotPipeline(
       {
+        // NAMED EXCEPTION (issue #269, cluster C2): deliberately NOT
+        // routed. The pipeline threads its own per-step model ids (mid);
+        // a per-call chain router would silently substitute models the
+        // pipeline chose, breaking its model threading and cost tracing.
         aiRun: (mid, messages, maxTokens) =>
           this.env.AI.run(mid as never, { messages, max_tokens: maxTokens } as never),
         runStep: (question) =>

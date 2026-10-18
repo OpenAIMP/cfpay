@@ -27,6 +27,7 @@
 import { Agent, callable } from "agents";
 import { Think } from "@cloudflare/think";
 import { defaultModelId } from "./models";
+import { runRouted } from "./model-routing";
 import type { Env, PaymentRecord, StripeCheckout, StripeCheckoutStatus } from "./types";
 import { ZERO_ADDRESS, generateId } from "./payments";
 
@@ -480,9 +481,14 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
    */
   async generateFulfilmentResponse(request: string): Promise<string> {
     try {
-      const response: any = await this.env.AI.run(
-        "@cf/openai/gpt-oss-120b" as never,
-        {
+      // Model selection is owned by the routing policy (issue #269,
+      // cluster C2): transient provider errors retry and fall through
+      // the "chat" chain; the quota error (4006) throws and lands in
+      // the same catch below, preserving the never-throws contract.
+      const { result: response } = await runRouted<any>("chat", (modelId) =>
+        this.env.AI.run(
+          modelId as never,
+          {
           messages: [
             {
               role: "system",
@@ -496,7 +502,7 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
           ],
           max_tokens: 800,
         } as never,
-      );
+      ));
       const text = String(response?.response ?? "").trim();
       if (text) return text;
       if (Array.isArray(response?.choices) && response.choices.length) {
@@ -792,9 +798,14 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
     ].join("\n");
 
     try {
-      const response: any = await this.env.AI.run(
-        "@cf/openai/gpt-oss-120b" as never,
-        {
+      // Model selection is owned by the routing policy (issue #269,
+      // cluster C2): the hardcoded gpt-oss-120b becomes the "synthesize"
+      // chain's first model, with transient fall-through. The catch
+      // below is unchanged: facts are the fallback, exactly as before.
+      const { result: response } = await runRouted<any>("synthesize", (modelId) =>
+        this.env.AI.run(
+          modelId as never,
+          {
           messages: [
             {
               role: "system",
@@ -809,7 +820,7 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
           ],
           max_tokens: 400,
         } as never,
-      );
+      ));
       const text = String(response?.response ?? "").trim();
       if (text) return text;
       if (Array.isArray(response?.choices) && response.choices.length) {

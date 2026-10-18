@@ -290,14 +290,20 @@ describe("the chat path actually dispatches the capability agents", () => {
   });
 
   it("does not hand the fallback model the tools", () => {
-    // The fallback is a smaller model. A failed tool round should degrade to plain text,
-    // not to a different set of capabilities the operator did not choose.
-    const start = agent.indexOf("async generateAIResponse(");
-    const body = agent.slice(start, start + 7000);
-    const fallbackAt = body.indexOf("falling back without tools");
-    expect(fallbackAt).toBeGreaterThan(-1);
-    const after = body.slice(fallbackAt, fallbackAt + 400);
-    expect(after, "the fallback call must omit tools").not.toContain("tools: toolSpecs");
+    // The fallback is deliberately NOT given the tools: a failed tool round
+    // should degrade to plain text, not to a different set of capabilities
+    // the operator did not choose. The fallback now lives in the single-owner
+    // routedToolTurn (issue #269, cluster C2), so the guard reads it there.
+    const routed = readCode("src/routed-chat.ts");
+    expect(routed, "primary leg carries tools").toContain("tools,");
+    const marker = "degrading to plain text without tools";
+    const degradeAt = routed.indexOf(marker);
+    expect(degradeAt).toBeGreaterThan(-1);
+    const after = routed.slice(degradeAt + marker.length, degradeAt + marker.length + 500);
+    expect(after, "the fallback call must omit tools").not.toContain("tools");
+    // And the chat loop actually routes through it and honors the degradation.
+    expect(agent, "chat loop uses the routed turn").toContain("routedToolTurn(");
+    expect(agent, "chat loop honors the degraded leg").toContain("outcome.degraded");
   });
 
   it("names an unknown tool instead of returning an empty result", () => {
