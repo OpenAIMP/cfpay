@@ -696,17 +696,6 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // Cron heartbeat (issue #213): wrangler triggers.crons fires every
-  // minute (UTC); the ScheduledAgent decides what is due.
-  async scheduled(
-    _event: ScheduledController,
-    env: Env,
-    ctx: ExecutionContext,
-  ): Promise<void> {
-    const stub = env.SCHEDULED_AGENT.get(env.SCHEDULED_AGENT.idFromName("scheduler")) as any;
-    ctx.waitUntil(stub.scheduledTick());
-  },
-
   async email(
     message: ForwardableEmailMessage,
     env: Env,
