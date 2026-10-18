@@ -45,6 +45,7 @@ import { callable } from "agents";
 import { z } from "zod";
 import { defaultModelId } from "./models";
 import { normalizeCron } from "./cron-next";
+import { oneShotFromDelay, parseOneShotWhen } from "./schedule-once";
 import type { Env } from "./types";
 
 export const MAX_GOAL_CHARS = 500;
@@ -54,6 +55,8 @@ interface ScheduledGoalRow {
   id: string;
   goal: string;
   cron: string;
+  kind: string;
+  runAt: number | null;
   scheduleId: string | null;
   enabled: number;
   createdAt: number;
@@ -67,7 +70,11 @@ interface ScheduledGoalRow {
 export interface ScheduledGoal {
   id: string;
   goal: string;
+  /** "cron" recurs on the cron expression; "once" fires a single time at runAt. */
+  kind: "cron" | "once";
   cron: string;
+  /** For kind "once": the epoch-ms fire time. Null for recurring goals. */
+  runAt: number | null;
   enabled: boolean;
   createdAt: number;
   nextRunAt: number | null;
@@ -81,7 +88,9 @@ function toGoal(row: ScheduledGoalRow): ScheduledGoal {
   return {
     id: row.id,
     goal: row.goal,
+    kind: row.kind === "once" ? "once" : "cron",
     cron: row.cron,
+    runAt: row.runAt ?? null,
     enabled: row.enabled === 1,
     createdAt: row.createdAt,
     nextRunAt: row.nextRunAt,
@@ -101,7 +110,7 @@ export class ScheduledAgent extends Think<Env> {
     return [
       "You are the scheduling agent for this deployment.",
       "You keep the owner's standing goals and their cron schedules; when one fires you hand the goal to the OrchestratorAgent - you never do the goal's work yourself.",
-      "Use scheduledList to report what is scheduled, scheduledCreate to add a goal (goal text + 5-field cron, @daily style aliases allowed), scheduledDelete to remove one.",
+      "Use scheduledList to report what is scheduled, scheduledCreate to add a recurring goal (goal text + 5-field cron, @daily style aliases allowed), scheduledOnce to add a one-shot goal (goal text + an ISO time or delaySeconds), scheduledTrigger to run an existing goal immediately, scheduledDelete to remove one.",
       "If no goals exist, say so plainly: nothing runs autonomously until the owner creates one.",
     ].join(" ");
   }
@@ -116,6 +125,8 @@ export class ScheduledAgent extends Think<Env> {
          id TEXT PRIMARY KEY,
          goal TEXT NOT NULL,
          cron TEXT NOT NULL,
+         kind TEXT NOT NULL DEFAULT 'cron',
+         run_at INTEGER,
          enabled INTEGER NOT NULL DEFAULT 1,
          created_at INTEGER NOT NULL,
          next_run_at INTEGER,
@@ -126,6 +137,8 @@ export class ScheduledAgent extends Think<Env> {
        )`,
     );
     this.ensureColumn("schedule_id", "TEXT");
+    this.ensureColumn("kind", "TEXT NOT NULL DEFAULT 'cron'");
+    this.ensureColumn("run_at", "INTEGER");
     return this.ctx.storage.sql;
   }
 
@@ -141,7 +154,7 @@ export class ScheduledAgent extends Think<Env> {
   private rows(): ScheduledGoalRow[] {
     return this.db()
       .exec(
-        `SELECT id, goal, cron, schedule_id AS scheduleId, enabled, created_at AS createdAt,
+        `SELECT id, goal, cron, kind, run_at AS runAt, schedule_id AS scheduleId, enabled, created_at AS createdAt,
                 next_run_at AS nextRunAt, last_run_at AS lastRunAt, runs,
                 last_job_id AS lastJobId, last_status AS lastStatus
          FROM scheduled_goals ORDER BY created_at ASC`,
@@ -155,7 +168,9 @@ export class ScheduledAgent extends Think<Env> {
 
   /** Create the native schedule for a row and persist its id + next run. */
   private async armSchedule(row: ScheduledGoalRow): Promise<void> {
-    const sched = await this.schedule(row.cron, SCHEDULE_CALLBACK, { goalId: row.id });
+    const when: string | Date =
+      row.kind === "once" ? new Date(row.runAt ?? row.nextRunAt ?? Date.now()) : row.cron;
+    const sched = await this.schedule(when, SCHEDULE_CALLBACK, { goalId: row.id });
     this.db().exec(
       `UPDATE scheduled_goals SET schedule_id = ?, next_run_at = ? WHERE id = ?`,
       sched.id,
@@ -185,7 +200,7 @@ export class ScheduledAgent extends Think<Env> {
     await this.ensureNativeSchedules();
     const goals: ScheduledGoal[] = [];
     for (const row of this.rows()) {
-      if (row.enabled === 1 && row.scheduleId) {
+      if (row.enabled === 1 && row.scheduleId && row.kind !== "once") {
         // The native Schedule record is the source of truth for
         // the next run; refresh the cached value from it.
         const live = await this.getScheduleById(row.scheduleId).catch(() => undefined);
@@ -230,6 +245,62 @@ export class ScheduledAgent extends Think<Env> {
     return { ok: true, goal: toGoal(this.row(id)!) };
   }
 
+  /**
+   * Create a ONE-SHOT goal (issue #232): fires exactly once, at an
+   * ISO time (`at`) or after `delaySeconds`, then disables itself
+   * and keeps its run record. Armed as a native Date schedule.
+   */
+  @callable()
+  async scheduledOnce(
+    goal: string,
+    at?: string,
+    delaySeconds?: number,
+  ): Promise<{ ok: boolean; goal?: ScheduledGoal; error?: string }> {
+    const text = (goal ?? "").trim();
+    if (!text) return { ok: false, error: "goal_required" };
+    if (text.length > MAX_GOAL_CHARS) return { ok: false, error: "goal_too_long" };
+    const now = Date.now();
+    const parsed =
+      typeof delaySeconds === "number" && delaySeconds > 0
+        ? oneShotFromDelay(delaySeconds, now)
+        : parseOneShotWhen(at ?? "", now);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    const id = `sched-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    this.db().exec(
+      `INSERT INTO scheduled_goals (id, goal, cron, kind, run_at, enabled, created_at, next_run_at)
+       VALUES (?, ?, '', 'once', ?, 1, ?, ?)`,
+      id,
+      text,
+      parsed.at,
+      now,
+      parsed.at,
+    );
+    try {
+      await this.armSchedule(this.row(id)!);
+    } catch {
+      this.db().exec(`DELETE FROM scheduled_goals WHERE id = ?`, id);
+      return { ok: false, error: "schedule_failed" };
+    }
+    return { ok: true, goal: toGoal(this.row(id)!) };
+  }
+
+  /**
+   * Run an existing goal RIGHT NOW (issue #232), without touching
+   * its schedule: a recurring goal keeps its next run; a pending
+   * one-shot is consumed by the manual run. Returns the job id.
+   */
+  @callable()
+  async scheduledTrigger(
+    id: string,
+  ): Promise<{ ok: boolean; jobId?: string | null; goal?: ScheduledGoal; error?: string }> {
+    const row = this.row(id);
+    if (!row) return { ok: false, error: "not_found" };
+    if (row.kind === "once" && row.runs > 0) return { ok: false, error: "already_fired" };
+    const { jobId, status } = await this.dispatchAndRecord(row);
+    if (!jobId) return { ok: false, error: status.replace(/^error: /, "") || "dispatch_failed", goal: toGoal(this.row(id)!) };
+    return { ok: true, jobId, goal: toGoal(this.row(id)!) };
+  }
+
   @callable()
   async scheduledDelete(id: string): Promise<{ ok: boolean; error?: string }> {
     const row = this.row(id);
@@ -254,7 +325,11 @@ export class ScheduledAgent extends Think<Env> {
         `UPDATE scheduled_goals SET enabled = 0, schedule_id = NULL, next_run_at = NULL WHERE id = ?`,
         id,
       );
+    } else if (!enabled) {
+      this.db().exec(`UPDATE scheduled_goals SET enabled = 0, next_run_at = NULL WHERE id = ?`, id);
     } else if (enabled) {
+      // A one-shot that already fired is spent - it cannot re-arm.
+      if (row.kind === "once" && row.runs > 0) return { ok: false, error: "already_fired" };
       this.db().exec(`UPDATE scheduled_goals SET enabled = 1 WHERE id = ?`, id);
       await this.armSchedule(this.row(id)!);
     }
@@ -282,6 +357,18 @@ export class ScheduledAgent extends Think<Env> {
       return;
     }
     if (row.enabled !== 1) return;
+    await this.dispatchAndRecord(row);
+  }
+
+  /**
+   * Dispatch one goal to the orchestrator and record the outcome
+   * on its row. Shared by the alarm callback and scheduledTrigger.
+   * A one-shot is consumed by its run: disabled, schedule cleared,
+   * record kept. Never throws.
+   */
+  private async dispatchAndRecord(
+    row: ScheduledGoalRow,
+  ): Promise<{ jobId: string | null; status: string }> {
     const startedAt = Date.now();
     let jobId: string | null = null;
     let status = "dispatched";
@@ -291,13 +378,25 @@ export class ScheduledAgent extends Think<Env> {
     } catch (err) {
       status = `error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300);
     }
-    this.db().exec(
-      `UPDATE scheduled_goals SET last_run_at = ?, runs = runs + 1, last_job_id = ?, last_status = ? WHERE id = ?`,
-      startedAt,
-      jobId,
-      status,
-      goalId,
-    );
+    if (row.kind === "once") {
+      this.db().exec(
+        `UPDATE scheduled_goals SET last_run_at = ?, runs = runs + 1, last_job_id = ?, last_status = ?,
+                enabled = 0, schedule_id = NULL, next_run_at = NULL WHERE id = ?`,
+        startedAt,
+        jobId,
+        status,
+        row.id,
+      );
+    } else {
+      this.db().exec(
+        `UPDATE scheduled_goals SET last_run_at = ?, runs = runs + 1, last_job_id = ?, last_status = ? WHERE id = ?`,
+        startedAt,
+        jobId,
+        status,
+        row.id,
+      );
+    }
+    return { jobId, status };
   }
 
   /** Hand one goal to the OrchestratorAgent over A2A; returns the job id. */
@@ -356,7 +455,7 @@ export class ScheduledAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-  /** Route one A2A message: scheduled.list/create/delete; no operation = summary. */
+  /** Route one A2A message: scheduled.list/create/once/trigger/delete; no operation = summary. */
   async handleA2AMessage(
     message: any,
     _context: { taskId: string; contextId: string },
@@ -385,6 +484,25 @@ export class ScheduledAgent extends Think<Env> {
           }
         : { text: `Could not schedule that: ${res.error}.`, data: { ok: false, error: res.error } };
     }
+    if (op === "scheduled.once") {
+      const res = await this.scheduledOnce(
+        String(args.goal || ""),
+        typeof args.at === "string" ? args.at : undefined,
+        typeof args.delaySeconds === "number" ? args.delaySeconds : undefined,
+      );
+      return res.ok
+        ? {
+            text: `One-shot ${res.goal!.id}: "${res.goal!.goal}" fires once at ${res.goal!.runAt ? new Date(res.goal!.runAt).toISOString() : "n/a"}.`,
+            data: res.goal,
+          }
+        : { text: `Could not schedule that: ${res.error}.`, data: { ok: false, error: res.error } };
+    }
+    if (op === "scheduled.trigger") {
+      const res = await this.scheduledTrigger(String(args.id || ""));
+      return res.ok
+        ? { text: `Triggered ${String(args.id || "")} now; orchestrator job ${res.jobId}.`, data: { ok: true, jobId: res.jobId, goal: res.goal } }
+        : { text: `Could not trigger that goal: ${res.error}.`, data: { ok: false, error: res.error } };
+    }
     if (op === "scheduled.delete") {
       const res = await this.scheduledDelete(String(args.id || ""));
       return res.ok
@@ -404,7 +522,7 @@ export class ScheduledAgent extends Think<Env> {
 
 export const scheduledAgentToolSchema = z.object({
   operation: z
-    .enum(["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.delete"])
+    .enum(["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.once", "scheduled.trigger", "scheduled.delete"])
     .describe("Which ScheduledAgent operation to run."),
   goal: z
     .string()
@@ -414,5 +532,13 @@ export const scheduledAgentToolSchema = z.object({
     .string()
     .optional()
     .describe("For scheduled.create: a 5-field cron expression (UTC) or an alias like @daily."),
-  id: z.string().optional().describe("For scheduled.delete: the scheduled goal id."),
+  at: z
+    .string()
+    .optional()
+    .describe("For scheduled.once: an ISO-8601 fire time, or a relative offset like +2m / +1h / +3d."),
+  delaySeconds: z
+    .number()
+    .optional()
+    .describe("For scheduled.once: fire this many seconds from now (alternative to at)."),
+  id: z.string().optional().describe("For scheduled.delete / scheduled.trigger: the scheduled goal id."),
 });
