@@ -6,6 +6,7 @@ import {
   searchAgentToolSchema,
   voiceAgentToolSchema,
   orchestratorAgentToolSchema,
+  scheduledAgentToolSchema,
   slackAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -16,6 +17,7 @@ import { QAAgent } from "./qa-agent";
 import { SearchAgent } from "./search-agent";
 import { VoiceAgent } from "./voice-agent";
 import { OrchestratorAgent } from "./orchestrator-agent";
+import { ScheduledAgent } from "./scheduled-agent";
 import { ChatAgent } from "./chat-agent";
 import { WebhookAgent } from "./webhook-agent";
 import { Agent, callable } from "agents";
@@ -44,6 +46,7 @@ import {
   searchAgentTool,
   voiceAgentTool,
   orchestratorAgentTool,
+  scheduledAgentTool,
   qaAgentTool,
   slackAgentTool,
   webhookAgentTool,
@@ -110,6 +113,7 @@ const AGENT_TOOL_DISPATCH = {
   searchAgent: { cls: SearchAgent, displayName: "Search Agent" },
   voiceAgent: { cls: VoiceAgent, displayName: "Voice Agent" },
   orchestratorAgent: { cls: OrchestratorAgent, displayName: "Orchestrator Agent" },
+  scheduledAgent: { cls: ScheduledAgent, displayName: "Scheduled Agent" },
   chatAgent: { cls: ChatAgent, displayName: "Chat Agent" },
 } as const;
 
@@ -137,6 +141,7 @@ const agentToolInputSchema = {
   search: searchAgentToolSchema,
   voice: voiceAgentToolSchema,
   orchestrator: orchestratorAgentToolSchema,
+  scheduled: scheduledAgentToolSchema,
   chat: chatAgentToolSchema,
 } as const;
 const DEFAULT_STATE: AgentState = {
@@ -235,6 +240,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
       searchAgent: searchAgentTool,
       voiceAgent: voiceAgentTool,
       orchestratorAgent: orchestratorAgentTool,
+      scheduledAgent: scheduledAgentTool,
     };
   }
 
@@ -2249,11 +2255,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
 
   /**
    * Goal-oriented autopilot (issue #107): Goal → Planner → Task Queue →
-   * Executor → Verifier. The pipeline lives in src/public-autopilot.ts;
-   * this wrapper injects the agent-owned pieces — the raw model call, the
-   * reactive loop as the step executor (so trade safety carries over: an
-   * order-placing call inside a step still becomes an approval-gated
-   * proposal), and run persistence in agent state.
+   * Executor → Verifier (pipeline in src/public-autopilot.ts). This
+   * wrapper injects the agent-owned pieces: the model call, the
+   * reactive loop as executor (trade safety carries over - order calls
+   * become approval-gated proposals), and run persistence.
    */
   async runAutopilot(
     token: string,
@@ -2289,13 +2294,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
-   * Opportunity hunt (issue #135): the autopilot pipeline scans the
-   * universe for premium-selling candidates; every figure is then
-   * re-verified in code against a fresh live quote (moneyness,
-   * defined-risk structure) and sized deterministically under the
-   * budget caps in src/opportunity-hunt.ts - the model proposes, the
-   * code disposes. Report-only: the hunt goal forbids order tools and
-   * nothing here can place or propose an order.
+   * Opportunity hunt (issue #135): the autopilot pipeline proposes
+   * premium-selling candidates; code re-verifies every figure against
+   * a fresh live quote and sizes deterministically under the caps in
+   * src/opportunity-hunt.ts. Report-only: no order path exists here.
    */
   async runOpportunityHunt(
     token: string,
@@ -2531,6 +2533,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
     specs.push({
       type: "function",
       function: {
+        name: "scheduledAgent",
+        description:
+          "Dispatch the scheduled agent: list, create, or delete scheduled {goal, cron} goals that run autonomously as orchestrator jobs.",
+        parameters: agentToolInputSchema.scheduled,
+      },
+    });
+
+    specs.push({
+      type: "function",
+      function: {
         name: "chatAgent",
         description:
           "Dispatch the chat agent to report on conversation history, or to read one sender's transcript. A transcript is a disclosure and needs an explicit senderId.",
@@ -2631,9 +2643,8 @@ Do not claim to have completed a payment unless you have received confirmation.`
    * Fails closed: PAYMENT_PRIVATE_KEY required; the payTo must be in
    * OUTBOUND_PAY_TO_WHITELIST (checked BEFORE signing);
    * OUTBOUND_MAX_AMOUNT_ATOMIC caps the amount when set; the budget
-   * guard (issue #211) adds cumulative daily/per-agent caps from the
-   * stored policy. A payment reaches the ledger only when a
-   * transaction was actually broadcast, on the terms requested.
+   * guard (issue #211) adds cumulative caps from the stored policy.
+   * The ledger is written only for a broadcast transaction.
    */
   @callable()
   async payExternalEndpoint(
@@ -2829,11 +2840,9 @@ Do not claim to have completed a payment unless you have received confirmation.`
   /**
    * Turn a completed Checkout Session into delivered work. Only reached
    * through the signature-verified webhook; every condition is checked
-   * BEFORE fulfilment (accepted event type; paid one-off session;
-   * payment_status "paid"; currency + amount_total matching our own
-   * server-side price; our cfmail_request_id marker), so an unpaid,
-   * partial, wrong-currency or foreign-account event releases nothing.
-   * Idempotency is enforced in fulfilStripeCheckout.
+   * BEFORE fulfilment (event type; paid one-off session; payment_status
+   * "paid"; currency + amount matching our server-side price; our
+   * cfmail_request_id marker). Idempotency: fulfilStripeCheckout.
    */
   private async handleStripeWebhook(payload: any, eventId: string): Promise<void> {
     const type = typeof payload?.type === "string" ? payload.type : "";
