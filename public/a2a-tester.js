@@ -348,6 +348,9 @@
 
     card.appendChild(runButton("cap-events", "Test Slack events (inbound)", "/api/dashboard/qa/slack-events-test"));
     card.appendChild(runButton("cap-file", "Test Slack file post", "/api/dashboard/qa/slack-file-test"));
+    card.appendChild(runButton("cap-webhooks", "Test inbound webhooks (GitHub ping + Slack legacy)", "/api/dashboard/qa/webhooks-test"));
+    card.appendChild(runButton("cap-mcp", "Probe MCP auth (unauthenticated list + write)", "/api/dashboard/qa/mcp-auth-probe"));
+    card.appendChild(runButton("cap-search", "Probe search (fixed query)", "/api/dashboard/qa/search-probe"));
     qaPanel.appendChild(card);
   }
 
