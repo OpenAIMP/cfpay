@@ -47,6 +47,11 @@ export const MCP_FIELDS: Record<string, McpFieldDef> = {
   direction: { kind: "string", describe: "Direction filter where the operation supports one." },
   provider: { kind: "string", describe: "Provider filter (github, stripe, slack)." },
   limit: { kind: "number", describe: "Maximum records to return." },
+  budget: { kind: "number", describe: "Budget in dollars for an opportunity hunt (required)." },
+  maxRiskPct: { kind: "number", describe: "Per-trade risk cap as percent of budget (default 2)." },
+  maxUnderlyingPct: { kind: "number", describe: "Per-underlying risk cap as percent of budget (default 25)." },
+  horizonDays: { kind: "number", describe: "Hunt horizon in days." },
+  symbols: { kind: "array", describe: "Underlying symbols to restrict the hunt to." },
   senderId: { kind: "string", describe: "The conversation sender id." },
   id: { kind: "string", describe: "The record / goal id." },
   cron: { kind: "string", describe: "5-field cron (UTC) or an @alias." },
@@ -115,10 +120,14 @@ function spec(
 }
 
 export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
-  // host (the CFmail agent itself; its A2A ops use the chat.* names)
+  // host (the CFmail agent itself; chat.* for the channel, desk.* for the analysis pipelines)
   spec("cfmail", "CfmailAgent", "agent", "chat.summary", "read", [], "The host agent's own summary."),
   spec("cfmail", "CfmailAgent", "agent", "chat.facts", "read", [], "Mailbox facts held by the host agent."),
   spec("cfmail", "CfmailAgent", "agent", "chat.send", "write", ["message", "question"], "Send a message through the host agent's chat."),
+  // Desk analysis pipelines (#242 P0). action-class like qa.*: heavyweight analysis work,
+  // but no orders, no sends, no funds movement - they are report-only.
+  spec("cfmail", "CfmailAgent", "agent", "desk.hunt", "action", ["budget", "maxRiskPct", "maxUnderlyingPct", "horizonDays", "symbols"], "Run a budget-bounded defined-risk opportunity hunt (heavyweight analysis; places no orders)."),
+  spec("cfmail", "CfmailAgent", "agent", "desk.autopilot", "action", ["goal", "question"], "Deep multi-step research answer to a question via the autopilot pipeline."),
 
   // email
   spec("email", "EMAIL_AGENT", "email", "email.summary", "read", [], "Email agent summary."),
