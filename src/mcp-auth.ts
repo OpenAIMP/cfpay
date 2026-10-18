@@ -1,7 +1,7 @@
 import type { Env } from "./types";
 import { allowsDiscovery, resourceMetadataUrl } from "./mcp-oauth";
 import { isAcceptedAccessToken } from "./mcp-oauth-server";
-import { looksLikeJwt, requiredScopesForCall, verifyToken } from "./mcp-jwt";
+import { looksLikeJwt, requiredScopesForCall, verifyToken, WRITE_TOOLS } from "./mcp-jwt";
 
 /**
  * Authorisation for the /mcp endpoint.
@@ -233,6 +233,21 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
 
   // Explicit opt-out, and deliberately loud: this serves the tool surface openly.
   if (mode === "none") {
+    // Defense in depth since issue #173 gave the endpoint WRITE
+    // tools (send / post / process / create / delete): "none" may
+    // serve reads and actions openly if the operator insists, but
+    // a write-class tool call always needs a credential - and in
+    // "none" mode there is nothing to check one against, so it is
+    // refused. A configuration slip can therefore never expose the
+    // mutating surface to the open internet.
+    const { method, toolName } = await peekRpcCall(request);
+    if (method === "tools/call" && toolName && WRITE_TOOLS.has(toolName)) {
+      console.warn(`MCP_AUTH_MODE=none: refused unauthenticated write tool call (${toolName}).`);
+      return jsonResponse(
+        { error: "Write tools require authentication; MCP_AUTH_MODE=none serves read and action tools only." },
+        401,
+      );
+    }
     console.warn("MCP_AUTH_MODE=none: /mcp is serving WITHOUT authentication.");
     return null;
   }
