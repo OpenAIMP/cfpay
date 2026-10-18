@@ -856,6 +856,11 @@ export function createApp() {
     return getAgentByName(c.env.SCHEDULED_AGENT as any, "scheduler") as any;
   }
 
+  async function getAutopilotAgent(c: any) {
+    const { getAgentByName } = await import("agents");
+    return getAgentByName(c.env.AUTOPILOT_AGENT as any, "autopilot") as any;
+  }
+
   async function getSearchAgent(c: any) {
     const stub = await getAgentByName(c.env.SEARCH_AGENT as any, "search");
     return stub as unknown as {
@@ -1813,6 +1818,43 @@ export function createApp() {
   app.delete("/api/dashboard/scheduled-goals/:id", requireAuth, async (c) => {
     const scheduled = await getScheduledAgent(c);
     const result = await scheduled.scheduledDelete(c.req.param("id"));
+    return c.json(result);
+  });
+
+  // Autopilot (issue #242 P1): the standing portfolio-objective owner.
+  app.get("/api/dashboard/autopilot", requireAuth, async (c) => {
+    const autopilot = await getAutopilotAgent(c);
+    const summary = await autopilot.autopilotSummary();
+    const cycles = await autopilot.autopilotCycles(10);
+    return c.json({ ...summary, recentCycles: cycles.cycles });
+  });
+
+  app.post("/api/dashboard/autopilot/objective", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({})) as {
+      goal?: string; budget?: number; cadenceCron?: string; symbols?: string[]; notifyEmail?: string;
+    };
+    const autopilot = await getAutopilotAgent(c);
+    const result = await autopilot.autopilotObjectiveSet({
+      goal: body.goal,
+      budget: body.budget,
+      cadenceCron: body.cadenceCron,
+      symbols: body.symbols,
+      notifyEmail: body.notifyEmail,
+    });
+    if (!result.ok) return c.json(result, 400);
+    return c.json(result);
+  });
+
+  app.post("/api/dashboard/autopilot/objective/clear", requireAuth, async (c) => {
+    const autopilot = await getAutopilotAgent(c);
+    const result = await autopilot.autopilotObjectiveClear();
+    return c.json(result);
+  });
+
+  app.post("/api/dashboard/autopilot/run-cycle", requireAuth, async (c) => {
+    const autopilot = await getAutopilotAgent(c);
+    const result = await autopilot.autopilotRunCycle();
+    if (!result.ok) return c.json(result, 400);
     return c.json(result);
   });
 
