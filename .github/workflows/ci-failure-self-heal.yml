@@ -1,0 +1,54 @@
+name: CI Failure Self-Heal
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  file-issue:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File self-heal issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const sha = run.head_sha.substring(0, 8);
+            const title = `[QA self-heal] CI failure on ${sha}`;
+            
+            // Dedup: check for existing open issue with same title
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.find(i => i.title === title);
+            if (existing) {
+              console.log(`Issue already exists: #${existing.number}`);
+              return;
+            }
+            
+            const body = `## CI Failure Self-Heal
+            
+            **Workflow:** ${run.name}
+            **Commit:** ${run.head_sha}
+            **Branch:** ${run.head_branch}
+            **Run:** ${run.html_url}
+            **Conclusion:** ${run.conclusion}
+            
+            This issue was auto-filed by the CI Failure Self-Heal workflow.
+            The Muse fixer poller will claim and fix this if Copilot doesn't.`;
+            
+            const { data: issue } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['self-heal', 'ci-failure'],
+            });
+            console.log(`Created issue #${issue.number}`);
