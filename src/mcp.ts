@@ -352,6 +352,7 @@ export function createCfmailMcpHandler(env: Env) {
     };
     const outcome = (await stub.handleA2A(body, "https://mcp.internal")) as {
       result?: { parts?: { kind: string; text?: string; data?: unknown }[] };
+      events?: unknown[];
     };
     const rparts = outcome?.result?.parts ?? [];
     const text = rparts
@@ -359,7 +360,16 @@ export function createCfmailMcpHandler(env: Env) {
       .map((p) => p.text ?? "")
       .join(" ")
       .trim();
-    const rdata = rparts.find((p) => p.kind === "data")?.data;
+    // The structured outcome (with its error-catalog code on
+    // failures, issue #209) travels as an artifact-update event,
+    // not in the reply Message - read it from the collected events.
+    let rdata = rparts.find((p) => p.kind === "data")?.data;
+    if (rdata === undefined && Array.isArray(outcome?.events)) {
+      for (const e of outcome.events as { kind?: string; artifact?: { parts?: { kind: string; data?: unknown }[] } }[]) {
+        const part = e?.artifact?.parts?.find((p) => p.kind === "data");
+        if (part) rdata = part.data;
+      }
+    }
     return { text, data: rdata };
   };
 
