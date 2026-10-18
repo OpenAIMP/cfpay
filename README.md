@@ -65,6 +65,25 @@ Every agent ships the same five surfaces; the wiring tests guard them, so a new 
 | scheduled | yes | `/a2a/scheduled` | scheduledAgent | `cfpay_scheduled_*` | scheduled-goals API |
 | autopilot | yes | `/a2a/autopilot` | autopilotAgent | `cfpay_autopilot_*` | Orchestrate view (Autopilot card) |
 
+#### A2A endpoints (full URLs)
+
+Production base: `https://pay.openaimp.com`. Dispatch is a JSON-RPC POST (`message/send` or `message/stream`); it requires the dashboard key as `Authorization: Bearer <key>` or `X-API-Key: <key>` - an unauthenticated dispatch returns 401. Agent cards are public (no auth) by design: they describe capabilities and expose no data. All twelve surfaces are probed on every deploy (card served, 401 without auth, authenticated read op).
+
+| Agent | Dispatch (POST) | Agent card (GET, public) |
+|---|---|---|
+| cfmail (host) | `https://pay.openaimp.com/a2a` | `https://pay.openaimp.com/.well-known/agent-card.json` |
+| email | `https://pay.openaimp.com/a2a/email` | `https://pay.openaimp.com/a2a/email/agent-card.json` |
+| payments | `https://pay.openaimp.com/a2a/payments` | `https://pay.openaimp.com/a2a/payments/agent-card.json` |
+| webhook | `https://pay.openaimp.com/a2a/webhooks` | `https://pay.openaimp.com/a2a/webhooks/agent-card.json` |
+| slack | `https://pay.openaimp.com/a2a/slack` | `https://pay.openaimp.com/a2a/slack/agent-card.json` |
+| qa | `https://pay.openaimp.com/a2a/qa` | `https://pay.openaimp.com/a2a/qa/agent-card.json` |
+| chat | `https://pay.openaimp.com/a2a/chat` | `https://pay.openaimp.com/a2a/chat/agent-card.json` |
+| voice | `https://pay.openaimp.com/a2a/voice` | `https://pay.openaimp.com/a2a/voice/agent-card.json` |
+| search | `https://pay.openaimp.com/a2a/search` | `https://pay.openaimp.com/a2a/search/agent-card.json` |
+| orchestrator | `https://pay.openaimp.com/a2a/orchestrator` | `https://pay.openaimp.com/a2a/orchestrator/agent-card.json` |
+| scheduled | `https://pay.openaimp.com/a2a/scheduled` | `https://pay.openaimp.com/a2a/scheduled/agent-card.json` |
+| autopilot | `https://pay.openaimp.com/a2a/autopilot` | `https://pay.openaimp.com/a2a/autopilot/agent-card.json` |
+
 Deliberate exceptions: trade decisions stay dashboard-only (MCP lists proposals, never decides); desk ask / hunt runs are not MCP tools (they need the caller's Public.com session, owned by the API layer); the TradeWorkflow is a Workflow, not an agent.
 
 ## Webhook Setup
