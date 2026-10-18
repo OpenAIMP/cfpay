@@ -497,7 +497,7 @@ async function runSections() {
       );
     };
     const expectations = [
-      ["Coverage", true, "1/1 pages measured"],
+      ["Coverage", true, "1/1 page-measurements"],
       ["Contrast (WCAG AA)", false, "planted-faint"],
       ["Target size", false, "planted-tiny"],
       ["Heading hierarchy", false, "skips h1 to h3"],
