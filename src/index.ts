@@ -15,6 +15,7 @@ import {
 } from "./auth";
 import {
   A2A_CARD_PATHS,
+  A2A_FLEET_INDEX_PATH,
   A2A_PAYMENTS_CARD_PATH,
   A2A_PAYMENTS_RPC_PATH,
   A2A_EMAIL_CARD_PATH,
@@ -40,6 +41,7 @@ import {
   A2A_RPC_PATH,
   a2aAuthorised,
   cfmailCard,
+  fleetCardIndex,
   streamFromAsyncIterable,
 } from "./a2a";
 import { createCfmailMcpHandler } from "./mcp";
@@ -132,6 +134,18 @@ export default {
     // gated the same way /mcp is.
     if (A2A_CARD_PATHS.includes(url.pathname)) {
       return new Response(JSON.stringify(cfmailCard(url.origin)), {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=300",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+
+    // Fleet card index (issue #254): the machine-readable discovery
+    // document enumerating every agent's card. Public like the cards.
+    if (url.pathname === A2A_FLEET_INDEX_PATH) {
+      return new Response(JSON.stringify(fleetCardIndex(url.origin)), {
         headers: {
           "Content-Type": "application/json",
           "Cache-Control": "public, max-age=300",

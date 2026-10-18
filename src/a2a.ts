@@ -39,6 +39,9 @@ import { defaultModelId } from "./models";
 /** Path that serves the agent card. Both spellings are in the spec's history. */
 export const A2A_CARD_PATHS = ["/.well-known/agent-card.json", "/.well-known/agent.json"];
 
+/** Path that serves the fleet card index (issue #254): every agent's card, enumerated. */
+export const A2A_FLEET_INDEX_PATH = "/.well-known/agent-cards.json";
+
 /** Path that serves the JSON-RPC endpoint. */
 /** JSON-RPC endpoint for the cfmail capability. */
 export const A2A_RPC_PATH = "/a2a";
@@ -746,6 +749,68 @@ export function autopilotCard(origin: string): AgentCard {
         ],
       },
     ],
+  };
+}
+
+/**
+ * The fleet, as one table (issue #254): agent key, dispatch path, card
+ * path, and the card builder itself. The fleet card index is GENERATED
+ * from this table and the builders, so an entry's name, description and
+ * skills are the card's own - the index cannot drift from the cards it
+ * lists. The wiring tests pin this table against the routed paths and
+ * against A2A_ENDPOINTS (the QAAgent probe list in src/a2a-test.ts).
+ */
+export const A2A_FLEET: { agent: string; rpcPath: string; cardPath: string; card: (origin: string) => AgentCard }[] = [
+  { agent: "cfmail", rpcPath: A2A_RPC_PATH, cardPath: A2A_CARD_PATHS[0], card: cfmailCard },
+  { agent: "payments", rpcPath: A2A_PAYMENTS_RPC_PATH, cardPath: A2A_PAYMENTS_CARD_PATH, card: paymentsCard },
+  { agent: "email", rpcPath: A2A_EMAIL_RPC_PATH, cardPath: A2A_EMAIL_CARD_PATH, card: emailCard },
+  { agent: "webhook", rpcPath: A2A_WEBHOOK_RPC_PATH, cardPath: A2A_WEBHOOK_CARD_PATH, card: webhookCard },
+  { agent: "slack", rpcPath: A2A_SLACK_RPC_PATH, cardPath: A2A_SLACK_CARD_PATH, card: slackCard },
+  { agent: "qa", rpcPath: A2A_QA_RPC_PATH, cardPath: A2A_QA_CARD_PATH, card: qaCard },
+  { agent: "chat", rpcPath: A2A_CHAT_RPC_PATH, cardPath: A2A_CHAT_CARD_PATH, card: chatCard },
+  { agent: "voice", rpcPath: A2A_VOICE_RPC_PATH, cardPath: A2A_VOICE_CARD_PATH, card: voiceCard },
+  { agent: "search", rpcPath: A2A_SEARCH_RPC_PATH, cardPath: A2A_SEARCH_CARD_PATH, card: searchCard },
+  { agent: "orchestrator", rpcPath: A2A_ORCHESTRATOR_RPC_PATH, cardPath: A2A_ORCHESTRATOR_CARD_PATH, card: orchestratorCard },
+  { agent: "scheduled", rpcPath: A2A_SCHEDULED_RPC_PATH, cardPath: A2A_SCHEDULED_CARD_PATH, card: scheduledCard },
+  { agent: "autopilot", rpcPath: A2A_AUTOPILOT_RPC_PATH, cardPath: A2A_AUTOPILOT_CARD_PATH, card: autopilotCard },
+];
+
+export interface FleetIndexEntry {
+  agent: string;
+  name: string;
+  description: string;
+  /** JSON-RPC dispatch endpoint (POST; requires the dashboard key). */
+  url: string;
+  /** This agent's card (GET; public). */
+  cardUrl: string;
+  protocolVersion: string;
+  skills: string[];
+}
+
+/**
+ * The fleet card index served at A2A_FLEET_INDEX_PATH: the machine-
+ * readable discovery document for every agent in the fleet. Public,
+ * like the cards themselves - it carries names, descriptions and URLs,
+ * no data. Dispatch still requires the dashboard key.
+ */
+export function fleetCardIndex(origin: string): { name: string; description: string; version: string; agents: FleetIndexEntry[] } {
+  return {
+    name: "cfpay agent fleet",
+    description:
+      "Every A2A agent in the cfpay fleet. Fetch an agent's cardUrl for its full card; POST JSON-RPC to its url to dispatch (the dashboard key is required as a bearer credential or X-API-Key; cards and this index are public).",
+    version: "0.1.0",
+    agents: A2A_FLEET.map((f) => {
+      const card = f.card(origin);
+      return {
+        agent: f.agent,
+        name: card.name,
+        description: card.description,
+        url: card.url,
+        cardUrl: origin + f.cardPath,
+        protocolVersion: card.protocolVersion,
+        skills: (card.skills || []).map((sk) => sk.id),
+      };
+    }),
   };
 }
 

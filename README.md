@@ -67,7 +67,7 @@ Every agent ships the same five surfaces; the wiring tests guard them, so a new 
 
 #### A2A endpoints (full URLs)
 
-Production base: `https://pay.openaimp.com`. Dispatch is a JSON-RPC POST (`message/send` or `message/stream`); it requires the dashboard key as `Authorization: Bearer <key>` or `X-API-Key: <key>` - an unauthenticated dispatch returns 401. Agent cards are public (no auth) by design: they describe capabilities and expose no data. All twelve surfaces are probed on every deploy (card served, 401 without auth, authenticated read op).
+Machine-readable discovery: `GET https://pay.openaimp.com/.well-known/agent-cards.json` returns the fleet card index (issue #254) - every agent below with its dispatch URL, card URL, and skill ids, generated from the cards themselves. Production base: `https://pay.openaimp.com`. Dispatch is a JSON-RPC POST (`message/send` or `message/stream`); it requires the dashboard key as `Authorization: Bearer <key>` or `X-API-Key: <key>` - an unauthenticated dispatch returns 401. Agent cards are public (no auth) by design: they describe capabilities and expose no data. All twelve surfaces are probed on every deploy (card served, 401 without auth, authenticated read op).
 
 | Agent | Dispatch (POST) | Agent card (GET, public) |
 |---|---|---|
