@@ -1,4 +1,5 @@
 import { routeAgentEmail, getAgentByName, routeAgentRequest } from "agents";
+import { errorBody, errorStatus, mapUnknownError } from "./errors";
 import {
   createSecureReplyEmailResolver,
 } from "agents/email";
@@ -174,7 +175,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
 
@@ -216,7 +217,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     // Webhook channel: its own card and its own /a2a endpoint.
@@ -256,7 +257,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     // Slack channel: its own card and its own /a2a endpoint.
@@ -296,7 +297,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     // QA capability: its own card and its own /a2a endpoint.
@@ -336,7 +337,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     // Voice channel (issue #168): its own card and its own /a2a endpoint.
@@ -373,7 +374,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     // Search capability (issue #170): its own card and its own /a2a endpoint.
@@ -410,7 +411,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     // Orchestrator (issue #180): its own card and its own /a2a endpoint.
@@ -447,7 +448,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     // Scheduled (issue #213): its own card and its own /a2a endpoint.
@@ -484,7 +485,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     // Chat channel: its own card and its own /a2a endpoint.
@@ -524,7 +525,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
     if (url.pathname === A2A_RPC_PATH) {
@@ -575,7 +576,7 @@ export default {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
       }
     }
 

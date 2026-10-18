@@ -23,6 +23,7 @@
  * funds or pay an x402 endpoint.
  */
 
+import { a2aErrorCode, mapUnknownError } from "./errors";
 import type { AgentCard, Message, Task, TaskStatusUpdateEvent } from "@a2a-js/sdk";
 import {
   DefaultRequestHandler,
@@ -239,8 +240,18 @@ export class CapabilityExecutor implements AgentExecutor {
       const handled = await this.capability.handle(userMessage, { taskId, contextId });
       answer = (handled.text || "").trim();
       resultData = handled.data;
+      // Phase 2 of the error catalog (issue #209): a failure's data
+      // part carries the stable catalog CODE alongside its error
+      // token, so consumers judge failures by code, not prose.
+      if (resultData && typeof resultData === "object" && !Array.isArray(resultData)) {
+        const d = resultData as { ok?: unknown; error?: unknown; code?: unknown };
+        if ((d.ok === false || typeof d.error === "string") && typeof d.code !== "string") {
+          resultData = { ...d, code: a2aErrorCode(d.error) };
+        }
+      }
     } catch (error) {
       answer = "The agent could not answer: " + String(error);
+      resultData = { ok: false, error: "agent_error", code: mapUnknownError(error) };
     }
     if (!answer) answer = "The agent produced no answer for that question.";
 
