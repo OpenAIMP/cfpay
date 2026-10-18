@@ -7,7 +7,7 @@ function fakeFetch(behavior: { cardStatus?: number; unauthStatus?: number; dispa
   return async (url: string, init?: RequestInit): Promise<Response> => {
     const u = String(url);
     if (u.endsWith("agent-card.json")) {
-      return new Response(JSON.stringify({ name: "CFmail QA Agent", description: "Runs browser checks.", skills: [{ id: "browser-qa", name: "Browser QA", tags: ["qa", "browser"] }] }), { status: behavior.cardStatus ?? 200 });
+      return new Response(JSON.stringify({ name: "CFmail QA Agent", description: "Runs browser checks.", skills: [{ id: "browser-qa", name: "Browser QA", tags: ["qa", "browser"] }], operations: [{ operation: "qa.summary", summary: "QA agent summary.", access: "read", inputs: [] }] }), { status: behavior.cardStatus ?? 200 });
     }
     const authed = !!(init?.headers as Record<string, string> | undefined)?.Authorization;
     if (!authed) return new Response("unauthorized", { status: behavior.unauthStatus ?? 401 });
