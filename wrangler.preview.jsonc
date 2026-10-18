@@ -69,20 +69,32 @@
       "remote": true
     }
   ],
+  // Preview migrations deliberately DIFFER from production's v1..v13 chain:
+  // the preview Worker is a brand-new script on every first deploy, and
+  // Cloudflare no longer permits CREATING key-value-backed DO namespaces
+  // (production's v1 "new_classes" entry). The API rejects the whole deploy
+  // with code 10097 ("In order to use Durable Objects with a free plan, you
+  // must create a namespace using a new_sqlite_classes migration"). A single
+  // v1 tag declaring every class with the SQLite backend is the standard
+  // shape for a fresh Worker; production keeps its historical chain untouched.
   "migrations": [
-    { "tag": "v1", "new_classes": ["CfmailAgent"] },
-    { "tag": "v2", "new_sqlite_classes": ["CfmailAgentSQLite"] },
-    { "tag": "v3", "new_sqlite_classes": ["PaymentsAgent"] },
-    { "tag": "v4", "new_sqlite_classes": ["EmailAgent"] },
-    { "tag": "v5", "new_sqlite_classes": ["WebhookAgent"] },
-    { "tag": "v6", "new_sqlite_classes": ["SlackAgent"] },
-    { "tag": "v7", "new_sqlite_classes": ["QAAgent"] },
-    { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] },
-    { "tag": "v9", "new_sqlite_classes": ["VoiceAgent"] },
-    { "tag": "v10", "new_sqlite_classes": ["SearchAgent"] },
-    { "tag": "v11", "new_sqlite_classes": ["OrchestratorAgent"] },
-    { "tag": "v12", "new_sqlite_classes": ["ScheduledAgent"] },
-    { "tag": "v13", "new_sqlite_classes": ["AutopilotAgent"] }
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CfmailAgentSQLite",
+        "PaymentsAgent",
+        "EmailAgent",
+        "WebhookAgent",
+        "SlackAgent",
+        "QAAgent",
+        "ChatAgent",
+        "VoiceAgent",
+        "SearchAgent",
+        "OrchestratorAgent",
+        "ScheduledAgent",
+        "AutopilotAgent"
+      ]
+    }
   ],
   "workflows": [
     {
