@@ -27,7 +27,7 @@ import { looksLikeJwt, requiredScopesForCall, verifyToken, WRITE_TOOLS } from ".
  *                     to it. Gives per-user identity and central revocation.
  *
  * Slack is a separate case and cannot use either path: Slack signs with
- * X-Slack-Signature and never attaches an Authorization header (see src/slack.ts).
+ * X-Slack-Signature and never attaches an Authorization header (see src/slack-verify.ts).
  *
  * Only the Authorization header is read. Query parameters are rejected on
  * purpose, because the Worker has observability enabled and would log them.

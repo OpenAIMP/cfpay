@@ -9,6 +9,8 @@
  * Docs: https://developers.cloudflare.com/agents/communication-channels/webhooks/
  */
 
+import { verifySlackSignature } from "./slack-verify";
+
 export type WebhookProvider = "github" | "stripe" | "slack";
 
 export interface VerifiedWebhook {
@@ -99,34 +101,6 @@ async function verifyStripe(
 }
 
 // ---------------------------------------------------------------------------
-// Slack
-// ---------------------------------------------------------------------------
-
-async function verifySlack(
-  rawBody: string,
-  signature: string | null,
-  timestamp: string | null,
-  secret: string,
-  toleranceSeconds = 300,
-): Promise<boolean> {
-  if (!signature || !timestamp) return false;
-  if (!secret) return false;
-
-  // Replay protection
-  const age = Math.floor(Date.now() / 1000) - parseInt(timestamp, 10);
-  if (isNaN(age) || Math.abs(age) > toleranceSeconds) return false;
-
-  // Header format is "v0=<hex>"; the digest itself is hex only, so the prefix
-  // must be stripped before comparing (as verifyGitHub does for "sha256=").
-  if (!/^v0=[0-9a-f]{64}$/i.test(signature)) return false;
-  const hex = signature.slice(3);
-
-  // Slack signs "v0:<timestamp>:<rawBody>"
-  const basestring = `v0:${timestamp}:${rawBody}`;
-  return verifyHexSignature(secret, basestring, hex);
-}
-
-// ---------------------------------------------------------------------------
 // Unified verifier + parser
 // ---------------------------------------------------------------------------
 
@@ -196,7 +170,7 @@ export async function verifyAndParseWebhook(
     const signature = request.headers.get("X-Slack-Signature");
     const timestamp = request.headers.get("X-Slack-Request-Timestamp");
     if (!isConfiguredSecret(env.SLACK_WEBHOOK_SECRET)) return null;
-    if (!(await verifySlack(rawBody, signature, timestamp, env.SLACK_WEBHOOK_SECRET))) return null;
+    if (!(await verifySlackSignature(env.SLACK_WEBHOOK_SECRET, timestamp, rawBody, signature))) return null;
 
     let payload: any;
     try {

@@ -58,12 +58,12 @@ import {
   handleToken,
 } from "./mcp-oauth-server";
 import {
-  verifySlackSignature,
   parseSlackEvent,
   sendSlackMessage,
   connectSlackSocketMode,
   type SlackEvent,
 } from "./slack";
+import { verifySlackSignature } from "./slack-verify";
 
 export { CfmailAgentSQLite, CfmailAgentSQLite as CfmailAgent };
 export { PaymentsAgent } from "./payments-agent";

@@ -8,42 +8,6 @@ export interface SlackEvent {
   bot_id?: string;
 }
 
-export async function verifySlackSignature(
-  signingSecret: string,
-  timestamp: string,
-  body: string,
-  signature: string,
-): Promise<boolean> {
-  // Fail closed: an absent or blank secret means the request cannot be
-  // authenticated, so never derive a key from it. trim() keeps this consistent
-  // with isConfiguredSecret() in webhooks.ts.
-  if (!signingSecret || !signingSecret.trim() || !signature || !timestamp) {
-    return false;
-  }
-
-  const sigBase = `v0:${timestamp}:${body}`;
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(signingSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sigBuffer = await crypto.subtle.sign("HMAC", key, encoder.encode(sigBase));
-  const computed = "v0=" + Array.from(new Uint8Array(sigBuffer))
-    .map(b => b.toString(16).padStart(2, "0"))
-    .join("");
-
-  // Constant-time comparison, matching webhooks.ts.
-  if (computed.length !== signature.length) return false;
-  let diff = 0;
-  for (let i = 0; i < computed.length; i++) {
-    diff |= computed.charCodeAt(i) ^ signature.charCodeAt(i);
-  }
-  return diff === 0;
-}
-
 export async function sendSlackMessage(
   token: string,
   channel: string,
