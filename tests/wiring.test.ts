@@ -1761,7 +1761,8 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(agent).toContain("class ScheduledAgent extends Think");
     // the documented pattern: native schedules + a named callback,
     // woken by DO alarms - no Worker cron trigger, no tick scan
-    expect(agent).toContain('this.schedule(row.cron, SCHEDULE_CALLBACK, { goalId: row.id })');
+    expect(agent).toContain("SCHEDULE_CALLBACK, { goalId: row.id }");
+    expect(agent).toContain("row.kind === \"once\" ? new Date(");
     expect(agent).toContain('const SCHEDULE_CALLBACK = "runScheduledGoal"');
     expect(agent).toContain("async runScheduledGoal(");
     // the A2A surface lives on the class - a rewrite that drops it
@@ -1781,9 +1782,18 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(wrangler).not.toContain('"crons"');
     expect(api).toContain("/api/dashboard/scheduled-goals");
     const catalog = read("src/orchestrate.ts");
-    // plans may read the schedule, never write it
-    expect(catalog).toContain('"scheduled.summary", "scheduled.list"');
-    expect(catalog).not.toContain("scheduled.create");
+    // plans may read, create, one-shot, and trigger (issue #232);
+    // deleting a standing goal stays owner-only
+    expect(catalog).toContain('"scheduled.create", "scheduled.once", "scheduled.trigger"');
+    expect(catalog).not.toContain(String.raw`"scheduled.delete"`);
+    // trigger-now + one-shot callables and their A2A operations
+    expect(agent).toContain("async scheduledTrigger(");
+    expect(agent).toContain("async scheduledOnce(");
+    expect(agent).toContain("dispatchAndRecord");
+    expect(agent).toContain('op === "scheduled.trigger"');
+    expect(agent).toContain('op === "scheduled.once"');
+    expect(api).toContain("scheduled-goals/:id/trigger");
+    expect(api).toContain('body.kind === "once"');
   });
 
   it("model routing is wired into the orchestrator (issue #212)", () => {
