@@ -35,6 +35,8 @@ export interface Env {
   SEARCH_AGENT: DurableObjectNamespace;
   ORCHESTRATOR_AGENT: DurableObjectNamespace;
   SCHEDULED_AGENT: DurableObjectNamespace;
+  /** Standing portfolio objective owner (issue #242). */
+  AUTOPILOT_AGENT: DurableObjectNamespace;
   AI_SEARCH: AiSearchNamespace;
   AI_SEARCH_INSTANCE?: string;
   // Semantic memory (issue #215): the cfpay-memory Vectorize index.

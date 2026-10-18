@@ -58,6 +58,8 @@ export const MCP_FIELDS: Record<string, McpFieldDef> = {
   at: { kind: "string", describe: "ISO-8601 time, or a +2m / +1h / +3d offset (one-shot goals)." },
   delaySeconds: { kind: "number", describe: "Delay in seconds from now (one-shot goals)." },
   enabled: { kind: "boolean", describe: "Enable (arm) or disable (cancel) the goal's schedule." },
+  cadenceCron: { kind: "string", describe: "5-field cron (UTC) for the autopilot discovery cadence." },
+  notifyEmail: { kind: "string", describe: "Email address for autopilot recommendation reports." },
   mode: { kind: "string", describe: "Orchestrator mode: plan (default) or supervise." },
   channel: { kind: "string", describe: "Slack channel id; omit to post via the incoming webhook." },
   email: { kind: "string", describe: "Email address the payment request belongs to." },
@@ -198,6 +200,14 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   spec("scheduled", "SCHEDULED_AGENT", "scheduler", "scheduled.trigger", "write", ["id"], "Run an existing goal immediately."),
   spec("scheduled", "SCHEDULED_AGENT", "scheduler", "scheduled.setEnabled", "write", ["id", "enabled"], "Arm or cancel a goal's schedule (the row is kept)."),
   spec("scheduled", "SCHEDULED_AGENT", "scheduler", "scheduled.delete", "write", ["id"], "Delete a standing goal. Destructive."),
+
+  // autopilot (the standing portfolio-objective owner, issue #242 P1)
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.summary", "read", [], "Autopilot summary: objective, arming state, cycle counts."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.objective.get", "read", [], "Show the standing portfolio objective."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.objective.set", "write", ["goal", "budget", "cadenceCron", "symbols", "notifyEmail"], "Set the portfolio objective and arm its discovery cadence."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.objective.clear", "write", [], "Clear the portfolio objective and cancel its schedule. Destructive."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.cycles", "read", ["limit"], "Recent autopilot discovery cycles."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.runCycle", "action", [], "Run one autopilot discovery cycle now (heavyweight hunt + notifications)."),
 ];
 
 /** Names of the write-class tools, for JWT scope enforcement. */

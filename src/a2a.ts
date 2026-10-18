@@ -73,6 +73,9 @@ export const A2A_ORCHESTRATOR_CARD_PATH = "/a2a/orchestrator/agent-card.json";
 export const A2A_SCHEDULED_RPC_PATH = "/a2a/scheduled";
 export const A2A_SCHEDULED_CARD_PATH = "/a2a/scheduled/agent-card.json";
 
+export const A2A_AUTOPILOT_RPC_PATH = "/a2a/autopilot";
+export const A2A_AUTOPILOT_CARD_PATH = "/a2a/autopilot/agent-card.json";
+
 export const A2A_SEARCH_RPC_PATH = "/a2a/search";
 export const A2A_SEARCH_CARD_PATH = "/a2a/search/agent-card.json";
 
@@ -710,6 +713,36 @@ export function scheduledCard(origin: string): AgentCard {
         examples: [
           "List the scheduled goals",
           "Every weekday at 13:00 UTC, summarize the state of qa, search, and slack",
+        ],
+      },
+    ],
+  };
+}
+
+
+export function autopilotCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Autopilot Agent",
+    description:
+      "The standing portfolio-objective owner (issue #242): given a goal and a budget it runs defined-risk opportunity-hunt discovery cycles on a cadence, notifies via Slack, and emails the recommendations report. It places no orders and moves no money - proposals go through the human-approved trade workflow.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_AUTOPILOT_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "autopilot-objective",
+        name: "Portfolio objective",
+        description:
+          "autopilot.summary reports the objective and cycle counts; autopilot.objective.get shows the objective; autopilot.objective.set {goal, budget, cadenceCron?, symbols?, notifyEmail?} sets it and arms the discovery cadence on the ScheduledAgent (default cron: weekdays 14:00 UTC); autopilot.objective.clear removes it and cancels the schedule; autopilot.cycles {limit?} lists recent discovery cycles; autopilot.runCycle runs one discovery cycle now: a defined-risk hunt on the host, a Slack notification, and an email report when a notify address is set.",
+        tags: ["portfolio", "objectives", "autopilot", "discovery"],
+        examples: [
+          "Is the autopilot objective armed?",
+          "Run an autopilot discovery cycle now",
         ],
       },
     ],

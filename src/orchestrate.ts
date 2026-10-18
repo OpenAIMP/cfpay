@@ -50,6 +50,12 @@ export const OPERATION_CATALOG: CatalogEntry[] = [
   // schedule, create recurring or one-shot goals, and trigger an
   // existing goal by id. Deleting a standing goal stays owner-only.
   { agent: "scheduled", binding: "SCHEDULED_AGENT", instance: "scheduler", operations: ["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.once", "scheduled.trigger"], blurb: "Standing goals on native schedules. scheduled.create {goal, cron} makes one recur; scheduled.once {goal, at|delaySeconds} fires it a single time; scheduled.trigger {id} runs an existing goal now. Deleting goals is not plannable." },
+  // Autopilot (issue #242 P1): the standing portfolio objective. Setting
+  // or clearing the objective is owner-only (the scheduled.delete
+  // precedent); plans may read it and its cycles, and may run a
+  // discovery cycle - a budget-bounded defined-risk hunt on the host
+  // with Slack and email reporting.
+  { agent: "autopilot", binding: "AUTOPILOT_AGENT", instance: "autopilot", operations: ["autopilot.summary", "autopilot.objective.get", "autopilot.cycles", "autopilot.runCycle"], blurb: "The portfolio objective owner. autopilot.summary shows the objective and cycle counts; autopilot.objective.get shows the objective; autopilot.cycles {limit} lists discovery cycles; autopilot.runCycle runs one discovery cycle now (heavyweight: a defined-risk hunt on the host plus notifications)." },
 ];
 
 export function catalogAgent(agent: string): CatalogEntry | undefined {

@@ -21,7 +21,7 @@ describe("MCP agent tools (issue #173)", () => {
   it("has unique tool names and unique (agent, operation) pairs", () => {
     expect(new Set(MCP_AGENT_TOOLS.map((t) => t.tool)).size).toBe(MCP_AGENT_TOOLS.length);
     expect(new Set(MCP_AGENT_TOOLS.map((t) => `${t.agent}:${t.operation}`)).size).toBe(MCP_AGENT_TOOLS.length);
-    expect(MCP_AGENT_TOOLS.length).toBe(55); // +2 desk ops (#242 P0)
+    expect(MCP_AGENT_TOOLS.length).toBe(61); // +2 desk ops (#242 P0), +6 autopilot (#242 P1)
   });
 
   it("classifies writes; the JWT write set is built from the same table", () => {
@@ -64,6 +64,7 @@ describe("MCP agent tools (issue #173)", () => {
       "src/search-agent.ts",
       "src/orchestrator-agent.ts",
       "src/scheduled-agent.ts",
+      "src/autopilot-agent.ts",
     ];
     const found = new Set<string>();
     for (const f of agentFiles) {

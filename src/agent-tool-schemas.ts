@@ -186,6 +186,25 @@ export const voiceAgentToolSchema = {
   required: ["operation"],
 } as const;
 
+/** Autopilot operations (issue #242 P1): the standing portfolio-objective owner. */
+export const autopilotAgentToolSchema = {
+  type: "object",
+  properties: {
+    operation: {
+      type: "string",
+      enum: ["autopilot.summary", "autopilot.objective.get", "autopilot.objective.set", "autopilot.objective.clear", "autopilot.cycles", "autopilot.runCycle"],
+      description: "Which autopilot operation to perform.",
+    },
+    goal: { type: "string", description: "The portfolio goal text. Required for autopilot.objective.set." },
+    budget: { type: "number", description: "Budget in dollars for hunts. Required for autopilot.objective.set." },
+    cadenceCron: { type: "string", description: "5-field cron in UTC for the discovery cadence (default weekdays 14:00 UTC). For autopilot.objective.set." },
+    symbols: { type: "array", items: { type: "string" }, description: "Restrict hunts to these underlying symbols. For autopilot.objective.set." },
+    notifyEmail: { type: "string", description: "Email the recommendations report to this address. For autopilot.objective.set." },
+    limit: { type: "number", description: "Maximum cycles to return. For autopilot.cycles." },
+  },
+  required: ["operation"],
+} as const;
+
 /** Orchestrator operations (issue #180): plan and run a goal across the other agents. */
 export const scheduledAgentToolSchema = {
   type: "object",
