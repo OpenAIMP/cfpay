@@ -1,17 +1,14 @@
 /**
- * Cron expressions, parsed and evaluated in UTC (issue #213).
+ * Cron VALIDATION for the ScheduledAgent (issues #213, #226).
  *
- * A small, dependency-free 5-field cron implementation for the
- * ScheduledAgent: minute hour day-of-month month day-of-week, with
- * `*`, values, comma lists, ranges and steps, plus the usual
- * aliases (@hourly, @daily, @weekly, @monthly, @yearly). All times
- * are UTC - Workers cron triggers are UTC, and schedules stored
- * here are evaluated in UTC so a goal fires at the same wall-clock
- * moment regardless of where the dashboard is opened.
- *
- * Day semantics follow classic cron: when BOTH day-of-month and
- * day-of-week are restricted, a day matches when EITHER does; when
- * only one is restricted, that one decides.
+ * Execution scheduling belongs to the Agents SDK's native
+ * scheduler (this.schedule with a cron string; the SDK parses
+ * with cron-schedule and wakes the agent on a Durable Object
+ * alarm). This module is only the bouncer at the door: it expands
+ * @daily-style aliases and rejects malformed expressions before
+ * they reach the SDK, so the API can answer with a named error
+ * instead of a framework throw. It deliberately contains no
+ * next-run math of its own anymore - one cron engine, theirs.
  */
 
 export const CRON_ALIASES: Record<string, string> = {
@@ -89,37 +86,4 @@ export function normalizeCron(expr: string): string | null {
   const trimmed = expr.trim().toLowerCase();
   const expanded = CRON_ALIASES[trimmed] ?? expr.trim();
   return parseCron(expanded) ? expanded : null;
-}
-
-/** Does this UTC instant match the expression? */
-export function cronMatches(expr: string, date: Date): boolean {
-  const f = parseCron(expr);
-  if (!f) return false;
-  if (!f.minute.has(date.getUTCMinutes())) return false;
-  if (!f.hour.has(date.getUTCHours())) return false;
-  if (!f.month.has(date.getUTCMonth() + 1)) return false;
-  const domOk = f.dom.has(date.getUTCDate());
-  const dowOk = f.dow.has(date.getUTCDay());
-  if (f.domRestricted && f.dowRestricted) return domOk || dowOk;
-  if (f.domRestricted) return domOk;
-  if (f.dowRestricted) return dowOk;
-  return true;
-}
-
-/**
- * The next run strictly after `from`, minute-aligned, searching up
- * to a year ahead. Null when the expression is invalid or never
- * fires within the window.
- */
-export function nextCronRun(expr: string, from: Date): Date | null {
-  if (!parseCron(expr)) return null;
-  const cursor = new Date(from.getTime());
-  cursor.setUTCSeconds(0, 0);
-  cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
-  const limit = 366 * 24 * 60;
-  for (let i = 0; i < limit; i++) {
-    if (cronMatches(expr, cursor)) return new Date(cursor.getTime());
-    cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
-  }
-  return null;
 }

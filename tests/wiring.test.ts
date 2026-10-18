@@ -1753,21 +1753,27 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(api).toContain("issueToken(secret");
   });
 
-  it("the ScheduledAgent is wired end to end (issue #213)", () => {
+  it("the ScheduledAgent runs on the SDK native scheduler (issues #213, #226)", () => {
     const agent = read("src/scheduled-agent.ts");
     const index = read("src/index.ts");
     const wrangler = read("wrangler.jsonc");
     const api = read("src/api.ts");
     expect(agent).toContain("class ScheduledAgent extends Think");
-    expect(agent).toContain("async scheduledTick(");
+    // the documented pattern: native schedules + a named callback,
+    // woken by DO alarms - no Worker cron trigger, no tick scan
+    expect(agent).toContain('this.schedule(row.cron, SCHEDULE_CALLBACK, { goalId: row.id })');
+    expect(agent).toContain('const SCHEDULE_CALLBACK = "runScheduledGoal"');
+    expect(agent).toContain("async runScheduledGoal(");
+    expect(agent).toContain("this.cancelSchedule(row.scheduleId)");
     expect(agent).toContain("orchestrator.run");
+    expect(agent).not.toContain("scheduledTick");
     expect(index).toContain('export { ScheduledAgent } from "./scheduled-agent";');
     expect(index).toContain("A2A_SCHEDULED_RPC_PATH");
-    expect(index).toContain("async scheduled(");
-    expect(index).toContain("stub.scheduledTick()");
+    expect(index).not.toContain("async scheduled(");
+    expect(index).not.toContain("scheduledTick");
     expect(wrangler).toContain('"class_name": "ScheduledAgent"');
     expect(wrangler).toContain('"tag": "v12"');
-    expect(wrangler).toContain('"crons": ["* * * * *"]');
+    expect(wrangler).not.toContain('"crons"');
     expect(api).toContain("/api/dashboard/scheduled-goals");
     const catalog = read("src/orchestrate.ts");
     // plans may read the schedule, never write it
