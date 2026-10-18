@@ -3,8 +3,13 @@
  *
  * POST /api/dashboard/a2a/dispatch { surface, operation, params? }
  * dispatches a REAL JSON-RPC message/send to that agent's public A2A
- * endpoint through an HTTP self-fetch, using the exact same body shape
- * and reply parsing as scripts/qa-smoke.mjs section 14's a2aOp() - the
+ * endpoint. The HTTP leg is issued by QAAgent's qaHttpProbe callable
+ * (issue #264): the plain fetch-handler context cannot self-fetch the
+ * Worker's own domain in production (Cloudflare 522), while QAAgent's
+ * Durable Object context can (§12-proven). The probe presents the
+ * server-side dashboard key, so the edge sees the same credential an
+ * external caller would use. The body shape and reply parsing are the
+ * exact same as scripts/qa-smoke.mjs section 14's a2aOp() - the
  * production-proven dispatch contract. The operation must be declared
  * in src/a2a-ops.ts for the surface, so the tester can only invoke
  * operations the agent's card advertises.
@@ -17,6 +22,35 @@
 
 import { A2A_OPS, A2A_SURFACE_RPC, type A2aSurfaceKey } from "./a2a-ops";
 import { errorBody } from "./errors";
+
+/**
+ * Issue #264: the plain fetch-handler context cannot HTTP self-fetch the
+ * Worker's own domain in production (Cloudflare 522), so probe legs are
+ * delegated to QAAgent's qaHttpProbe callable — the Durable Object context
+ * (§12-proven). The dynamic import keeps this module's top level free of
+ * the agents SDK (which Vitest cannot import).
+ */
+export async function probeViaQAAgent(
+  c: any,
+  path: string,
+  method: "GET" | "POST",
+  headers: Record<string, string>,
+  body?: string,
+): Promise<{ status: number; text: string }> {
+  const { getAgentByName } = await import("agents");
+  const stub = (await getAgentByName(c.env.QA_AGENT as any, "qa")) as any;
+  const origin = new URL(c.req.url).origin;
+  return stub.qaHttpProbe({ origin, path, method, headers, body });
+}
+
+/** Parse a probe body as JSON; null when the body is not JSON (e.g. a 522 HTML page). */
+export function probeJson(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
 
 const SURFACE_KEYS = new Set<string>(Object.keys(A2A_OPS));
 
@@ -67,17 +101,18 @@ export function registerA2ADispatch(app: any, requireAuth: any): void {
       return badRequest(c, `unknown operation "${operation}" for surface "${surface}"`);
     }
 
-    const origin = new URL(c.req.url).origin;
     const data = { operation, ...params };
-    let res: Response;
+    let probe: { status: number; text: string };
     try {
-      res = await fetch(`${origin}${A2A_SURFACE_RPC[key]}`, {
-        method: "POST",
-        headers: {
+      probe = await probeViaQAAgent(
+        c,
+        A2A_SURFACE_RPC[key],
+        "POST",
+        {
           "Content-Type": "application/json",
           Authorization: `Bearer ${c.env.DASHBOARD_API_KEY}`,
         },
-        body: JSON.stringify({
+        JSON.stringify({
           jsonrpc: "2.0",
           id: `dash-${operation}`,
           method: "message/send",
@@ -90,17 +125,17 @@ export function registerA2ADispatch(app: any, requireAuth: any): void {
             },
           },
         }),
-      });
+      );
     } catch (err) {
       return c.json({ ok: false, surface, operation, status: 0, error: `dispatch fetch failed: ${String(err)}` });
     }
 
-    const json = (await res.json().catch(() => null)) as any;
-    if (res.status !== 200) {
+    const json = probeJson(probe.text);
+    if (probe.status !== 200) {
       const text = replyText(json);
       const error =
-        text || json?.error?.message || (typeof json?.error === "string" ? json.error : "") || `status=${res.status}`;
-      return c.json({ ok: false, surface, operation, status: res.status, error });
+        text || json?.error?.message || (typeof json?.error === "string" ? json.error : "") || `status=${probe.status}`;
+      return c.json({ ok: false, surface, operation, status: probe.status, error });
     }
     return c.json({ ok: true, surface, operation, text: replyText(json), data: replyData(json) });
   });

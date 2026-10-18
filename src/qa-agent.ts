@@ -2,7 +2,7 @@
 import { crawlUrlKey, evidenceCollectorScript, pageEntriesOf, parsePageEvidence, sha256Hex, summarizeBaselines, summarizeEvidence, viewportListOf } from "./ux-audit-spec";
 import { genericTabProbeExpression, genericTabVerdict, knownTabExpectations, mergeDiscoveredTabs } from "./tab-coverage";
 import { openProfileConnection, profileRowClear, profileRowGet, profileRowSet, profileSessionAlive } from "./browser-profile";
-import { A2A_ENDPOINTS, composeA2AEmail, runA2AEndpointTests, testA2AEndpoint } from "./a2a-test";
+import { A2A_ENDPOINTS, composeA2AEmail, probeOwnOrigin, runA2AEndpointTests, testA2AEndpoint } from "./a2a-test";
 import { postFilesToSlack } from "./slack-files";
 import type { A2ARow } from "./a2a-test";
 import type { BaselineResult, PageEvidence, UxAuditSpec, UxAuditStep, UxRuleProfile } from "./ux-audit-spec";
@@ -2862,6 +2862,9 @@ export class QAAgent extends Think<Env> {
     });
     return await handleCollecting(a2a.transport, body);
   }
+
+  @callable()
+  async qaHttpProbe(req: any) { return probeOwnOrigin(req); }
 
     /** Route one A2A message (qa.check browses a caller-chosen URL: bearer-gated, http(s) only). */
   async handleA2AMessage(

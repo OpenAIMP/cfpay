@@ -863,6 +863,64 @@ async function runSections() {
     record("agent A2A operations answer (all agents)", false, err.message);
   }
   }
+
+  if (shouldRun("dashboard capability routes (via QAAgent probes)")) {
+  // 15. Dashboard capability routes (issues #260 / #264): the QA tab's
+  //     dispatch + capability routes, exercised post-deploy. These routes
+  //     delegate their HTTP legs to QAAgent's qaHttpProbe (the Durable
+  //     Object context) - a plain fetch-handler self-fetch of the Worker's
+  //     own domain returns Cloudflare 522 in production (issue #264), which
+  //     is exactly the defect this section guards. Headless and model-free
+  //     except the events test's one AI auto-reply attempt (fake channel,
+  //     harmless). SEARCH_NOT_CONFIGURED is an honest PASS while no AI
+  //     Search instance exists - the probe must faithfully report, not
+  //     succeed.
+  try {
+    const bad = [];
+    // 15a. The A2A dispatch route with a lightweight read op.
+    {
+      const { status, json } = await post("/api/dashboard/a2a/dispatch", {
+        surface: "slack",
+        operation: "slack.list",
+        params: {},
+      });
+      const okRow = status === 200 && json?.ok === true;
+      console.log(`      ${okRow ? "ok  " : "BAD "} dispatch slack.list (status=${status})`);
+      if (!okRow) bad.push(`dispatch: ${json?.error || `status=${status}`}`);
+    }
+    // 15b. The Slack events test. Production has SLACK_SIGNING_SECRET set,
+    //     so the signed legs must verify and be accepted. `recorded` is
+    //     reported but not gated: the host email count is a shared counter
+    //     and concurrent inbound traffic could move it between the two
+    //     reads, so gating on the delta would be flaky by construction.
+    {
+      const { status, json } = await post("/api/dashboard/qa/slack-events-test", {});
+      const okRow = status === 200 && json?.verificationOk === true && json?.eventAccepted === true;
+      console.log(
+        `      ${okRow ? "ok  " : "BAD "} events test (status=${status}, verificationOk=${json?.verificationOk}, eventAccepted=${json?.eventAccepted}, recorded=${json?.recorded})`,
+      );
+      if (!okRow) {
+        bad.push(
+          `events-test: ${json?.error || `status=${status}, verificationOk=${json?.verificationOk}, eventAccepted=${json?.eventAccepted}`}`,
+        );
+      }
+    }
+    // 15c. The search probe: an honest snapshot is a pass.
+    {
+      const { status, json } = await post("/api/dashboard/qa/search-probe", {});
+      const okRow = status === 200 && json != null && "configured" in json;
+      console.log(`      ${okRow ? "ok  " : "BAD "} search probe (status=${status}, configured=${json?.configured})`);
+      if (!okRow) bad.push(`search-probe: ${json?.error || `status=${status}`}`);
+    }
+    record(
+      "dashboard capability routes (via QAAgent probes)",
+      bad.length === 0,
+      bad.length ? bad.join("; ") : "dispatch + events-test + search-probe ok",
+    );
+  } catch (err) {
+    record("dashboard capability routes (via QAAgent probes)", false, err.message);
+  }
+  }
 }
 
 main().catch((err) => {
