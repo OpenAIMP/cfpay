@@ -850,6 +850,10 @@ export function createApp() {
       orchestrateJob(id: string): Promise<unknown>;
     };
   }
+  async function getScheduledAgent(c: any) {
+    const { getAgentByName } = await import("agents");
+    return getAgentByName(c.env.SCHEDULED_AGENT as any, "scheduler") as any;
+  }
 
   async function getSearchAgent(c: any) {
     const stub = await getAgentByName(c.env.SEARCH_AGENT as any, "search");
@@ -1766,6 +1770,29 @@ export function createApp() {
     const orchestrator = await getOrchestratorAgent(c);
     const jobs = await orchestrator.orchestrateJobs(20);
     return c.json({ jobs });
+  });
+
+  // Scheduled goals (issue #213): the dashboard face of
+  // ScheduledAgent. Creating a goal is the ONLY way anything gets
+  // scheduled - nothing is seeded.
+  app.get("/api/dashboard/scheduled-goals", requireAuth, async (c) => {
+    const scheduled = await getScheduledAgent(c);
+    const goals = await scheduled.scheduledList();
+    return c.json({ goals });
+  });
+
+  app.post("/api/dashboard/scheduled-goals", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { goal?: string; cron?: string };
+    const scheduled = await getScheduledAgent(c);
+    const result = await scheduled.scheduledCreate((body.goal || "").trim(), (body.cron || "").trim());
+    if (!result.ok) return c.json(errorBody("VALIDATION_FAILED"), 400);
+    return c.json(result);
+  });
+
+  app.delete("/api/dashboard/scheduled-goals/:id", requireAuth, async (c) => {
+    const scheduled = await getScheduledAgent(c);
+    const result = await scheduled.scheduledDelete(c.req.param("id"));
+    return c.json(result);
   });
 
   // Knowledge search (issue #170): the dashboard face of SearchAgent.

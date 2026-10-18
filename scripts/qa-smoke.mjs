@@ -822,6 +822,7 @@ async function runSections() {
       ["voice.snapshot", "/a2a/voice", "voice.snapshot"],
       ["search.summary", "/a2a/search", "search.summary"],
       ["orchestrator.summary", "/a2a/orchestrator", "orchestrator.summary"],
+      ["scheduled.summary", "/a2a/scheduled", "scheduled.summary"],
     ];
     const bad = [];
     for (const [label, path, operation] of rows) {

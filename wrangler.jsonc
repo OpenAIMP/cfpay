@@ -4,6 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-30",
   "compatibility_flags": ["nodejs_compat"],
+  "triggers": { "crons": ["* * * * *"] },
   "observability": {
     "enabled": true,
     "traces": {
@@ -51,6 +52,10 @@
       {
         "name": "ORCHESTRATOR_AGENT",
         "class_name": "OrchestratorAgent"
+      },
+      {
+        "name": "SCHEDULED_AGENT",
+        "class_name": "ScheduledAgent"
       }
     ]
   },
@@ -72,7 +77,8 @@
     { "tag": "v8", "new_sqlite_classes": ["ChatAgent"] },
     { "tag": "v9", "new_sqlite_classes": ["VoiceAgent"] },
     { "tag": "v10", "new_sqlite_classes": ["SearchAgent"] },
-    { "tag": "v11", "new_sqlite_classes": ["OrchestratorAgent"] }
+    { "tag": "v11", "new_sqlite_classes": ["OrchestratorAgent"] },
+    { "tag": "v12", "new_sqlite_classes": ["ScheduledAgent"] }
   ],
   "workflows": [
     {

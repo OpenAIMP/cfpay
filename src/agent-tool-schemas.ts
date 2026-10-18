@@ -187,6 +187,21 @@ export const voiceAgentToolSchema = {
 } as const;
 
 /** Orchestrator operations (issue #180): plan and run a goal across the other agents. */
+export const scheduledAgentToolSchema = {
+  type: "object",
+  properties: {
+    operation: {
+      type: "string",
+      enum: ["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.delete"],
+      description: "Which scheduled-goals operation to perform.",
+    },
+    goal: { type: "string", description: "The goal text. Required for scheduled.create." },
+    cron: { type: "string", description: "5-field cron in UTC, or @hourly/@daily/@weekly/@monthly. Required for scheduled.create." },
+    id: { type: "string", description: "The scheduled goal id. Required for scheduled.delete." },
+  },
+  required: ["operation"],
+} as const;
+
 export const orchestratorAgentToolSchema = {
   type: "object",
   properties: {

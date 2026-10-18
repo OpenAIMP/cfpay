@@ -41,6 +41,11 @@ export const OPERATION_CATALOG: CatalogEntry[] = [
   { agent: "chat", binding: "CHAT_AGENT", instance: "chat", operations: ["chat.summary", "chat.totals", "chat.transcript", "chat.emailTranscript"], blurb: "Conversation history records and transcripts." },
   { agent: "voice", binding: "VOICE_AGENT", instance: "desk", operations: ["voice.snapshot", "voice.ask"], blurb: "The voice channel: voice.ask runs the desk pipeline and returns the speakable answer." },
   { agent: "search", binding: "SEARCH_AGENT", instance: "search", operations: ["search.summary", "search.query", "search.ask"], blurb: "Knowledge-base retrieval over the owner's AI Search index." },
+  // Scheduled goals are READ-ONLY for plans (issue #213): a plan may
+  // report the schedule, but creating or deleting a schedule is an
+  // owner action (dashboard, A2A with the key, or host chat) - a plan
+  // must never be able to make work recur.
+  { agent: "scheduled", binding: "SCHEDULED_AGENT", instance: "scheduler", operations: ["scheduled.summary", "scheduled.list"], blurb: "The owner's scheduled goals (read-only here: what runs autonomously, and when)." },
 ];
 
 export function catalogAgent(agent: string): CatalogEntry | undefined {

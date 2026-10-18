@@ -69,6 +69,8 @@ export const A2A_QA_CARD_PATH = "/a2a/qa/agent-card.json";
 
 export const A2A_ORCHESTRATOR_RPC_PATH = "/a2a/orchestrator";
 export const A2A_ORCHESTRATOR_CARD_PATH = "/a2a/orchestrator/agent-card.json";
+export const A2A_SCHEDULED_RPC_PATH = "/a2a/scheduled";
+export const A2A_SCHEDULED_CARD_PATH = "/a2a/scheduled/agent-card.json";
 
 export const A2A_SEARCH_RPC_PATH = "/a2a/search";
 export const A2A_SEARCH_CARD_PATH = "/a2a/search/agent-card.json";
@@ -656,6 +658,35 @@ export function createA2ATransport(
   const executor = new CapabilityExecutor(capability);
   const handler = new DefaultRequestHandler(card, store, executor);
   return { handler, transport: new JsonRpcTransportHandler(handler), store };
+}
+
+export function scheduledCard(origin: string): AgentCard {
+  return {
+    name: "CFmail Scheduled Agent",
+    description:
+      "Autonomous scheduling: stores {goal, cron} goals (UTC, 5-field cron plus @hourly/@daily/@weekly/@monthly aliases) and, when one falls due, hands the goal to the OrchestratorAgent through its own A2A handler as an ordinary orchestrator job - every agent's gates apply unchanged. Nothing is seeded: no goal exists and nothing runs until one is created.",
+    version: "0.1.0",
+    protocolVersion: "0.3.0",
+    url: origin + A2A_SCHEDULED_RPC_PATH,
+    preferredTransport: "JSONRPC",
+    capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    provider: { organization: "OpenAIMP", url: origin },
+    skills: [
+      {
+        id: "scheduled-goals",
+        name: "Scheduled goals",
+        description:
+          "scheduled.list shows the goals; scheduled.create {goal, cron} adds one (cron is 5-field UTC or an @alias); scheduled.delete {id} removes one. Due goals dispatch to the orchestrator, capped per tick, and always advance to their next slot.",
+        tags: ["scheduling", "cron", "automation"],
+        examples: [
+          "List the scheduled goals",
+          "Every weekday at 13:00 UTC, summarize the state of qa, search, and slack",
+        ],
+      },
+    ],
+  };
 }
 
 /**

@@ -1721,6 +1721,28 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("Knowledge search");
   });
 
+  it("the ScheduledAgent is wired end to end (issue #213)", () => {
+    const agent = read("src/scheduled-agent.ts");
+    const index = read("src/index.ts");
+    const wrangler = read("wrangler.jsonc");
+    const api = read("src/api.ts");
+    expect(agent).toContain("class ScheduledAgent extends Think");
+    expect(agent).toContain("async scheduledTick(");
+    expect(agent).toContain("orchestrator.run");
+    expect(index).toContain('export { ScheduledAgent } from "./scheduled-agent";');
+    expect(index).toContain("A2A_SCHEDULED_RPC_PATH");
+    expect(index).toContain("async scheduled(");
+    expect(index).toContain("stub.scheduledTick()");
+    expect(wrangler).toContain('"class_name": "ScheduledAgent"');
+    expect(wrangler).toContain('"tag": "v12"');
+    expect(wrangler).toContain('"crons": ["* * * * *"]');
+    expect(api).toContain("/api/dashboard/scheduled-goals");
+    const catalog = read("src/orchestrate.ts");
+    // plans may read the schedule, never write it
+    expect(catalog).toContain('"scheduled.summary", "scheduled.list"');
+    expect(catalog).not.toContain("scheduled.create");
+  });
+
   it("model routing is wired into the orchestrator (issue #212)", () => {
     const orch = read("src/orchestrator-agent.ts");
     const routing = read("src/model-routing.ts");
