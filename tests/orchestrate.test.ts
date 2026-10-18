@@ -65,7 +65,9 @@ describe("orchestration planning core", () => {
 
   it("the catalog is complete and the prompt is generated from it", () => {
     expect(OPERATION_CATALOG.map((e) => e.agent)).toEqual([
-      "host", "email", "payments", "webhooks", "slack", "qa", "chat", "voice", "search",
+      "host", "email", "payments", "webhooks", "slack", "qa", "chat", "voice",
+      "search",
+      "scheduled",
     ]);
     const prompt = plannerPrompt("check everything");
     for (const e of OPERATION_CATALOG) expect(prompt).toContain(e.operations[0]);
