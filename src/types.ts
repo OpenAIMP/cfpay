@@ -213,7 +213,25 @@ export interface EmailRecord {
   aiSummary?: string;
   aiResponse?: string;
   paid: boolean;
+  /**
+   * Slack label facets (issue #262). Present on Slack message records; absent on
+   * plain email records and on Slack history recorded before labeling existed.
+   */
+  via?: SlackVia;
+  /** Outbound only: how the post was actually sent. */
+  mechanism?: SlackMechanism;
 }
+
+/**
+ * The transport a Slack message traveled. Inbound: events (Events API
+ * `/slack/events`), webhook (legacy `/webhooks/slack` deliveries — recorded in the
+ * webhook store, not message history), socket (Socket Mode). Outbound: a2a
+ * (`slack.post` over A2A), dashboard (the Send to Slack card / notifySlack).
+ */
+export type SlackVia = "events" | "webhook" | "a2a" | "socket" | "dashboard";
+
+/** Outbound only: the mechanism that carried the post. */
+export type SlackMechanism = "bot" | "webhook";
 
 export interface PaymentRecord {
   id: string;

@@ -1213,6 +1213,8 @@ async function loadStats() {
               <div class="card-header">
                 <div>
                   <span class="badge-${m.direction || 'inbound'}">${m.direction || 'inbound'}</span>
+                  ${m.via ? `<span class="badge-slack" style="margin-left:0.5rem;">${escapeHtml(m.via)}</span>` : `<span class="badge-slack" style="margin-left:0.5rem;">legacy</span>`}
+                  ${m.mechanism ? `<span class="badge-slack" style="margin-left:0.5rem;">${escapeHtml(m.mechanism)}</span>` : ''}
                   <span class="subject" style="margin-left:0.5rem;">${slackLabel(m.subject) || '(no text)'}</span>
                 </div>
                 <div class="meta">User: ${slackLabel(m.from)}<br>Channel: ${slackLabel(m.to)}<br>${new Date(m.receivedAt).toLocaleString()}</div>

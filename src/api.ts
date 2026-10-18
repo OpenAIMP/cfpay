@@ -4,7 +4,7 @@ import { errorBody, errorStatus, mapUnknownError, ERROR_CATALOG } from "./errors
 import { issueToken, MCP_SCOPES, type McpScope } from "./mcp-jwt";
 import { safeStringify } from "./browser-lifecycle";
 import Stripe from "stripe";
-import type { Env, PaymentClaim, StripeConfig } from "./types";
+import type { EmailRecord, Env, PaymentClaim, StripeConfig } from "./types";
 import { renderStripeReturnPage } from "./stripe-return-page";
 import { ZERO_ADDRESS, formatAmount, formatEthAmount, parsePaymentClaim, parsePaymentConfig, verifyTestnetPayment } from "./payments";
 import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from "./agent";
@@ -15,6 +15,7 @@ import { timingSafeStringEqual } from "./mcp-auth";
 import { getOAuthUserFromRequest } from "./auth";
 import { registerA2ADispatch } from "./a2a-dispatch";
 import { registerCapabilityTests } from "./qa-capability-tests";
+import { recordNotifySlackToAgent } from "./slack-mirror";
 import {
   PUBLIC_MCP_URL,
   callTool,
@@ -1578,8 +1579,23 @@ export function createApp() {
 
   app.get("/api/dashboard/slack", requireAuth, async (c) => {
     const agent = getAgent(c);
-    const messages = await agent.getSlackMessages(100);
-    return c.json({ messages });
+    const messages: EmailRecord[] = await agent.getSlackMessages(100);
+    // Issue #262: merge SlackAgent's own history — outbound A2A posts and
+    // dashboard sends are recorded there, not in the host store. Mirrored
+    // inbound records share the host record's id, so dedup by id keeps them
+    // from appearing twice.
+    let extra: EmailRecord[] = [];
+    try {
+      const sstub = (await getAgentByName(c.env.SLACK_AGENT as any, "slack")) as any;
+      extra = await sstub.listMessages(100);
+    } catch (err) {
+      console.error("SlackAgent history read failed:", err);
+    }
+    const seen = new Set(messages.map((m) => m.id));
+    const merged = [...messages, ...extra.filter((m) => !seen.has(m.id))]
+      .sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1))
+      .slice(0, 100);
+    return c.json({ messages: merged });
   });
 
 
@@ -2012,6 +2028,8 @@ export function createApp() {
     const body = await c.req.json<{ message: string }>();
     const agent = getAgent(c);
     const result = await agent.notifySlack(body.message);
+    // Issue #262: record successful sends in SlackAgent's history (the feed merges both stores).
+    if (result.success) await recordNotifySlackToAgent(c.env, body.message);
     return c.json(result);
   });
 

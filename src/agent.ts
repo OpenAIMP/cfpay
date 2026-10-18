@@ -32,6 +32,7 @@ import type {
   Env,
   PaymentClaim,
   PaymentRecord,
+  SlackVia,
   StripeCheckout,
   StripeCheckoutStatus,
   StripeConfig,
@@ -40,6 +41,7 @@ import type {
   TradeProposal,
 } from "./types";
 import type { UsageCost } from "./models";
+import { buildInboundSlackRecord, mirrorToSlackAgent } from "./slack-mirror";
 import type { ToolSet } from "ai";
 import {
   emailAgentTool,
@@ -341,7 +343,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
       this.slackSocket = await connectSlackSocketMode(
         this.env.SLACK_APP_TOKEN,
         async (event: SlackEvent) => {
-          await this.handleSlackEvent(event);
+          await this.handleSlackEvent(event, "socket");
         },
       );
       console.log("Slack Socket Mode connected successfully");
@@ -373,7 +375,7 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
   /**
    * Handle a Slack event from either HTTP webhook or Socket Mode.
    */
-  async handleSlackEvent(event: SlackEvent): Promise<void> {
+  async handleSlackEvent(event: SlackEvent, via: SlackVia = "events"): Promise<void> {
     const state = this.ensureState();
 
     // Check if this is a payment-related request
@@ -413,24 +415,15 @@ export class CfmailAgentSQLite extends Think<Env, AgentState> {
       response = "Thanks for your message — I'll get back to you shortly.";
     }
 
-    // Store as email-like record
-    const emailRecord: EmailRecord = {
-      id: generateId(),
-      from: `slack:${event.user}`,
-      to: `slack:${event.channel}`,
-      subject: event.text.slice(0, 50),
-      body: event.text,
-      direction: "inbound",
-      receivedAt: new Date().toISOString(),
-      paid: false,
-      aiResponse: response,
-    };
+    // Store as email-like record (issue #262: labeled with the transport).
+    const emailRecord: EmailRecord = buildInboundSlackRecord(event, response, via);
 
     this.setState({
       ...state,
       emails: [...state.emails, emailRecord].slice(-MAX_STORED_EMAILS),
       totalEmailsReceived: state.totalEmailsReceived + 1,
     });
+    await mirrorToSlackAgent(this.env, emailRecord);
   }
 
   // ─── AI ─────────────────────────────────────────────────────
