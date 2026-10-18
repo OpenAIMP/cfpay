@@ -2,6 +2,7 @@ import { callable } from "agents";
 import { Think } from "@cloudflare/think";
 import type { Env } from "./types";
 import { defaultModelId } from "./models";
+import { runRouted, type ModelTask } from "./model-routing";
 import {
   catalogAgent,
   outcomeFromReply,
@@ -125,12 +126,23 @@ export class OrchestratorAgent extends Think<Env> {
   }
 
   /** One model call returning plain text (Workers AI chat shape). */
-  private async modelText(prompt: string): Promise<string> {
-    const res = (await this.env.AI.run(this.getModel() as never, {
+  private async rawModelText(modelId: string, prompt: string): Promise<string> {
+    const res = (await this.env.AI.run(modelId as never, {
       messages: [{ role: "user", content: prompt }],
     } as never)) as { response?: string; choices?: { message?: { content?: string } }[] } | string;
     if (typeof res === "string") return res;
     return res?.response ?? res?.choices?.[0]?.message?.content ?? "";
+  }
+
+  /**
+   * A routed model call (issue #212): per-task chain with one retry
+   * and fallback on transient provider errors (3043 class). The
+   * account-level quota (4006) is terminal inside the router and
+   * surfaces immediately.
+   */
+  private async modelText(prompt: string, task: ModelTask = "plan"): Promise<string> {
+    const { result } = await runRouted(task, (modelId) => this.rawModelText(modelId, prompt));
+    return result;
   }
 
   /**
@@ -238,7 +250,7 @@ export class OrchestratorAgent extends Think<Env> {
   /** One supervisor review (supervise mode): the model sees the results so far and may revise what remains. Unreadable verdicts count as continue. */
   private async supervise(goal: string, outcomes: StepOutcome[], executedIds: Set<string>): Promise<SupervisorVerdict> {
     try {
-      const raw = await this.modelText(supervisorPrompt(goal, summarizeOutcomes(goal, outcomes), [...executedIds]));
+      const raw = await this.modelText(supervisorPrompt(goal, summarizeOutcomes(goal, outcomes), [...executedIds]), "supervise");
       return parseSupervisorReply(raw, executedIds) ?? { action: "continue" };
     } catch {
       return { action: "continue" };
@@ -370,6 +382,7 @@ export class OrchestratorAgent extends Think<Env> {
           "",
           summarizeOutcomes(g, outcomes),
         ].join("\n"),
+        "synthesize",
       );
       if (synthesis.trim().length > 40) result = synthesis.trim();
     } catch {

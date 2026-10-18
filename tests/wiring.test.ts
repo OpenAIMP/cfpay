@@ -1721,6 +1721,18 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("Knowledge search");
   });
 
+  it("model routing is wired into the orchestrator (issue #212)", () => {
+    const orch = read("src/orchestrator-agent.ts");
+    const routing = read("src/model-routing.ts");
+    expect(routing).toContain("export async function runRouted");
+    // the correction: 4006 is terminal, never routed around
+    expect(routing).toContain("4006 is terminal, not retryable");
+    expect(orch).toContain('from "./model-routing"');
+    expect(orch).toContain("runRouted(task, (modelId) => this.rawModelText(modelId, prompt))");
+    expect(orch).toContain('"supervise"');
+    expect(orch).toContain('"synthesize"');
+  });
+
   it("the budget guard gates the host's external payments (issue #211)", () => {
     const agent = read("src/agent.ts");
     const guard = read("src/budget-guard.ts");
