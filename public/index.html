@@ -388,12 +388,6 @@
           <h3 style="margin-bottom:1rem;">Incoming Webhook Events</h3>
           <div id="webhookList"><div class="loading">Loading webhooks...</div></div>
         </div>
-        <div class="card">
-          <h3 style="margin-bottom:1rem;">Send Slack Notification</h3>
-          <div class="form-group"><label>Message</label><textarea id="slackMessage" placeholder="Message to send to Slack..."></textarea></div>
-          <button class="btn" onclick="sendSlack()">Send to Slack</button>
-          <div id="slackResult" style="margin-top:1rem;"></div>
-        </div>
       </div>
       <div id="qa" class="panel">
         <div class="card">
@@ -451,6 +445,12 @@
           </div>
           <div id="qaEmailResult" style="margin-top:0.5rem;"></div>
           <div id="qaResult"></div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:1rem;">Send Slack Notification</h3>
+          <div class="form-group"><label>Message</label><textarea id="slackMessage" placeholder="Message to send to Slack..."></textarea></div>
+          <button class="btn" onclick="sendSlack()">Send to Slack</button>
+          <div id="slackResult" style="margin-top:1rem;"></div>
         </div>
       </div>
     </div>
