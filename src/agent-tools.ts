@@ -32,6 +32,7 @@ import { ChatAgent } from "./chat-agent";
 import { SearchAgent } from "./search-agent";
 import { VoiceAgent } from "./voice-agent";
 import { OrchestratorAgent } from "./orchestrator-agent";
+import { ScheduledAgent } from "./scheduled-agent";
 import {
   paymentAgentToolSchema,
   slackAgentToolSchema,
@@ -39,6 +40,7 @@ import {
   searchAgentToolSchema,
   voiceAgentToolSchema,
   orchestratorAgentToolSchema,
+  scheduledAgentToolSchema,
   qaAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -234,4 +236,18 @@ export const orchestratorAgentTool = agentTool<AgentToolInput>(OrchestratorAgent
   ].join(" "),
   displayName: "Orchestrator Agent",
   inputSchema: asZod<AgentToolInput>(orchestratorAgentToolSchema),
+});
+
+/**
+ * Dispatch the scheduled agent (issue #213): owns {goal, cron}
+ * goals; due goals run as orchestrator jobs.
+ */
+export const scheduledAgentTool = agentTool<AgentToolInput>(ScheduledAgent, {
+  description: [
+    "Dispatch the scheduled agent to list, create, or delete scheduled goals.",
+    "Use scheduled.create with a goal and a 5-field UTC cron (or @daily/@weekly alias); the goal runs autonomously as an orchestrator job when due. Nothing is scheduled unless created here.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Scheduled Agent",
+  inputSchema: asZod<AgentToolInput>(scheduledAgentToolSchema),
 });
