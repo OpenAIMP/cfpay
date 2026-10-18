@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 import type { Env } from "./types";
+import { a2aReplyFromOutcome } from "./a2a";
 import {
   MCP_AGENT_TOOLS,
   MCP_DESK_TOOLS,
@@ -340,7 +341,7 @@ export function createCfmailMcpHandler(env: Env) {
     const body = {
       jsonrpc: "2.0",
       id: `mcp-${toolSpec.tool}`,
-      method: "message/send",
+      method: "message/stream",
       params: {
         message: {
           kind: "message",
@@ -350,27 +351,12 @@ export function createCfmailMcpHandler(env: Env) {
         },
       },
     };
-    const outcome = (await stub.handleA2A(body, "https://mcp.internal")) as {
-      result?: { parts?: { kind: string; text?: string; data?: unknown }[] };
-      events?: unknown[];
-    };
-    const rparts = outcome?.result?.parts ?? [];
-    const text = rparts
-      .filter((p) => p.kind === "text")
-      .map((p) => p.text ?? "")
-      .join(" ")
-      .trim();
-    // The structured outcome (with its error-catalog code on
-    // failures, issue #209) travels as an artifact-update event,
-    // not in the reply Message - read it from the collected events.
-    let rdata = rparts.find((p) => p.kind === "data")?.data;
-    if (rdata === undefined && Array.isArray(outcome?.events)) {
-      for (const e of outcome.events as { kind?: string; artifact?: { parts?: { kind: string; data?: unknown }[] } }[]) {
-        const part = e?.artifact?.parts?.find((p) => p.kind === "data");
-        if (part) rdata = part.data;
-      }
-    }
-    return { text, data: rdata };
+    // message/stream + the shared extractor: the reply Message
+    // (text) and the artifact-update (structured data, with its
+    // error-catalog code on failures) both travel as events.
+    const outcome = await stub.handleA2A(body, "https://mcp.internal");
+    const reply = a2aReplyFromOutcome(outcome);
+    return { text: reply.text, data: reply.data };
   };
 
   for (const toolSpec of MCP_AGENT_TOOLS) {
