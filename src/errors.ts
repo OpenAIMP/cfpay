@@ -60,6 +60,25 @@ export function errorBody(code: ErrorCode): {
  * stable markers (numeric codes, error names), never on prose the
  * user sees.
  */
+/**
+ * Map an A2A operation's failure value (the `error` string in a
+ * reply's data part) to a catalog code (issue #209 phase 2). The
+ * agents' error strings are stable snake_case tokens for the named
+ * failures (unknown_operation, not_found, invalid_cron, ...);
+ * anything else falls through to the platform mapper.
+ */
+export function a2aErrorCode(error: unknown): ErrorCode {
+  const text = typeof error === "string" ? error : "";
+  if (text === "unknown_operation") return "BAD_REQUEST";
+  if (text === "not_found") return "NOT_FOUND";
+  if (text === "already_fired") return "CONFLICT";
+  if (/quota/i.test(text)) return "RATE_LIMITED";
+  if (/required|too_long|invalid|missing|bad_|never_fires|not_future|too_far|needs/.test(text)) {
+    return "VALIDATION_FAILED";
+  }
+  return mapUnknownError(text || error);
+}
+
 export function mapUnknownError(err: unknown): ErrorCode {
   const text = err instanceof Error ? `${err.name}: ${err.message}` : String(err ?? "");
   if (/4006|neurons|free allocation/i.test(text)) return "AI_QUOTA_EXHAUSTED";
