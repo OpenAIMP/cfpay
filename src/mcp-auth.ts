@@ -1,6 +1,7 @@
 import type { Env } from "./types";
 import { allowsDiscovery, resourceMetadataUrl } from "./mcp-oauth";
 import { isAcceptedAccessToken } from "./mcp-oauth-server";
+import { looksLikeJwt, requiredScopesForCall, verifyToken } from "./mcp-jwt";
 
 /**
  * Authorisation for the /mcp endpoint.
@@ -11,6 +12,8 @@ import { isAcceptedAccessToken } from "./mcp-oauth-server";
  *     OAuth access token issued by this server's own authorization server
  *   "static"           — only the static bearer token
  *   "github"           — only a valid GitHub token
+ *   "jwt"              — only a scoped JWT (issue #214), signed with
+ *                        MCP_JWT_SECRET and enforced per method
  *   "none"             — no authorisation; the endpoint is public
  *
  * "none" must be requested explicitly. An unset mode defaults to "either" and
@@ -30,7 +33,7 @@ import { isAcceptedAccessToken } from "./mcp-oauth-server";
  * purpose, because the Worker has observability enabled and would log them.
  */
 
-export type McpAuthMode = "either" | "static" | "github" | "none";
+export type McpAuthMode = "either" | "static" | "github" | "jwt" | "none";
 
 /** How long a validated GitHub token is trusted before re-checking. */
 const GITHUB_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -60,7 +63,7 @@ export function timingSafeStringEqual(a: string, b: string): boolean {
 export function resolveMcpAuthMode(raw: string | undefined): McpAuthMode | null {
   const value = (raw ?? "").trim().toLowerCase();
   if (value === "") return "either";
-  if (value === "either" || value === "static" || value === "github" || value === "none") {
+  if (value === "either" || value === "static" || value === "github" || value === "jwt" || value === "none") {
     return value;
   }
   return null;
@@ -181,16 +184,35 @@ function allowsAnonymousHandshake(env: Env): boolean {
 }
 
 /** Which credential paths the resolved mode permits. */
-function permittedPaths(mode: McpAuthMode): { static: boolean; github: boolean } {
+function permittedPaths(mode: McpAuthMode): { static: boolean; github: boolean; jwt: boolean } {
   switch (mode) {
     case "static":
-      return { static: true, github: false };
+      return { static: true, github: false, jwt: false };
     case "github":
-      return { static: false, github: true };
+      return { static: false, github: true, jwt: false };
+    case "jwt":
+      return { static: false, github: false, jwt: true };
     case "either":
-      return { static: true, github: true };
+      return { static: true, github: true, jwt: true };
     default:
-      return { static: false, github: false };
+      return { static: false, github: false, jwt: false };
+  }
+}
+
+/**
+ * The JSON-RPC method (and tool name, for tools/call) of a request,
+ * read through a clone so the MCP handler still gets the body.
+ */
+async function peekRpcCall(request: Request): Promise<{ method: string; toolName?: string }> {
+  if (request.method !== "POST") return { method: "" };
+  try {
+    const body = (await request.clone().json()) as { method?: unknown; params?: { name?: unknown } };
+    return {
+      method: typeof body?.method === "string" ? body.method : "",
+      toolName: typeof body?.params?.name === "string" ? body.params.name : undefined,
+    };
+  } catch {
+    return { method: "" };
   }
 }
 
@@ -204,7 +226,7 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
   // A typo must not silently downgrade to a weaker mode.
   if (mode === null) {
     console.error(
-      'MCP_AUTH_MODE is not one of "either", "static", "github" or "none"; refusing /mcp.',
+      'MCP_AUTH_MODE is not one of "either", "static", "github", "jwt" or "none"; refusing /mcp.',
     );
     return jsonResponse({ error: "MCP authorisation is misconfigured." }, 503);
   }
@@ -217,13 +239,15 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
 
   const staticSecret = (env.MCP_AUTH_TOKEN ?? "").trim();
   const requiredOrg = (env.MCP_GITHUB_ORG ?? "").trim();
+  const jwtSecret = (env.MCP_JWT_SECRET ?? "").trim();
   const paths = permittedPaths(mode);
 
   // Fail closed when the selected mode has nothing to authenticate against.
   const staticReady = paths.static && Boolean(staticSecret);
   const githubReady = paths.github && Boolean(requiredOrg);
+  const jwtReady = paths.jwt && Boolean(jwtSecret);
 
-  if (!staticReady && !githubReady) {
+  if (!staticReady && !githubReady && !jwtReady) {
     console.error(
       `MCP authorisation is enabled (mode=${mode}) but no usable credential is configured; refusing /mcp.`,
     );
@@ -251,6 +275,31 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
     if (paths.github && looksLikeGitHubToken(presented)) {
       if (await verifyGitHubToken(presented, requiredOrg || undefined)) {
         return null;
+      }
+    }
+
+    // 4) Scoped JWT (issue #214), when permitted and configured. A valid
+    //    token is then held to its scopes for this exact call: listing
+    //    needs mcp:tools:list, a tool call needs mcp:tools:call (the
+    //    mcp:read OAuth scope satisfies both while tools are
+    //    read-only), write tools need mcp:tools:write.
+    if (paths.jwt && jwtSecret && looksLikeJwt(presented)) {
+      try {
+        const verified = await verifyToken(jwtSecret, presented, {
+          issuer: (env.MCP_JWT_ISSUER ?? "").trim() || undefined,
+          audience: (env.MCP_JWT_AUDIENCE ?? "").trim() || undefined,
+        });
+        const { method, toolName } = await peekRpcCall(request);
+        const required = requiredScopesForCall(method, toolName);
+        if (required && !verified.hasAnyScope(...required)) {
+          return jsonResponse(
+            { error: "Insufficient scope", code: "INSUFFICIENT_SCOPE", required },
+            403,
+          );
+        }
+        return null;
+      } catch {
+        // Not a valid JWT - fall through to the refusal below.
       }
     }
   }
