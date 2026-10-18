@@ -25,6 +25,12 @@
 
 import { a2aErrorCode, mapUnknownError } from "./errors";
 import type { AgentCard, Message, Task, TaskStatusUpdateEvent } from "@a2a-js/sdk";
+import { A2A_OPS, type A2aOpSpec } from "./a2a-ops";
+
+/** An agent card whose operations are declared machine-readably (issue #258). */
+export interface AgentCardWithOps extends AgentCard {
+  operations: A2aOpSpec[];
+}
 import {
   DefaultRequestHandler,
   JsonRpcTransportHandler,
@@ -311,7 +317,7 @@ export class CapabilityExecutor implements AgentExecutor {
 /* --------------------------- capability cards --------------------------- */
 
 /** Card for the payments capability. */
-export function paymentsCard(origin: string): AgentCard {
+export function paymentsCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Payments Agent",
     description:
@@ -319,6 +325,7 @@ export function paymentsCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_PAYMENTS_RPC_PATH,
+    operations: A2A_OPS.payments,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain"],
@@ -343,7 +350,7 @@ export function paymentsCard(origin: string): AgentCard {
 }
 
 /** Card for the cfmail capability. */
-export function cfmailCard(origin: string): AgentCard {
+export function cfmailCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Agent",
     description:
@@ -351,6 +358,7 @@ export function cfmailCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_RPC_PATH,
+    operations: A2A_OPS.cfmail,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -383,7 +391,7 @@ export function cfmailCard(origin: string): AgentCard {
     ],
   };
 }
-export function emailCard(origin: string): AgentCard {
+export function emailCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Email Agent",
     description:
@@ -391,6 +399,7 @@ export function emailCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_EMAIL_RPC_PATH,
+    operations: A2A_OPS.email,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -421,7 +430,7 @@ export function emailCard(origin: string): AgentCard {
  * a2a-sourced and unverified and never triggers the side effects a real delivery
  * would. A card that implied otherwise would invite exactly that mistake.
  */
-export function webhookCard(origin: string): AgentCard {
+export function webhookCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Webhook Agent",
     description:
@@ -429,6 +438,7 @@ export function webhookCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_WEBHOOK_RPC_PATH,
+    operations: A2A_OPS.webhook,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -457,7 +467,7 @@ export function webhookCard(origin: string): AgentCard {
  * reads are available and posting is not. A card that omitted that would leave a
  * caller to discover the refusal by trying, which is a worse way to learn it.
  */
-export function slackCard(origin: string): AgentCard {
+export function slackCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Slack Agent",
     description:
@@ -465,6 +475,7 @@ export function slackCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_SLACK_RPC_PATH,
+    operations: A2A_OPS.slack,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -512,7 +523,7 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
  * shape as server-side request forgery, bounded by the bearer credential and the
  * http(s) scheme check, and a caller holding the credential can direct the browse.
  */
-export function qaCard(origin: string): AgentCard {
+export function qaCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail QA Agent",
     description:
@@ -520,6 +531,7 @@ export function qaCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_QA_RPC_PATH,
+    operations: A2A_OPS.qa,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -547,7 +559,7 @@ export function qaCard(origin: string): AgentCard {
  * rails as the typed chat apply, so an order-placing call becomes an
  * approval-gated proposal, never an execution. The card says so.
  */
-export function voiceCard(origin: string): AgentCard {
+export function voiceCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Voice Agent",
     description:
@@ -555,6 +567,7 @@ export function voiceCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_VOICE_RPC_PATH,
+    operations: A2A_OPS.voice,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -583,7 +596,7 @@ export function voiceCard(origin: string): AgentCard {
  * unchanged), supervises results, and merges one report. It does
  * no domain work itself and holds no other agent's credentials.
  */
-export function orchestratorCard(origin: string): AgentCard {
+export function orchestratorCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Orchestrator Agent",
     description:
@@ -591,6 +604,7 @@ export function orchestratorCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_ORCHESTRATOR_RPC_PATH,
+    operations: A2A_OPS.orchestrator,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -618,7 +632,7 @@ export function orchestratorCard(origin: string): AgentCard {
  * caller with the credential reads what the owner indexed - the
  * index is the owner's data, exposed to their own callers.
  */
-export function searchCard(origin: string): AgentCard {
+export function searchCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Search Agent",
     description:
@@ -626,6 +640,7 @@ export function searchCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_SEARCH_RPC_PATH,
+    operations: A2A_OPS.search,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -653,7 +668,7 @@ export function searchCard(origin: string): AgentCard {
  * but chat.transcript returns the contents of a private exchange. A caller reading
  * this card should know that a transcript is a disclosure and not a summary.
  */
-export function chatCard(origin: string): AgentCard {
+export function chatCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Chat Agent",
     description:
@@ -661,6 +676,7 @@ export function chatCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_CHAT_RPC_PATH,
+    operations: A2A_OPS.chat,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -693,7 +709,7 @@ export function createA2ATransport(
   return { handler, transport: new JsonRpcTransportHandler(handler), store };
 }
 
-export function scheduledCard(origin: string): AgentCard {
+export function scheduledCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Scheduled Agent",
     description:
@@ -701,6 +717,7 @@ export function scheduledCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_SCHEDULED_RPC_PATH,
+    operations: A2A_OPS.scheduled,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],
@@ -723,7 +740,7 @@ export function scheduledCard(origin: string): AgentCard {
 }
 
 
-export function autopilotCard(origin: string): AgentCard {
+export function autopilotCard(origin: string): AgentCardWithOps {
   return {
     name: "CFmail Autopilot Agent",
     description:
@@ -731,6 +748,7 @@ export function autopilotCard(origin: string): AgentCard {
     version: "0.1.0",
     protocolVersion: "0.3.0",
     url: origin + A2A_AUTOPILOT_RPC_PATH,
+    operations: A2A_OPS.autopilot,
     preferredTransport: "JSONRPC",
     capabilities: { pushNotifications: false, stateTransitionHistory: false, streaming: true },
     defaultInputModes: ["text/plain", "application/json"],

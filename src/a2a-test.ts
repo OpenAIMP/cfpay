@@ -75,6 +75,7 @@ export async function testA2AEndpoint(
       name?: string;
       description?: string;
       skills?: { id?: string; name?: string; tags?: string[] }[];
+      operations?: unknown;
     } | null;
     cardName = typeof json?.name === "string" ? json.name : undefined;
     cardDescription = typeof json?.description === "string" ? json.description : undefined;
@@ -85,6 +86,10 @@ export async function testA2AEndpoint(
     }
     cardOk = res.status === 200 && !!cardName;
     if (!cardOk) problems.push(`card: status ${res.status}${cardName ? "" : ", no name"}`);
+    // The card must declare its operations machine-readably (issue #258).
+    if (!Array.isArray(json?.operations) || json.operations.length === 0) {
+      problems.push("card: no operations declared");
+    }
   } catch (err) {
     problems.push(`card: ${String(err).slice(0, 80)}`);
   }
