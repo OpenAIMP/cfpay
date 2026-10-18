@@ -455,7 +455,7 @@ export class ScheduledAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-  /** Route one A2A message: scheduled.list/create/once/trigger/delete; no operation = summary. */
+  /** Route one A2A message: scheduled.list/create/once/trigger/setEnabled/delete; no operation = summary. */
   async handleA2AMessage(
     message: any,
     _context: { taskId: string; contextId: string },
@@ -503,6 +503,12 @@ export class ScheduledAgent extends Think<Env> {
         ? { text: `Triggered ${String(args.id || "")} now; orchestrator job ${res.jobId}.`, data: { ok: true, jobId: res.jobId, goal: res.goal } }
         : { text: `Could not trigger that goal: ${res.error}.`, data: { ok: false, error: res.error } };
     }
+    if (op === "scheduled.setEnabled") {
+      const res = await this.scheduledSetEnabled(String(args.id || ""), args.enabled === true);
+      return res.ok
+        ? { text: `Goal ${String(args.id || "")} is now ${args.enabled === true ? "enabled" : "disabled"}.`, data: res.goal }
+        : { text: `Could not change that goal: ${res.error}.`, data: { ok: false, error: res.error } };
+    }
     if (op === "scheduled.delete") {
       const res = await this.scheduledDelete(String(args.id || ""));
       return res.ok
@@ -522,7 +528,7 @@ export class ScheduledAgent extends Think<Env> {
 
 export const scheduledAgentToolSchema = z.object({
   operation: z
-    .enum(["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.once", "scheduled.trigger", "scheduled.delete"])
+    .enum(["scheduled.summary", "scheduled.list", "scheduled.create", "scheduled.once", "scheduled.trigger", "scheduled.setEnabled", "scheduled.delete"])
     .describe("Which ScheduledAgent operation to run."),
   goal: z
     .string()
@@ -540,5 +546,9 @@ export const scheduledAgentToolSchema = z.object({
     .number()
     .optional()
     .describe("For scheduled.once: fire this many seconds from now (alternative to at)."),
-  id: z.string().optional().describe("For scheduled.delete / scheduled.trigger: the scheduled goal id."),
+  enabled: z
+    .boolean()
+    .optional()
+    .describe("For scheduled.setEnabled: true arms the goal's schedule, false cancels it (the row and cron are kept)."),
+  id: z.string().optional().describe("For scheduled.delete / scheduled.trigger / scheduled.setEnabled: the scheduled goal id."),
 });
