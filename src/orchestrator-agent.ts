@@ -3,6 +3,7 @@ import { Think } from "@cloudflare/think";
 import type { Env } from "./types";
 import { defaultModelId } from "./models";
 import { runRouted, type ModelTask } from "./model-routing";
+import { createVectorMemory } from "./vector-memory";
 import {
   catalogAgent,
   outcomeFromReply,
@@ -150,6 +151,44 @@ export class OrchestratorAgent extends Think<Env> {
    * per-operation outcomes into the planner's memory brief. Jobs
    * arrive newest-first; relevance scoring lives in orchestrate.ts.
    */
+  /**
+   * The SQL memory brief plus, when the Vectorize index is wired
+   * (issue #215), the semantically closest past jobs. Best-effort:
+   * any failure keeps the SQL brief alone.
+   */
+  private async memoryBriefWithRecall(goal: string): Promise<string> {
+    const brief = this.readMemoryBrief(goal);
+    try {
+      const memory = createVectorMemory(this.env);
+      if (!memory.configured()) return brief;
+      const { memories } = await memory.recall(goal, { agentId: "orchestrator", topK: 3 });
+      const lines = memories
+        .filter((m) => m.text.trim().length > 0)
+        .map((m) => `- ${m.text.slice(0, 160)}`);
+      if (!lines.length) return brief;
+      const section = `Related past work (semantic memory):\n${lines.join("\n")}`;
+      return brief ? `${brief}\n${section}`.slice(0, 1600) : section;
+    } catch {
+      return brief;
+    }
+  }
+
+  /** Remember a finished job in vector memory (issue #215). Best-effort. */
+  private async rememberJobInVectorMemory(goal: string, status: string, result: string): Promise<void> {
+    try {
+      const memory = createVectorMemory(this.env);
+      if (!memory.configured()) return;
+      await memory.remember({
+        agentId: "orchestrator",
+        type: "job",
+        task: goal,
+        outcome: `${status}: ${result.slice(0, 400)}`,
+      });
+    } catch {
+      /* semantic memory never blocks a job */
+    }
+  }
+
   private readMemoryBrief(goal: string): string {
     const jobs = this.db()
       .exec(`SELECT goal, status FROM orchestrate_jobs WHERE status IN ('done', 'partial', 'failed') ORDER BY created_at DESC LIMIT 30`)
@@ -303,7 +342,7 @@ export class OrchestratorAgent extends Think<Env> {
     if (!g) {
       return { id, goal: g, status: "failed", mode: m, revisions: 0, plan: [], outcomes: [], result: "orchestrate.run needs a goal.", createdAt };
     }
-    const brief = this.readMemoryBrief(g);
+    const brief = await this.memoryBriefWithRecall(g);
     this.db().exec(
       `INSERT INTO orchestrate_jobs (id, goal, status, plan_json, mode, memory_brief, created_at) VALUES (?, ?, 'planning', '[]', ?, ?, ?)`,
       id, g, m, brief, createdAt,
@@ -391,6 +430,7 @@ export class OrchestratorAgent extends Think<Env> {
     const finishedAt = Date.now();
     this.db().exec(`UPDATE orchestrate_jobs SET status = ?, result = ?, revisions = ?, finished_at = ? WHERE id = ?`, status, result, revisions, finishedAt, id);
     this.recordOpStats(outcomes);
+    await this.rememberJobInVectorMemory(g, status, result);
     return { id, goal: g, status, mode: m, revisions, plan, outcomes, result, memoryBrief: brief || undefined, createdAt, finishedAt };
   }
 

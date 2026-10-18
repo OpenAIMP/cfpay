@@ -37,6 +37,10 @@ export interface Env {
   SCHEDULED_AGENT: DurableObjectNamespace;
   AI_SEARCH: AiSearchNamespace;
   AI_SEARCH_INSTANCE?: string;
+  // Semantic memory (issue #215): the cfpay-memory Vectorize index.
+  // Optional - absent until the owner creates the index and the
+  // binding ships; the memory module reports not-configured without it.
+  VECTORIZE?: VectorizeIndex;
   /** Owns the webhook event log and the GitHub delivery registry. */
   WEBHOOK_AGENT: DurableObjectNamespace;
   /**

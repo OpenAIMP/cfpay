@@ -1721,6 +1721,21 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(pdata).toContain("Knowledge search");
   });
 
+  it("vector memory is wired dark-safe into the orchestrator (issue #215)", () => {
+    const memory = read("src/vector-memory.ts");
+    const orch = read("src/orchestrator-agent.ts");
+    const wrangler = read("wrangler.jsonc");
+    expect(memory).toContain("export class VectorMemory");
+    expect(memory).toContain("cfpay-memory");
+    expect(memory).toContain("@cf/baai/bge-small-en-v1.5");
+    // dark until configured: every entry point checks first
+    expect(memory).toContain("if (!this.configured()) return { configured: false }");
+    expect(orch).toContain('from "./vector-memory"');
+    expect(orch).toContain("memoryBriefWithRecall");
+    expect(orch).toContain("rememberJobInVectorMemory");
+    expect(wrangler).toContain('"index_name": "cfpay-memory"');
+  });
+
   it("scoped JWTs are wired into MCP auth and issuance (issue #214)", () => {
     const auth = read("src/mcp-auth.ts");
     const jwt = read("src/mcp-jwt.ts");

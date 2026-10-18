@@ -96,6 +96,9 @@
   "ai": {
     "binding": "AI"
   },
+  "vectorize": [
+    { "binding": "VECTORIZE", "index_name": "cfpay-memory" }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
