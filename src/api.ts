@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { postFilesToSlack } from "./slack-files";
 import { errorBody, errorStatus, mapUnknownError, ERROR_CATALOG } from "./errors";
+import { issueToken, MCP_SCOPES, type McpScope } from "./mcp-jwt";
 import { safeStringify } from "./browser-lifecycle";
 import Stripe from "stripe";
 import type { Env, PaymentClaim, StripeConfig } from "./types";
@@ -1793,6 +1794,27 @@ export function createApp() {
     const scheduled = await getScheduledAgent(c);
     const result = await scheduled.scheduledDelete(c.req.param("id"));
     return c.json(result);
+  });
+
+  // Scoped MCP tokens (issue #214): the dashboard key mints a
+  // short-lived JWT with an explicit scope set for an MCP client.
+  // Without MCP_JWT_SECRET (set via CICD) issuance is unavailable.
+  app.post("/api/dashboard/mcp/tokens", requireAuth, async (c) => {
+    const secret = (c.env.MCP_JWT_SECRET ?? "").trim();
+    if (!secret) return c.json({ error: "MCP_JWT_SECRET is not configured on this deployment." }, 503);
+    const body = await c.req.json().catch(() => ({})) as { subject?: string; scopes?: string[]; expiresInSec?: number };
+    const scopes = (body.scopes ?? []).filter((x): x is McpScope => (MCP_SCOPES as readonly string[]).includes(x));
+    if (scopes.length === 0) return c.json(errorBody("VALIDATION_FAILED"), 400);
+    const expiresInSec = Math.min(Math.max(Math.floor(body.expiresInSec ?? 3600), 60), 30 * 24 * 3600);
+    const origin = new URL(c.req.url).origin;
+    const issued = await issueToken(secret, {
+      subject: (body.subject || "dashboard").trim() || "dashboard",
+      scopes,
+      issuer: (c.env.MCP_JWT_ISSUER ?? "").trim() || origin,
+      audience: (c.env.MCP_JWT_AUDIENCE ?? "").trim() || "mcp://cfpay",
+      expiresInSec,
+    });
+    return c.json({ token: issued.token, expiresAt: issued.expiresAt, scopes });
   });
 
   // Knowledge search (issue #170): the dashboard face of SearchAgent.
