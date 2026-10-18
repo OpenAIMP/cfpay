@@ -46,7 +46,7 @@ export const QA_TEST_CHANNEL = "CQATESTQA1";
 export const QA_TEST_USER = "UQATEST";
 
 /**
- * Sign a Slack request body with the exact scheme src/slack.ts's
+ * Sign a Slack request body with the exact scheme src/slack-verify.ts's
  * verifySlackSignature checks: "v0" HMAC-SHA256 over
  * `v0:<timestamp>:<rawBody>`, hex-encoded, "v0=" prefixed.
  */
@@ -137,7 +137,7 @@ export function buildGitHubPingPayload(marker: string): {
  * so this uses the same clearly-fake channel as the /slack/events test (the
  * handler auto-replies via the bot; a real channel id would post that reply
  * into a human-read channel). The signing scheme is identical to
- * src/slack.ts's (src/webhooks.ts verifySlack signs "v0:<ts>:<body>"), so
+ * (src/slack-verify.ts verifySlackSignature), so
  * slackSignature() is reused — the only difference is the secret used:
  * SLACK_WEBHOOK_SECRET for /webhooks/slack vs SLACK_SIGNING_SECRET for
  * /slack/events.
