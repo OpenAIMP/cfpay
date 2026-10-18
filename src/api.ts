@@ -1783,10 +1783,22 @@ export function createApp() {
   });
 
   app.post("/api/dashboard/scheduled-goals", requireAuth, async (c) => {
-    const body = await c.req.json().catch(() => ({})) as { goal?: string; cron?: string };
+    const body = await c.req.json().catch(() => ({})) as {
+      goal?: string; cron?: string; kind?: string; at?: string; delaySeconds?: number;
+    };
     const scheduled = await getScheduledAgent(c);
-    const result = await scheduled.scheduledCreate((body.goal || "").trim(), (body.cron || "").trim());
+    const result =
+      body.kind === "once"
+        ? await scheduled.scheduledOnce((body.goal || "").trim(), body.at, body.delaySeconds)
+        : await scheduled.scheduledCreate((body.goal || "").trim(), (body.cron || "").trim());
     if (!result.ok) return c.json(errorBody("VALIDATION_FAILED"), 400);
+    return c.json(result);
+  });
+
+  app.post("/api/dashboard/scheduled-goals/:id/trigger", requireAuth, async (c) => {
+    const scheduled = await getScheduledAgent(c);
+    const result = await scheduled.scheduledTrigger(c.req.param("id"));
+    if (!result.ok) return c.json(result, result.error === "not_found" ? 404 : 400);
     return c.json(result);
   });
 
