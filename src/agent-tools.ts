@@ -33,6 +33,7 @@ import { SearchAgent } from "./search-agent";
 import { VoiceAgent } from "./voice-agent";
 import { OrchestratorAgent } from "./orchestrator-agent";
 import { ScheduledAgent } from "./scheduled-agent";
+import { AutopilotAgent } from "./autopilot-agent";
 import {
   paymentAgentToolSchema,
   slackAgentToolSchema,
@@ -41,6 +42,7 @@ import {
   voiceAgentToolSchema,
   orchestratorAgentToolSchema,
   scheduledAgentToolSchema,
+  autopilotAgentToolSchema,
   qaAgentToolSchema,
   webhookAgentToolSchema,
 } from "./agent-tool-schemas";
@@ -242,6 +244,16 @@ export const orchestratorAgentTool = agentTool<AgentToolInput>(OrchestratorAgent
  * Dispatch the scheduled agent (issue #213): owns {goal, cron}
  * goals; due goals run as orchestrator jobs.
  */
+export const autopilotAgentTool = agentTool<AgentToolInput>(AutopilotAgent, {
+  description: [
+    "Dispatch the autopilot agent, owner of the standing portfolio objective (issue #242).",
+    "Use autopilot.objective.set with a goal and budget to set the objective and arm its discovery cadence (weekdays 14:00 UTC by default); autopilot.runCycle runs one discovery cycle now (a budget-bounded defined-risk hunt on the host, with Slack notification and email report when configured); autopilot.cycles reviews recent cycles; autopilot.summary shows the armed state.",
+    COMMON_NOTE,
+  ].join(" "),
+  displayName: "Autopilot Agent",
+  inputSchema: asZod<AgentToolInput>(autopilotAgentToolSchema),
+});
+
 export const scheduledAgentTool = agentTool<AgentToolInput>(ScheduledAgent, {
   description: [
     "Dispatch the scheduled agent to list, create, trigger, or delete scheduled goals.",

@@ -460,7 +460,7 @@ function deskShowView(name) {
   if (name === 'tools') deskSyncToolsView();
   if (name === 'logs') deskRenderLogs();
   if (name === 'endpoints') deskRunA2ATests(true);
-  if (name === 'orchestrate') deskLoadOrchestrateJobs();
+  if (name === 'orchestrate') { deskLoadOrchestrateJobs(); deskApLoad(); }
   if (name === 'trading') deskSyncQuestionsClone();
   deskUpdateApprovalNotice();
 }
@@ -628,6 +628,30 @@ function deskInitViews() {
       + '<button class="btn" onclick="deskSearchRun(\'query\')">Chunks</button></div>'
       + '<div id="deskSearchResult" style="margin-top:0.6rem;"></div>';
     toolsSection.insertBefore(searchCard, toolsSection.firstChild);
+  }
+  // Autopilot (issue #242 P1): the standing portfolio-objective card,
+  // injected into the Orchestrate view like the knowledge-search card.
+  {
+    const orchSection = shell.querySelector('section.desk-view[data-view="orchestrate"]');
+    if (orchSection) {
+      const apCard = document.createElement('div');
+      apCard.className = 'card';
+      apCard.innerHTML = '<h3 style="font-size:1rem;margin-bottom:0.5rem;">Autopilot</h3>'
+        + '<p style="color:var(--muted);font-size:0.8rem;line-height:1.5;margin:0 0 0.5rem;">The standing portfolio objective (AutopilotAgent): a goal plus a budget, worked on a discovery cadence. Each cycle runs a defined-risk hunt, notifies on Slack, and emails the report when an address is set. Orders still need your approval.</p>'
+        + '<div id="deskApObjective" style="font-size:0.82rem;margin-bottom:0.5rem;color:var(--muted);">Loading...</div>'
+        + '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;">'
+        + '<input id="deskApGoal" type="text" placeholder="Portfolio goal, e.g. steady premium income" style="flex:1;min-width:14rem;">'
+        + '<input id="deskApBudget" type="number" min="1" placeholder="Budget $" style="width:8rem;">'
+        + '<input id="deskApCadence" type="text" placeholder="Cadence (default weekdays 14:00 UTC)" style="width:12rem;">'
+        + '<input id="deskApSymbols" type="text" placeholder="Symbols, e.g. SPY,QQQ" style="width:9rem;">'
+        + '<input id="deskApEmail" type="email" placeholder="Report email (optional)" style="width:11rem;">'
+        + '<button class="btn" onclick="deskApSet()">Set objective</button>'
+        + '<button class="btn" onclick="deskApClear()">Clear</button>'
+        + '<button class="btn" onclick="deskApRun()">Run cycle now</button></div>'
+        + '<div id="deskApResult" style="margin-top:0.5rem;font-size:0.82rem;"></div>'
+        + '<div id="deskApCycles" style="margin-top:0.6rem;"></div>';
+      orchSection.appendChild(apCard);
+    }
   }
   // The host MUST be section-scoped: the nav buttons carry the same
   // data-view values and precede the sections in the shell markup, so
@@ -1572,6 +1596,89 @@ async function deskOrchestrateRun() {
   }
 }
 window.deskOrchestrateRun = deskOrchestrateRun;
+
+// Autopilot view (issue #242 P1): the standing portfolio objective.
+function deskApObjHtml(o) {
+  if (!o) return '<span style="color:var(--muted);font-size:0.8rem;">No objective set - nothing runs until you set one.</span>';
+  return '<div style="font-size:0.86rem;"><b>Objective:</b> ' + escapeHtml(o.goal) + '</div>'
+    + '<div style="font-size:0.8rem;color:var(--muted);margin-top:0.2rem;">'
+    + 'Budget $' + Number(o.budget).toLocaleString('en-US')
+    + ' \u00b7 cadence <code>' + escapeHtml(o.cadenceCron) + '</code>'
+    + ' \u00b7 ' + (o.enabled ? '<span class="badge-ok">armed</span>' : '<span class="badge-failed">UNARMED</span>')
+    + (o.symbols && o.symbols.length ? ' \u00b7 symbols ' + escapeHtml(o.symbols.join(',')) : '')
+    + (o.notifyEmail ? ' \u00b7 report to ' + escapeHtml(o.notifyEmail) : '')
+    + '</div>';
+}
+function deskApCycleHtml(c) {
+  const when = new Date(c.startedAt).toISOString().slice(0, 16).replace('T', ' ');
+  const status = c.status === 'completed' ? '<span class="badge-ok">completed</span>'
+    : c.status === 'failed' ? '<span class="badge-failed">failed</span>'
+    : '<span style="color:var(--muted);">running</span>';
+  return '<div style="font-size:0.8rem;padding:0.25rem 0;border-top:1px solid var(--border);">'
+    + status + ' <code>' + escapeHtml(c.id) + '</code> ' + when + ' UTC'
+    + (c.huntId ? ' \u00b7 hunt ' + escapeHtml(c.huntId) : '')
+    + (c.error ? ' \u00b7 <span style="color:var(--red,#c0392b);">' + escapeHtml(String(c.error).slice(0, 140)) + '</span>' : '')
+    + '</div>';
+}
+async function deskApLoad() {
+  const box = document.getElementById('deskApObjective');
+  const cyc = document.getElementById('deskApCycles');
+  if (!box || !cyc) return;
+  try {
+    const s = await api('/api/dashboard/autopilot', 'GET');
+    box.innerHTML = deskApObjHtml(s && s.objective);
+    const cycles = (s && s.recentCycles) || [];
+    cyc.innerHTML = cycles.length
+      ? '<div style="font-size:0.82rem;font-weight:600;margin-bottom:0.25rem;">Recent cycles (' + (s.cycles || 0) + ' total)</div>' + cycles.map(deskApCycleHtml).join('')
+      : '<span style="color:var(--muted);font-size:0.8rem;">No cycles yet.</span>';
+  } catch (e) {
+    box.innerHTML = '<span class="badge-failed">Autopilot unavailable</span>';
+  }
+}
+async function deskApSet() {
+  const host = document.getElementById('deskApResult');
+  const goal = ((document.getElementById('deskApGoal') || {}).value || '').trim();
+  const budget = Number(((document.getElementById('deskApBudget') || {}).value || ''));
+  const cadenceCron = ((document.getElementById('deskApCadence') || {}).value || '').trim() || undefined;
+  const symbolsRaw = ((document.getElementById('deskApSymbols') || {}).value || '').trim();
+  const notifyEmail = ((document.getElementById('deskApEmail') || {}).value || '').trim() || undefined;
+  if (!host) return;
+  if (!goal || !budget) { host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">A goal and a budget are required.</span>'; return; }
+  host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Setting objective and arming the cadence...</span>';
+  try {
+    const r = await api('/api/dashboard/autopilot/objective', 'POST', {
+      goal, budget, cadenceCron,
+      symbols: symbolsRaw ? symbolsRaw.split(',').map((x) => x.trim()).filter(Boolean) : undefined,
+      notifyEmail,
+    });
+    if (r && r.error) throw new Error(r.scheduleError || r.error);
+    host.innerHTML = '<span class="badge-ok">Objective armed</span> <span style="font-size:0.8rem;">Discovery runs on the cadence.</span>';
+    deskApLoad();
+  } catch (e) {
+    host.innerHTML = '<span class="badge-failed">Set failed</span> <span style="font-size:0.8rem;">' + escapeHtml(String(e.message || e)) + '</span>';
+  }
+}
+async function deskApClear() {
+  try { await api('/api/dashboard/autopilot/objective/clear', 'POST', {}); deskApLoad(); } catch (e) { /* keep the card */ }
+}
+async function deskApRun() {
+  const host = document.getElementById('deskApResult');
+  if (!host) return;
+  host.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">Running a discovery cycle - hunts can take a few minutes...</span>';
+  try {
+    const r = await api('/api/dashboard/autopilot/run-cycle', 'POST', {});
+    if (r && r.error) throw new Error(r.error);
+    host.innerHTML = '<span class="badge-ok">Cycle ' + escapeHtml(r.cycleId || '') + ' done</span> <span style="font-size:0.8rem;">' + escapeHtml((r.summary || '').slice(0, 300)) + '</span>';
+    deskApLoad();
+  } catch (e) {
+    host.innerHTML = '<span class="badge-failed">Cycle failed</span> <span style="font-size:0.8rem;">' + escapeHtml(String(e.message || e)) + '</span>';
+  }
+}
+window.deskApLoad = deskApLoad;
+window.deskApSet = deskApSet;
+window.deskApClear = deskApClear;
+window.deskApRun = deskApRun;
+
 
 function deskOrchJobHtml(job, open) {
   if (!job) return '';
