@@ -1798,6 +1798,24 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(api).toContain('body.kind === "once"');
   });
 
+  it("error catalog phase 2: A2A failures carry codes; dispatch errors are catalog bodies (issue #209)", () => {
+    const a2a = read("src/a2a.ts");
+    const index = read("src/index.ts");
+    const api = read("src/api.ts");
+    const smoke = read("scripts/qa-smoke.mjs");
+    // the executor augments failure data with the catalog code
+    expect(a2a).toContain("code: a2aErrorCode(d.error)");
+    expect(a2a).toContain('error: "agent_error", code: mapUnknownError(error)');
+    // every A2A dispatch catch in index.ts returns a catalog body
+    expect(index).toContain("errorBody(mapUnknownError(err))");
+    expect(index).not.toContain("error: String(err)");
+    // Public proxy routes and dashboard stats no longer leak raw errors
+    expect(api).not.toContain("err.message : String(err) }, 502)");
+    expect(api).not.toContain("Failed to load stats");
+    // smoke failure details surface the code when a reply carries one
+    expect(smoke).toContain("code=${data.code}");
+  });
+
   it("model routing is wired into the orchestrator (issue #212)", () => {
     const orch = read("src/orchestrator-agent.ts");
     const routing = read("src/model-routing.ts");
