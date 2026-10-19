@@ -301,6 +301,19 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
         s("channel", "string", false, "Slack channel id. Omit to post via the incoming webhook."),
       ],
     },
+    {
+      operation: "slack.postFile",
+      summary:
+        "Upload a file (for example a PDF) into a Slack channel through the bot, using the three-step external upload.",
+      access: "write",
+      inputs: [
+        s("channel", "string", true, "Slack channel id to upload into."),
+        s("filename", "string", true, "Filename Slack shows for the upload."),
+        s("contentB64", "string", true, "File bytes, base64; 'contentBase64' is accepted as an alias."),
+        s("title", "string", false, "File title (defaults to the filename)."),
+        s("initial_comment", "string", false, "Message posted above the file; 'text' is accepted as an alias."),
+      ],
+    },
   ],
 
   qa: [

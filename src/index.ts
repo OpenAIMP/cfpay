@@ -536,7 +536,12 @@ async function handleFetch(
         base: "slack",
         gate: async (identity, body, cid) => {
           const op = a2aOperationFromBody(body);
-          if (op === "slack.post" || op === "slack.notify" || op === "slack.send") {
+          if (
+            op === "slack.post" ||
+            op === "slack.postFile" ||
+            op === "slack.notify" ||
+            op === "slack.send"
+          ) {
             return branchWriteGate(env, "slack.post", identity, cid);
           }
           return null;

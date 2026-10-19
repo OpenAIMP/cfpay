@@ -162,6 +162,7 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   spec("slack", "SLACK_AGENT", "slack", "slack.post", "write", ["text", "channel"], "Post to Slack (channel = bot token, none = incoming webhook)."),
   spec("slack", "SLACK_AGENT", "slack", "slack.notify", "write", ["text", "message", "channel"], "Send a Slack notification."),
   spec("slack", "SLACK_AGENT", "slack", "slack.send", "write", ["text", "message", "channel"], "Send a Slack message."),
+  spec("slack", "SLACK_AGENT", "slack", "slack.postFile", "write", ["channel", "filename", "contentB64", "title", "initial_comment"], "Upload a file (for example a PDF) to a Slack channel via the bot."),
 
   // qa (action class: real browser work, no business-state mutation)
   spec("qa", "QA_AGENT", "qa", "qa.summary", "read", [], "QA agent summary."),
