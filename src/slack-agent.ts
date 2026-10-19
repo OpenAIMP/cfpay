@@ -449,6 +449,33 @@ export class SlackAgent extends Think<Env, SlackState> {
       // channel argument the post goes through the bot token;
       // without one it goes through the incoming webhook - the same
       // two mechanisms internal callers use.
+      case "slack.postFile": {
+        // Issue #331: Post a file (PDF) to Slack via A2A.
+        // Args: { channel, filename, contentB64, title?, initial_comment? }
+        const channel = String(args.channel || "").trim();
+        const filename = String(args.filename || "").trim();
+        const contentB64 = String(args.contentB64 || args.contentBase64 || "").trim();
+        if (!channel || !filename || !contentB64) {
+          return { text: "slack.postFile needs channel, filename, and contentB64 arguments.", data: { ok: false, error: "missing_args" } };
+        }
+        try {
+          const { postFilesToSlack } = await import("./slack-files");
+          const result = await postFilesToSlack(this.env, {
+            channel,
+            filename,
+            contentB64,
+            title: String(args.title || filename),
+            initial_comment: String(args.initial_comment || args.text || ""),
+          });
+          return result.posted > 0
+            ? { text: `Posted file ${filename} to Slack channel ${channel}.`, data: { ok: true, channel, filename } }
+            : { text: `Slack file post failed: ${result.error}`, data: { ok: false, error: result.error } };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { text: `Slack file post error: ${msg}`, data: { ok: false, error: msg } };
+        }
+      }
+
       case "slack.post":
       case "slack.notify":
       case "slack.send": {
