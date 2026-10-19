@@ -24,6 +24,8 @@
  * expiries are the control.
  */
 
+import { importHmacKey, signHmac, timingSafeEqual } from "./crypto-hmac";
+
 export const MCP_SCOPES = [
   "mcp:tools:list",
   "mcp:tools:call",
@@ -112,20 +114,6 @@ function base64UrlDecode(str: string): Uint8Array {
   return bytes;
 }
 
-async function getHmacKey(secret: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
-    "sign",
-    "verify",
-  ]);
-}
-
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let out = 0;
-  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return out === 0;
-}
-
 // ----- Issue / verify -----
 
 export interface IssueTokenOptions {
@@ -153,8 +141,8 @@ export async function issueToken(
   };
   const header = { alg: "HS256", typ: "JWT", kid: "mcp-v1" };
   const data = `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(JSON.stringify(claims))}`;
-  const key = await getHmacKey(secret);
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  const key = await importHmacKey(secret);
+  const sig = await signHmac(key, new TextEncoder().encode(data));
   return { token: `${data}.${base64UrlEncode(sig)}`, claims, expiresAt: new Date(expSec * 1000).toISOString() };
 }
 
@@ -195,9 +183,17 @@ export async function verifyToken(
   }
 
   const data = `${headerB64}.${payloadB64}`;
-  const key = await getHmacKey(secret);
-  const expected = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
-  if (!timingSafeEqual(base64UrlEncode(expected), signatureB64)) {
+  const key = await importHmacKey(secret);
+  const expected = await signHmac(key, new TextEncoder().encode(data));
+  let provided: Uint8Array;
+  try {
+    provided = base64UrlDecode(signatureB64);
+  } catch {
+    // base64UrlDecode throws on malformed input; the old string comparison
+    // rejected those the same way — as a signature mismatch.
+    throw new TokenVerifyError("TOKEN_INVALID_SIGNATURE", "Signature mismatch");
+  }
+  if (!timingSafeEqual(expected, provided)) {
     throw new TokenVerifyError("TOKEN_INVALID_SIGNATURE", "Signature mismatch");
   }
 

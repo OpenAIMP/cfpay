@@ -1,6 +1,7 @@
 import { errorBodyAs } from "./errors";
 import type { Env } from "./types";
 import { timingSafeStringEqual } from "./mcp-auth";
+import { importHmacKey, signHmac, verifyHmac } from "./crypto-hmac";
 
 /**
  * Minimal OAuth 2.1 authorization server for /mcp.
@@ -72,20 +73,18 @@ function fromB64url(value: string): Uint8Array {
 async function signingKey(env: Env): Promise<CryptoKey> {
   const secret = ((env.MCP_OAUTH_SIGNING_KEY || env.MCP_AUTH_TOKEN) ?? "").trim();
   if (!secret) throw new Error("no OAuth signing secret configured");
-  return crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode("cfmail-oauth|" + secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"],
-  );
+  // Domain separation: the "cfmail-oauth|" prefix keeps this key distinct
+  // from any other HMAC key derived from the same secret. importHmacKey
+  // imports the material verbatim, so issued state tokens keep the exact
+  // signatures they had before.
+  return importHmacKey("cfmail-oauth|" + secret);
 }
 
 async function sign(payload: Record<string, unknown>, env: Env): Promise<string> {
   const body = b64url(new TextEncoder().encode(JSON.stringify(payload)));
   const key = await signingKey(env);
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
-  return body + "." + b64url(new Uint8Array(sig));
+  const sig = await signHmac(key, new TextEncoder().encode(body));
+  return body + "." + b64url(sig);
 }
 
 async function verify(token: string, env: Env): Promise<Record<string, any> | null> {
@@ -95,12 +94,7 @@ async function verify(token: string, env: Env): Promise<Record<string, any> | nu
   const sig = token.slice(cut + 1);
   try {
     const key = await signingKey(env);
-    const ok = await crypto.subtle.verify(
-      "HMAC",
-      key,
-      fromB64url(sig),
-      new TextEncoder().encode(body),
-    );
+    const ok = await verifyHmac(key, new TextEncoder().encode(body), fromB64url(sig));
     if (!ok) return null;
     const claims = JSON.parse(new TextDecoder().decode(fromB64url(body)));
     return claims && typeof claims === "object" ? claims : null;
