@@ -362,7 +362,7 @@ export class ChatAgent extends Think<Env, ChatState> {
       card: chatCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "chat", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

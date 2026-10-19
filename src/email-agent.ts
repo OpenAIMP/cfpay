@@ -480,6 +480,7 @@ export class EmailAgent extends Think<Env, EmailState> {
         handle: (message: any, context: { taskId: string; contextId: string }) =>
           this.handleA2AMessage(message, context),
       },
+      { agentName: "email", env: this.env },
     );
     // Collected, not streamed: an async iterable cannot cross the RPC boundary.
     return await handleCollecting(a2a.transport, body);

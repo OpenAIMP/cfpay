@@ -100,7 +100,7 @@ export class VoiceAgent extends VoiceBase<Env> {
       card: voiceCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "voice", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

@@ -1498,6 +1498,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
         handle: (message: any, context: { taskId: string; contextId: string }) =>
           this.handleA2AMessage(message, context),
       },
+      { agentName: "host", env: this.env },
     );
     // Collected, not streamed: an async iterable cannot cross the RPC boundary.
     return await handleCollecting(a2a.transport, body);

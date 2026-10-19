@@ -119,7 +119,7 @@ export class SearchAgent extends Think<Env> {
       card: searchCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "search", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

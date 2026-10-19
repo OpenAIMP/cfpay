@@ -10,6 +10,8 @@ import {
   type McpAgentToolSpec,
   type McpFieldDef,
 } from "./mcp-agent-tools";
+import { mintCorrelationId, withTracePart } from "./aspect-logging";
+import { tenantIdFor, userIdFor } from "./tenancy";
 
 /**
  * Remote MCP server for the CFmail agent, exposed at POST/GET /mcp using the
@@ -38,6 +40,15 @@ import {
  */
 export function createCfmailMcpHandler(env: Env) {
   const agent = env.CfmailAgent.get(env.CfmailAgent.idFromName("agent")) as any;
+
+  // WS1 aspects (issue #252, design §2.3): every in-process A2A dispatch
+  // carries the private trace part so the receiving executor emits under the
+  // same correlationId. P1: the operator tenant; P3 resolves per credential.
+  const a2aTrace = () => ({
+    correlationId: mintCorrelationId(),
+    tenantId: tenantIdFor(),
+    userId: userIdFor(),
+  });
 
   const server = new McpServer({
     name: "cfmail-agent",
@@ -354,7 +365,7 @@ export function createCfmailMcpHandler(env: Env) {
     // message/stream + the shared extractor: the reply Message
     // (text) and the artifact-update (structured data, with its
     // error-catalog code on failures) both travel as events.
-    const outcome = await stub.handleA2A(body, "https://mcp.internal");
+    const outcome = await stub.handleA2A(withTracePart(body, a2aTrace()), "https://mcp.internal");
     const reply = a2aReplyFromOutcome(outcome);
     return { text: reply.text, data: reply.data };
   };

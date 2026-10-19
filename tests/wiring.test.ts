@@ -1933,8 +1933,12 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     // the executor augments failure data with the catalog code
     expect(a2a).toContain("code: a2aErrorCode(d.error)");
     expect(a2a).toContain('error: "agent_error", code: mapUnknownError(error)');
-    // every A2A dispatch catch in index.ts returns a catalog body
-    expect(index).toContain("errorBody(mapUnknownError(err))");
+    // every A2A dispatch catch in index.ts returns a catalog body — via the
+    // WS1 error aspect (issue #252), which replaced the per-branch inline
+    // classification with one call; the body is byte-identical (pinned by
+    // tests/aspect-error.test.ts).
+    expect(index).toContain("a2aAspect.fail(err)");
+    expect(index).toContain('beginA2AAspect(env, correlationId, { agent: "');
     expect(index).not.toContain("error: String(err)");
     // Public proxy routes and dashboard stats no longer leak raw errors
     expect(api).not.toContain("err.message : String(err) }, 502)");

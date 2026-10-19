@@ -64,6 +64,15 @@ import {
   type SlackEvent,
 } from "./slack";
 import { verifySlackSignature } from "./slack-verify";
+// WS1 aspects (issue #252): error classification + structured logging at the
+// A2A dispatch seams. Response bodies stay byte-identical; the aspect adds
+// the correlation header and emits one event per dispatch.
+import {
+  resolveCorrelationId,
+  withCorrelationHeader,
+  withTracePart,
+} from "./aspect-logging";
+import { beginA2AAspect } from "./aspect-error";
 
 export { CfmailAgentSQLite, CfmailAgentSQLite as CfmailAgent };
 export { PaymentsAgent } from "./payments-agent";
@@ -81,12 +90,12 @@ export { TradeWorkflow } from "./trade-workflow";
 
 const app = createApp();
 
-export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    ctx: ExecutionContext,
-  ): Promise<Response> {
+async function handleFetch(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  correlationId: string,
+): Promise<Response> {
     const url = new URL(request.url);
 
     // Remote MCP server (Streamable HTTP, unauthenticated in phase 1). Handled
@@ -176,23 +185,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "payments" });
       let pbody: unknown;
       try { pbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const pStub = (await getAgentByName(env.PAYMENTS_AGENT as any, "payments")) as any;
       try {
-        const outcome = await pStub.handleA2A(pbody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await pStub.handleA2A(withTracePart(pbody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
 
@@ -218,23 +231,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "email" });
       let ebody: unknown;
       try { ebody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const eStub = (await getAgentByName(env.EMAIL_AGENT as any, "email")) as any;
       try {
-        const outcome = await eStub.handleA2A(ebody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await eStub.handleA2A(withTracePart(ebody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // Webhook channel: its own card and its own /a2a endpoint.
@@ -258,23 +275,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "webhooks" });
       let wbody: unknown;
       try { wbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const wStub = (await getAgentByName(env.WEBHOOK_AGENT as any, "webhooks")) as any;
       try {
-        const outcome = await wStub.handleA2A(wbody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await wStub.handleA2A(withTracePart(wbody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // Slack channel: its own card and its own /a2a endpoint.
@@ -298,23 +319,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "slack" });
       let sbody: unknown;
       try { sbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const sStub = (await getAgentByName(env.SLACK_AGENT as any, "slack")) as any;
       try {
-        const outcome = await sStub.handleA2A(sbody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await sStub.handleA2A(withTracePart(sbody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // QA capability: its own card and its own /a2a endpoint.
@@ -338,23 +363,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "qa" });
       let qbody: unknown;
       try { qbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const qStub = (await getAgentByName(env.QA_AGENT as any, "qa")) as any;
       try {
-        const outcome = await qStub.handleA2A(qbody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await qStub.handleA2A(withTracePart(qbody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // Voice channel (issue #168): its own card and its own /a2a endpoint.
@@ -375,23 +404,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "voice" });
       let vbody: unknown;
       try { vbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const vStub = (await getAgentByName(env.VOICE_AGENT as any, "desk")) as any;
       try {
-        const outcome = await vStub.handleA2A(vbody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await vStub.handleA2A(withTracePart(vbody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // Search capability (issue #170): its own card and its own /a2a endpoint.
@@ -412,23 +445,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "search" });
       let sbody: unknown;
       try { sbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const sStub = (await getAgentByName(env.SEARCH_AGENT as any, "search")) as any;
       try {
-        const outcome = await sStub.handleA2A(sbody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await sStub.handleA2A(withTracePart(sbody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // Orchestrator (issue #180): its own card and its own /a2a endpoint.
@@ -449,23 +486,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "orchestrator" });
       let obody: unknown;
       try { obody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const oStub = (await getAgentByName(env.ORCHESTRATOR_AGENT as any, "orchestrator")) as any;
       try {
-        const outcome = await oStub.handleA2A(obody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await oStub.handleA2A(withTracePart(obody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // Scheduled (issue #213): its own card and its own /a2a endpoint.
@@ -486,23 +527,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "scheduled" });
       let sbody: unknown;
       try { sbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const sStub = (await getAgentByName(env.SCHEDULED_AGENT as any, "scheduler")) as any;
       try {
-        const outcome = await sStub.handleA2A(sbody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await sStub.handleA2A(withTracePart(sbody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // Autopilot (issue #242 P1): the standing portfolio-objective owner.
@@ -523,23 +568,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "autopilot" });
       let abody: unknown;
       try { abody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const aStub = (await getAgentByName(env.AUTOPILOT_AGENT as any, "autopilot")) as any;
       try {
-        const outcome = await aStub.handleA2A(abody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await aStub.handleA2A(withTracePart(abody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     // Chat channel: its own card and its own /a2a endpoint.
@@ -563,23 +612,27 @@ export default {
       if (!a2aAuthorised(request, env)) {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
+
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "chat" });
       let cbody: unknown;
       try { cbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
       const cStub = (await getAgentByName(env.CHAT_AGENT as any, "chat")) as any;
       try {
-        const outcome = await cStub.handleA2A(cbody, url.origin);
-        if (!outcome) return errorResponse("NO_HANDLER");
+        const outcome = await cStub.handleA2A(withTracePart(cbody, a2aAspect.trace), url.origin);
+        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
     if (url.pathname === A2A_RPC_PATH) {
@@ -599,6 +652,10 @@ export default {
         return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
       }
 
+      // WS1 aspects (issue #252): one structured event per dispatch,
+      // correlation id minted once per HTTP request in the fetch wrapper.
+      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "host" });
+
       // Handling runs inside the Durable Object, which owns the SQL handle the
       // task store needs. The origin is passed through so the agent card carries
       // the host the client actually called - the SDK validates against it.
@@ -612,21 +669,21 @@ export default {
       }
 
       try {
-        const outcome = await doStub.handleA2A(body, url.origin);
+        const outcome = await doStub.handleA2A(withTracePart(body, a2aAspect.trace), url.origin);
         if (!outcome) {
-          return errorResponse("NO_HANDLER");
+          return a2aAspect.respond(errorResponse("NO_HANDLER"));
         }
         // The DO cannot return a stream across RPC, so it collects events and we
         // frame them as SSE here when the method was a streaming one.
         if (outcome.streamed) {
           const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return streamFromAsyncIterable((async function* () { for (const e of events) yield e; })());
+          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
         }
-        return new Response(JSON.stringify(outcome.result), {
+        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
+        }));
       } catch (err) {
-        return new Response(JSON.stringify(errorBody(mapUnknownError(err))), { status: errorStatus(mapUnknownError(err)), headers: { "Content-Type": "application/json" } });
+        return a2aAspect.fail(err);
       }
     }
 
@@ -745,6 +802,20 @@ export default {
     }
 
     return env.ASSETS.fetch(request);
+}
+
+// WS1 aspects (issue #252, design §2): the correlation id is minted once per
+// HTTP request and stamped on every response. The fetch body itself emits
+// the per-operation events at the A2A dispatch seams.
+export default {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
+    const correlationId = resolveCorrelationId(request);
+    const res = await handleFetch(request, env, ctx, correlationId);
+    return withCorrelationHeader(res, correlationId);
   },
 
   async email(

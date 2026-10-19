@@ -14,6 +14,16 @@ export interface Env {
   PAYMENT_DESCRIPTION: string;
   X402_FACILITATOR_URL: string;
   DASHBOARD_API_KEY: string;
+  /**
+   * WS1 aspects kill flag (issue #252): set to "0"/"false" to disable
+   * structured event emission. Absent = on. Never a secret.
+   */
+  LOG_ASPECTS?: string;
+  /**
+   * WS1 aspects (issue #252, design §2.2): minimum event level —
+   * debug|info|warn|error. Configuration, never a code change.
+   */
+  LOG_LEVEL?: string;
   CfmailAgent: DurableObjectNamespace;
   /**
    * Trade-approval workflow for the Public tab (src/trade-workflow.ts). A
@@ -412,4 +422,10 @@ export interface TradeProposal {
 /** Parameters handed to a TradeWorkflow instance: which proposal it owns. */
 export interface TradeWorkflowParams {
   proposalId: string;
+  /**
+   * WS1 aspects (issue #252, design §2.3): workflow params carry the trace.
+   * When the starter supplies one, every step event reuses its
+   * correlationId; otherwise the workflow mints one at run() start.
+   */
+  trace?: { correlationId: string };
 }
