@@ -1,5 +1,11 @@
 # Self-heal fixer — GitHub Actions edition, COPILOT variant (issue #195).
 #
+# DEPRECATED 2026-10-18 (owner directive: no tasks are assigned to
+# Copilot). The live workflow was removed from .github/workflows/ in
+# both OpenAIMP repos; the Muse fixer (cron qa-self-heal-fixer + the
+# qa-self-heal-watch hook) is the sole fixer lane. This template is
+# kept for history only — do not reinstall.
+#
 # INSTALL (owner, via the GitHub web UI — the assistant's integration
 # cannot write workflow files):
 #   Create .github/workflows/self-heal-fixer.yml with exactly this
