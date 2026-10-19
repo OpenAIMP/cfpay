@@ -41,7 +41,6 @@ import {
   A2A_AUTOPILOT_CARD_PATH,
   A2A_AUTOPILOT_RPC_PATH,
   A2A_RPC_PATH,
-  a2aAuthorised,
   cfmailCard,
   fleetCardIndex,
   streamFromAsyncIterable,
@@ -72,10 +71,33 @@ import { verifySlackSignature } from "./slack-verify";
 import {
   resolveCorrelationId,
   withCorrelationHeader,
-  withTracePart,
+  replaceTracePart,
 } from "./aspect-logging";
 import { beginA2AAspect } from "./aspect-error";
 import { ensureAccountingSink } from "./identity-sink";
+// P3 tenancy (issue #252, design §4): per-credential tenant resolution at
+// the A2A edge, tenant-aware dispatch, and FGA enforcement at the branch
+// layer. RPC stubs stay raw — never Proxy-wrapped (self-heal #301).
+import { resolveA2AIdentity, type A2AIdentity } from "./a2a-identity";
+import {
+  dispatchToTenantInstance,
+  CrossTenantDispatchError,
+} from "./tenant-dispatch";
+import {
+  OPERATOR_TENANT_ID,
+  resolveTenantInstance,
+  tenantOfInstance,
+  type ResolvedTenant,
+} from "./tenancy";
+import {
+  emitAuthzDecision,
+  enforceAuthz,
+  findOperationDeclaration,
+  instantiateDeclaration,
+  type AuthzIdentity,
+} from "./aspect-authz";
+import { a2aOperationFromBody, qaOperationAccess } from "./a2a-ops";
+import { resolveMcpIdentity } from "./mcp-auth";
 
 export { CfmailAgentSQLite, CfmailAgentSQLite as CfmailAgent };
 export { PaymentsAgent } from "./payments-agent";
@@ -94,6 +116,237 @@ export { TradeWorkflow } from "./trade-workflow";
 export { EvidenceWorkflow } from "./evidence-workflow";
 
 const app = createApp();
+
+/**
+ * qa stays the operator singleton, but a user-tenant caller only gets
+ * read-class operations (design §4: per-tenant QA is a named P4). The
+ * operator keeps full access. Unknown operations deny by default.
+ */
+async function qaReadOnlyGate(
+  identity: A2AIdentity,
+  body: unknown,
+  correlationId: string,
+  env: Env,
+): Promise<Response | null> {
+  if (identity.tenantId === OPERATOR_TENANT_ID) return null;
+  const op = a2aOperationFromBody(body);
+  const allowed = qaOperationAccess(op) === "read";
+  emitAuthzDecision(
+    a2aAuthzIdentity(identity),
+    { objectType: "qa", objectId: "singleton", relation: allowed ? "viewer" : "operator" },
+    {
+      allow: allowed,
+      decision: {
+        relation: allowed ? "viewer" : "operator",
+        object: "qa:singleton",
+        allow: allowed,
+      },
+    },
+    { correlationId, env },
+  );
+  if (allowed) return null;
+  return errorResponseAs(
+    "INSUFFICIENT_SCOPE",
+    "The QA agent is operator-scoped: tenant callers may only run read-class operations.",
+  );
+}
+/** Map an A2A edge identity onto the authz aspect's identity shape. */
+function a2aAuthzIdentity(id: A2AIdentity): AuthzIdentity {
+  if (id.source === "jwt") {
+    return {
+      kind: "jwt",
+      tenantId: id.tenantId,
+      userId: id.jti ?? id.userId,
+      role: "viewer",
+      tokenId: id.jti,
+    };
+  }
+  if (id.source === "session") {
+    return { kind: "session", tenantId: id.tenantId, userId: id.userId, role: "owner" };
+  }
+  return {
+    kind: "operator",
+    tenantId: OPERATOR_TENANT_ID,
+    userId: OPERATOR_TENANT_ID,
+    role: "operator",
+  };
+}
+
+/**
+ * One A2A RPC branch, P3 shape (issue #252, design §4):
+ * resolve the calling tenant from the credential (401 when none), run the
+ * optional per-branch gate, then dispatch to the tenant's instance through
+ * the single tenant-dispatch seam. The branch layer is also where the
+ * branch-specific FGA gates live (qa read-only, slack.post,
+ * orchestrator.run) — the decision is made here on values that cross the
+ * wire, never inside a Proxy around the stub (self-heal #301).
+ */
+async function a2aBranch(
+  request: Request,
+  env: Env,
+  correlationId: string,
+  opts: {
+    agent: string;
+    binding: string;
+    base: string;
+    /**
+     * Optional gate run after identity resolution, before dispatch.
+     * Return a Response to short-circuit (e.g. 403), or null to continue.
+     */
+    gate?: (
+      identity: A2AIdentity,
+      body: unknown,
+      correlationId: string,
+    ) => Promise<Response | null>;
+  },
+): Promise<Response> {
+  const identity = await resolveA2AIdentity(request, env);
+  if (!identity) {
+    return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
+  }
+  // WS1 aspects (issue #252): one structured event per dispatch,
+  // correlation id minted once per HTTP request in the fetch wrapper.
+  const a2aAspect = beginA2AAspect(env, correlationId, { agent: opts.agent, identity });
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse("INVALID_JSON");
+  }
+  if (opts.gate) {
+    const gated = await opts.gate(identity, body, correlationId);
+    if (gated) return gated;
+  }
+  try {
+    // replaceTracePart: a _trace part arriving in the body is stripped —
+    // the edge-resolved trace is the only one the receiver sees, so a
+    // replayed cross-tenant trace can never pollute the event stream.
+    const outcome = (await dispatchToTenantInstance({
+      env,
+      binding: opts.binding,
+      base: opts.base,
+      tenant: identity,
+      trace: a2aAspect.trace,
+      origin: new URL(request.url).origin,
+      body: replaceTracePart(body, a2aAspect.trace),
+    })) as {
+      streamed?: boolean;
+      events?: unknown[];
+      result?: unknown;
+    };
+    if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
+    if (outcome.streamed) {
+      const events = Array.isArray(outcome.events) ? outcome.events : [];
+      return a2aAspect.respond(
+        streamFromAsyncIterable(
+          (async function* () {
+            for (const e of events) yield e;
+          })(),
+        ),
+      );
+    }
+    return a2aAspect.respond(
+      new Response(JSON.stringify(outcome.result), {
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      }),
+    );
+  } catch (err) {
+    if (err instanceof CrossTenantDispatchError) {
+      return a2aAspect.respond(
+        errorResponseAs("INSUFFICIENT_SCOPE", "Cross-tenant dispatch rejected"),
+      );
+    }
+    return a2aAspect.fail(err);
+  }
+}
+
+/**
+ * FGA gate for one write-class A2A operation at the branch layer (design
+ * §2.4/§5.4). JWT callers are checked against the actor_for tuple their
+ * issuance seeded; operator/session callers against the owner tuple on
+ * their tenant. Deny → 403; the allow/deny decision is emitted to the
+ * accounting store in both cases.
+ */
+async function branchWriteGate(
+  env: Env,
+  operation: string,
+  identity: A2AIdentity,
+  correlationId: string,
+): Promise<Response | null> {
+  const declaration = findOperationDeclaration(operation);
+  if (!declaration) return null;
+  const authz = a2aAuthzIdentity(identity);
+  const decl =
+    identity.source === "jwt"
+      ? { objectType: "tenant", objectId: identity.tenantId, relation: "actor_for" }
+      : instantiateDeclaration(declaration, { tenantId: identity.tenantId });
+  const check = await enforceAuthz(authz, decl, {
+    correlationId,
+    identityEnv: env,
+    env,
+  });
+  if (check.allow) return null;
+  return errorResponseAs("INSUFFICIENT_SCOPE", `Not authorized for ${operation}`);
+}
+
+/**
+ * /agents/* websocket identity (issue #252 P3, design §4): the dashboard
+ * key (query `token`, Bearer, or X-API-Key) → operator tenant; an
+ * app_session cookie → that user's tenant (NEW in P3 — the per-user
+ * dashboard socket); otherwise unauthenticated.
+ */
+async function agentsSocketIdentity(req: Request, env: Env): Promise<ResolvedTenant | null> {
+  const expected = (env.DASHBOARD_API_KEY ?? "").trim();
+  const token = new URL(req.url).searchParams.get("token") ?? "";
+  const auth = req.headers.get("Authorization") ?? "";
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const apiKey = req.headers.get("X-API-Key") ?? "";
+  if (expected) {
+    for (const presented of [token, bearer, apiKey]) {
+      if (presented && timingSafeStringEqual(presented, expected)) {
+        return { tenantId: OPERATOR_TENANT_ID, userId: OPERATOR_TENANT_ID, identityKind: "operator" };
+      }
+    }
+  }
+  try {
+    const { getSessionUserFromRequest } = await import("./auth");
+    const sess = await getSessionUserFromRequest(req, env);
+    if (sess) {
+      return { tenantId: sess.tenantId, userId: sess.userId, identityKind: "session" };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * /agents/* tenant-vs-path check (issue #252 P3, design §4): the
+ * credential's tenant must match the instance named in the path. The
+ * operator tenant may open singletons only (e.g. `qa`, `desk`, `agent`);
+ * a user tenant may open only its own `<base>:<uid>` instances. Paths
+ * without an instance segment pass through to the SDK untouched.
+ */
+function agentsInstanceAllowed(identity: ResolvedTenant, req: Request): boolean {
+  let segs: string[];
+  try {
+    segs = new URL(req.url).pathname.split("/").filter(Boolean);
+  } catch {
+    return false;
+  }
+  if (segs[0] !== "agents" || segs.length < 3) return true;
+  let instance: string;
+  try {
+    instance = decodeURIComponent(segs[2]);
+  } catch {
+    return false;
+  }
+  const { tenantId } = tenantOfInstance(instance);
+  if (identity.tenantId === OPERATOR_TENANT_ID) {
+    return tenantId === OPERATOR_TENANT_ID;
+  }
+  return tenantId === identity.tenantId;
+}
 
 async function handleFetch(
   request: Request,
@@ -195,31 +448,13 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "payments" });
-      let pbody: unknown;
-      try { pbody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const pStub = (await getAgentByName(env.PAYMENTS_AGENT as any, "payments")) as any;
-      try {
-        const outcome = await pStub.handleA2A(withTracePart(pbody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "payments",
+        binding: "PAYMENTS_AGENT",
+        base: "payments",
+      });
     }
 
     // Email capability: its own agent card and its own /a2a endpoint.
@@ -241,31 +476,13 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "email" });
-      let ebody: unknown;
-      try { ebody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const eStub = (await getAgentByName(env.EMAIL_AGENT as any, "email")) as any;
-      try {
-        const outcome = await eStub.handleA2A(withTracePart(ebody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "email",
+        binding: "EMAIL_AGENT",
+        base: "email",
+      });
     }
     // Webhook channel: its own card and its own /a2a endpoint.
     //
@@ -285,31 +502,13 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "webhooks" });
-      let wbody: unknown;
-      try { wbody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const wStub = (await getAgentByName(env.WEBHOOK_AGENT as any, "webhooks")) as any;
-      try {
-        const outcome = await wStub.handleA2A(withTracePart(wbody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "webhooks",
+        binding: "WEBHOOK_AGENT",
+        base: "webhooks",
+      });
     }
     // Slack channel: its own card and its own /a2a endpoint.
     //
@@ -329,31 +528,20 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "slack" });
-      let sbody: unknown;
-      try { sbody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const sStub = (await getAgentByName(env.SLACK_AGENT as any, "slack")) as any;
-      try {
-        const outcome = await sStub.handleA2A(withTracePart(sbody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "slack",
+        binding: "SLACK_AGENT",
+        base: "slack",
+        gate: async (identity, body, cid) => {
+          const op = a2aOperationFromBody(body);
+          if (op === "slack.post" || op === "slack.notify" || op === "slack.send") {
+            return branchWriteGate(env, "slack.post", identity, cid);
+          }
+          return null;
+        },
+      });
     }
     // QA capability: its own card and its own /a2a endpoint.
     //
@@ -373,31 +561,14 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "qa" });
-      let qbody: unknown;
-      try { qbody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const qStub = (await getAgentByName(env.QA_AGENT as any, "qa")) as any;
-      try {
-        const outcome = await qStub.handleA2A(withTracePart(qbody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "qa",
+        binding: "QA_AGENT",
+        base: "qa",
+        gate: (identity, body, cid) => qaReadOnlyGate(identity, body, cid, env),
+      });
     }
     // Voice channel (issue #168): its own card and its own /a2a endpoint.
     if (url.pathname === A2A_VOICE_CARD_PATH) {
@@ -414,31 +585,13 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "voice" });
-      let vbody: unknown;
-      try { vbody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const vStub = (await getAgentByName(env.VOICE_AGENT as any, "desk")) as any;
-      try {
-        const outcome = await vStub.handleA2A(withTracePart(vbody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "voice",
+        binding: "VOICE_AGENT",
+        base: "desk",
+      });
     }
     // Search capability (issue #170): its own card and its own /a2a endpoint.
     if (url.pathname === A2A_SEARCH_CARD_PATH) {
@@ -455,31 +608,13 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "search" });
-      let sbody: unknown;
-      try { sbody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const sStub = (await getAgentByName(env.SEARCH_AGENT as any, "search")) as any;
-      try {
-        const outcome = await sStub.handleA2A(withTracePart(sbody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "search",
+        binding: "SEARCH_AGENT",
+        base: "search",
+      });
     }
     // Orchestrator (issue #180): its own card and its own /a2a endpoint.
     if (url.pathname === A2A_ORCHESTRATOR_CARD_PATH) {
@@ -496,31 +631,19 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "orchestrator" });
-      let obody: unknown;
-      try { obody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const oStub = (await getAgentByName(env.ORCHESTRATOR_AGENT as any, "orchestrator")) as any;
-      try {
-        const outcome = await oStub.handleA2A(withTracePart(obody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "orchestrator",
+        binding: "ORCHESTRATOR_AGENT",
+        base: "orchestrator",
+        gate: async (identity, body, cid) => {
+          if (a2aOperationFromBody(body) === "orchestrator.run") {
+            return branchWriteGate(env, "orchestrator.run", identity, cid);
+          }
+          return null;
+        },
+      });
     }
     // Scheduled (issue #213): its own card and its own /a2a endpoint.
     if (url.pathname === A2A_SCHEDULED_CARD_PATH) {
@@ -537,31 +660,13 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "scheduled" });
-      let sbody: unknown;
-      try { sbody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const sStub = (await getAgentByName(env.SCHEDULED_AGENT as any, "scheduler")) as any;
-      try {
-        const outcome = await sStub.handleA2A(withTracePart(sbody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "scheduled",
+        binding: "SCHEDULED_AGENT",
+        base: "scheduler",
+      });
     }
     // Autopilot (issue #242 P1): the standing portfolio-objective owner.
     if (url.pathname === A2A_AUTOPILOT_CARD_PATH) {
@@ -578,31 +683,13 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "autopilot" });
-      let abody: unknown;
-      try { abody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const aStub = (await getAgentByName(env.AUTOPILOT_AGENT as any, "autopilot")) as any;
-      try {
-        const outcome = await aStub.handleA2A(withTracePart(abody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "autopilot",
+        binding: "AUTOPILOT_AGENT",
+        base: "autopilot",
+      });
     }
     // Chat channel: its own card and its own /a2a endpoint.
     //
@@ -622,31 +709,13 @@ async function handleFetch(
         });
       }
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "chat" });
-      let cbody: unknown;
-      try { cbody = await request.json(); } catch {
-        return errorResponse("INVALID_JSON");
-      }
-      const cStub = (await getAgentByName(env.CHAT_AGENT as any, "chat")) as any;
-      try {
-        const outcome = await cStub.handleA2A(withTracePart(cbody, a2aAspect.trace), url.origin);
-        if (!outcome) return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "chat",
+        binding: "CHAT_AGENT",
+        base: "chat",
+      });
     }
     if (url.pathname === A2A_RPC_PATH) {
       if (request.method === "OPTIONS") {
@@ -661,49 +730,23 @@ async function handleFetch(
       if (request.method !== "POST") {
         return new Response("Method not allowed", { status: 405 });
       }
-      if (!a2aAuthorised(request, env)) {
-        return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "WWW-Authenticate": "Bearer" });
-      }
-
-      // WS1 aspects (issue #252): one structured event per dispatch,
-      // correlation id minted once per HTTP request in the fetch wrapper.
-      const a2aAspect = beginA2AAspect(env, correlationId, { agent: "host" });
-
-      // Handling runs inside the Durable Object, which owns the SQL handle the
-      // task store needs. The origin is passed through so the agent card carries
-      // the host the client actually called - the SDK validates against it.
-      const doStub = (await getAgentByName(env.CfmailAgent as any, "agent")) as any;
-
-      let body: unknown;
-      try {
-        body = await request.json();
-      } catch {
-        return errorResponse("INVALID_JSON");
-      }
-
-      try {
-        const outcome = await doStub.handleA2A(withTracePart(body, a2aAspect.trace), url.origin);
-        if (!outcome) {
-          return a2aAspect.respond(errorResponse("NO_HANDLER"));
-        }
-        // The DO cannot return a stream across RPC, so it collects events and we
-        // frame them as SSE here when the method was a streaming one.
-        if (outcome.streamed) {
-          const events = Array.isArray(outcome.events) ? outcome.events : [];
-          return a2aAspect.respond(streamFromAsyncIterable((async function* () { for (const e of events) yield e; })()));
-        }
-        return a2aAspect.respond(new Response(JSON.stringify(outcome.result), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }));
-      } catch (err) {
-        return a2aAspect.fail(err);
-      }
+      // P3 tenancy (issue #252): the calling tenant is resolved from
+      // the credential; dispatch goes to the tenant's instance.
+      return a2aBranch(request, env, correlationId, {
+        agent: "host",
+        binding: "CfmailAgent",
+        base: "agent",
+      });
     }
 
     if (url.pathname === "/mcp") {
       const unauthorized = await authorizeMcpRequest(request, env);
       if (unauthorized) return unauthorized;
-      return createCfmailMcpHandler(env)(request, env, ctx);
+      // P3 tenancy (issue #252, design §4): the dispatch tenant comes from
+      // the token claims (JWT → tenant_id bound to sub); every other
+      // credential — and the anonymous handshake — stays operator-scoped.
+      const mcpIdentity = await resolveMcpIdentity(request, env);
+      return createCfmailMcpHandler(env, mcpIdentity)(request, env, ctx);
     }
 
     // Webhook routes — verified events are handled on the canonical central
@@ -721,7 +764,12 @@ async function handleFetch(
       // events into a Durable Object nothing ever displayed.
       // Use idFromName directly: getAgentByName resolves to a different
       // instance than the dashboard reads. No RPC needed here (dedupe is inside the DO).
-      const agentId = env.CfmailAgent.idFromName("agent");
+      // P3 tenancy: provider webhooks carry no user credential, so they
+      // land on the operator tenant — resolveTenantInstance keeps the
+      // singleton for the operator (and honors TENANT_CUTOVER).
+      const agentId = env.CfmailAgent.idFromName(
+        resolveTenantInstance("agent", OPERATOR_TENANT_ID, env),
+      );
       const agent = env.CfmailAgent.get(agentId);
 
       // Slack message events also become a conversation in the Slack tab:
@@ -790,23 +838,28 @@ async function handleFetch(
     // Agent routes (/agents/*) with authentication hooks.
     // onBeforeConnect: verifies `token` query parameter (WebSocket connections)
     // onBeforeRequest: verifies `Authorization: Bearer <token>` or `X-API-Key` header
-    // Both validate against DASHBOARD_API_KEY.
+    // P3 tenancy (issue #252, design §4): the credential resolves to a
+    // tenant (dashboard key → operator; app_session cookie → that user),
+    // and the instance named in the path must belong to that tenant —
+    // operator opens singletons, users open only their own `<base>:<uid>`.
+    // A valid credential on another tenant's instance is 403, not 401.
     const agentResponse = await routeAgentRequest(request, env, {
       onBeforeConnect: async (req: Request) => {
-        const token = new URL(req.url).searchParams.get("token");
-        if (!token || !timingSafeStringEqual(token, env.DASHBOARD_API_KEY ?? "")) {
+        const identity = await agentsSocketIdentity(req, env);
+        if (!identity) {
           return new Response("Unauthorized", { status: 401 });
+        }
+        if (!agentsInstanceAllowed(identity, req)) {
+          return new Response("Forbidden", { status: 403 });
         }
       },
       onBeforeRequest: async (req: Request) => {
-        const auth = req.headers.get("Authorization");
-        const apiKey = req.headers.get("X-API-Key");
-        const token = auth?.replace("Bearer ", "");
-        if (
-          (!token || !timingSafeStringEqual(token, env.DASHBOARD_API_KEY ?? "")) &&
-          (!apiKey || !timingSafeStringEqual(apiKey, env.DASHBOARD_API_KEY ?? ""))
-        ) {
+        const identity = await agentsSocketIdentity(req, env);
+        if (!identity) {
           return new Response("Unauthorized", { status: 401 });
+        }
+        if (!agentsInstanceAllowed(identity, req)) {
+          return new Response("Forbidden", { status: 403 });
         }
       },
     });
@@ -912,7 +965,11 @@ async function handleSlackWebhook(request: Request, env: Env): Promise<Response>
 
   console.log("Processing Slack message from:", event.user, "text:", event.text);
 
-  const agentId = env.CfmailAgent.idFromName("agent");
+  // P3 tenancy: the legacy Slack webhook carries no user credential — it
+  // lands on the operator tenant's host instance (singleton, unchanged).
+  const agentId = env.CfmailAgent.idFromName(
+    resolveTenantInstance("agent", OPERATOR_TENANT_ID, env),
+  );
   const agent = env.CfmailAgent.get(agentId) as any;
 
   await agent.handleSlackEvent(event);
@@ -976,7 +1033,12 @@ async function handleSlackInstall(request: Request, env: Env): Promise<Response>
         `Slack refused the authorization code: ${data?.error ?? "unknown error"}`,
       );
     }
-    const agent = await getAgentByName(env.CfmailAgent as any, "agent");
+    // P3 tenancy: the Slack install flow is operator-scoped — the bot token
+    // lands on the operator tenant's host instance (singleton, unchanged).
+    const agent = await getAgentByName(
+      env.CfmailAgent as any,
+      resolveTenantInstance("agent", OPERATOR_TENANT_ID, env),
+    );
     const stored = await (agent as any).setSlackBotToken(data.access_token);
     if (!stored?.success) {
       return slackInstallErrorPage("Could not store the Slack bot token.");

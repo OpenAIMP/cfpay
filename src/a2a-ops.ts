@@ -556,3 +556,43 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
     },
   ],
 };
+
+/**
+ * Read the A2A operation name out of a request body, mirroring how the
+ * agents route it: the data part's `operation` first, then the text part.
+ * Returns null when no operation can be determined. SDK-free.
+ */
+export function a2aOperationFromBody(body: unknown): string | null {
+  try {
+    const parts = (body as { params?: { message?: { parts?: unknown[] } } })
+      ?.params?.message?.parts;
+    if (!Array.isArray(parts)) return null;
+    for (const p of parts) {
+      const op = (p as { kind?: string; data?: { operation?: unknown } })
+        ?.data?.operation;
+      if ((p as { kind?: string })?.kind === "data" && typeof op === "string" && op) {
+        return op;
+      }
+    }
+    for (const p of parts) {
+      const t = (p as { kind?: string; text?: unknown })?.text;
+      if ((p as { kind?: string })?.kind === "text" && typeof t === "string" && t.trim()) {
+        return t.trim();
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+/**
+ * The access class of a qa operation, or null when unknown. The /a2a/qa
+ * branch gates user-tenant callers to read-class operations only (per-tenant
+ * QA is a named P4); unknown operations deny by default.
+ */
+export function qaOperationAccess(op: string | null): A2aOpSpec["access"] | null {
+  if (!op) return null;
+  const spec = A2A_OPS.qa.find((s) => s.operation === op);
+  return spec ? spec.access : null;
+}

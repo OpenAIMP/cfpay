@@ -21,6 +21,7 @@ import {
   revokeAllUserSessions,
   checkTuple,
   addTuple,
+  listTuplesForObject,
   seedOperatorTuples,
   appendAccounting,
   queryAccounting,
@@ -115,6 +116,17 @@ export class IdentityAgent extends Agent<Env> {
   ): Promise<void> {
     this.ensureSchema();
     addTuple(this.idb(), subjectType, subjectId, relation, objectType, objectId);
+  }
+
+  /**
+   * List every tuple on one object (issue #252 P3). The trade-approval
+   * workflow's integrity check uses this: execution requires an approver
+   * tuple on the proposal, regardless of which subject holds it.
+   */
+  @callable()
+  async tuplesForObject(objectType: string, objectId: string) {
+    this.ensureSchema();
+    return listTuplesForObject(this.idb(), objectType, objectId);
   }
 
   @callable()

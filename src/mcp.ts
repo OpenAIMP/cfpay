@@ -11,7 +11,15 @@ import {
   type McpFieldDef,
 } from "./mcp-agent-tools";
 import { mintCorrelationId, withTracePart } from "./aspect-logging";
-import { tenantIdFor, userIdFor } from "./tenancy";
+import {
+  OPERATOR_TENANT_ID,
+  resolveTenantInstance,
+  checkDispatchEnvelope,
+  type CutoverEnv,
+} from "./tenancy";
+import { ensureTenantProvisioned } from "./tenant-dispatch";
+import { enforceAuthz } from "./aspect-authz";
+import type { McpIdentity } from "./mcp-auth";
 
 /**
  * Remote MCP server for the CFmail agent, exposed at POST/GET /mcp using the
@@ -38,16 +46,32 @@ import { tenantIdFor, userIdFor } from "./tenancy";
  * createMcpHandler builds a new McpServer per request, so the agent below must
  * be constructed inside this factory, not shared at module scope.
  */
-export function createCfmailMcpHandler(env: Env) {
-  const agent = env.CfmailAgent.get(env.CfmailAgent.idFromName("agent")) as any;
+export function createCfmailMcpHandler(env: Env, mcpIdentity?: McpIdentity | null) {
+  // P3 tenancy (issue #252, design §4): the dispatch tenant comes from the
+  // token claims (JWT → tenant_id bound to sub), never from request params;
+  // every other credential — and the anonymous handshake — stays on the
+  // operator tenant, exactly as today.
+  const identity: McpIdentity = mcpIdentity ?? {
+    source: "anonymous",
+    tenantId: OPERATOR_TENANT_ID,
+    userId: OPERATOR_TENANT_ID,
+  };
+  const tenantId = identity.tenantId || OPERATOR_TENANT_ID;
+  const cutoverEnv = env as unknown as CutoverEnv;
+
+  const hostInstance = resolveTenantInstance("agent", tenantId, cutoverEnv);
+  // First-use provisioning is a backstop here (the factory is sync); the
+  // per-dispatch path awaits it properly below.
+  void ensureTenantProvisioned(env, "agent", tenantId, hostInstance).catch(() => {});
+  const agent = env.CfmailAgent.get(env.CfmailAgent.idFromName(hostInstance)) as any;
 
   // WS1 aspects (issue #252, design §2.3): every in-process A2A dispatch
   // carries the private trace part so the receiving executor emits under the
-  // same correlationId. P1: the operator tenant; P3 resolves per credential.
+  // same correlationId. P3: the trace carries the token's tenant.
   const a2aTrace = () => ({
     correlationId: mintCorrelationId(),
-    tenantId: tenantIdFor(),
-    userId: userIdFor(),
+    tenantId,
+    userId: identity.userId,
   });
 
   const server = new McpServer({
@@ -334,9 +358,41 @@ export function createCfmailMcpHandler(env: Env) {
     toolSpec: McpAgentToolSpec,
     input: Record<string, unknown>,
   ): Promise<{ text: string; data: unknown }> => {
+    // P3 tenancy: the instance comes from the token claims (never request
+    // params); the trace carries the same tenant so the cross-tenant
+    // envelope rule holds end to end.
+    const instanceName = resolveTenantInstance(toolSpec.instance, tenantId, cutoverEnv);
+    // P3 FGA (design §2.4/§5.4): write-class tools need the actor_for tuple
+    // the issuance seeded — the token acts for its tenant, bounded by
+    // issuance. Non-JWT credentials are operator-scoped by construction
+    // (their dispatch tenant is the operator tenant) and keep today's
+    // credential-only authorization.
+    if (toolSpec.access === "write" && identity.source === "jwt") {
+      const correlationId = mintCorrelationId();
+      const gate = await enforceAuthz(
+        {
+          kind: "jwt",
+          tenantId,
+          userId: identity.jti ?? identity.sub ?? "unknown",
+          role: "viewer",
+          tokenId: identity.jti,
+        },
+        { objectType: "tenant", objectId: tenantId, relation: "actor_for" },
+        { correlationId, identityEnv: env, env },
+      );
+      if (!gate.allow) {
+        throw new Error(
+          `forbidden: this token is not authorized to run write tools for tenant ${tenantId}`,
+        );
+      }
+    }
+    await ensureTenantProvisioned(env, toolSpec.instance, tenantId, instanceName);
+    const trace = a2aTrace();
+    const envelope = checkDispatchEnvelope(trace, instanceName);
+    if (!envelope.ok) throw new Error(envelope.reason ?? "cross-tenant dispatch rejected");
     const ns = (env as unknown as Record<string, DurableObjectNamespace>)[toolSpec.binding];
     if (!ns) throw new Error(`${toolSpec.binding} binding is absent`);
-    const stub = ns.get(ns.idFromName(toolSpec.instance)) as unknown as {
+    const stub = ns.get(ns.idFromName(instanceName)) as unknown as {
       handleA2A: (b: unknown, o: string) => Promise<unknown>;
     };
     const { args: extra, ...fields } = input ?? {};

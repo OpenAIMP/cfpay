@@ -7,7 +7,12 @@ import type { TradeWorkflowParams } from "./types";
 // the error classifier. The aspect records — it never retries and the
 // workflow's waitForEvent semantics are unchanged.
 import { withWorkflowStepAspect } from "./aspect-error";
-import { mintCorrelationId, type AspectEnv } from "./aspect-logging";
+import {
+  accountingEvent,
+  emitAspectEvent,
+  mintCorrelationId,
+  type AspectEnv,
+} from "./aspect-logging";
 
 /**
  * The approval gate between a model-proposed Public.com order and its
@@ -77,6 +82,57 @@ export class TradeWorkflow extends ThinkWorkflow<CfmailAgentSQLite, TradeWorkflo
       }),
     );
     if (!approved) return;
+
+    // P3 money-gate integrity check (issue #252, design §5.4): the approval
+    // event only records intent — execution additionally requires an
+    // approver tuple on the proposal. The dashboard decision route seeds
+    // that tuple after verifying tenant ownership, so a workflow event
+    // that bypassed the route (e.g. a direct decideTradeProposal RPC) can
+    // never reach execution. Deny-by-default: no tuple → no execution.
+    const authorized = await step.do("verify-approval-authorization", () =>
+      stepAspect("workflow.step.verify-approval-authorization", async () => {
+        try {
+          const { identityStub } = await import("./agent-stubs");
+          const identity = await identityStub(this.env);
+          const tuples = (await identity.tuplesForObject(
+            "trade_proposal",
+            proposalId,
+          )) as { relation?: string }[];
+          return tuples.some((t) => t?.relation === "approver");
+        } catch {
+          return false;
+        }
+      }),
+    );
+    if (!authorized) {
+      await step.do("record-unauthorized-approval", () =>
+        stepAspect("workflow.step.record-unauthorized-approval", async () => {
+          await this.agent.recordTradeDecision(
+            proposalId,
+            false,
+            "Blocked: no approver authorization tuple for this proposal.",
+          );
+        }),
+      );
+      // The workflow cannot know who sent the event — only that no
+      // authorization exists. Account the deny without attributing it.
+      emitAspectEvent(
+        accountingEvent("authz.deny", {
+          tenantId: "operator",
+          userId: "operator",
+          correlationId,
+          agent: "trade-workflow",
+          authDecision: {
+            relation: "approver",
+            object: `trade_proposal:${proposalId}`,
+            allow: false,
+          },
+          detail: { reason: "no-approver-tuple", step: "verify-approval-authorization" },
+        }),
+        (this.env as AspectEnv | undefined) ?? null,
+      );
+      return;
+    }
 
     await step.do("execute-approved-trade", () =>
       stepAspect("workflow.step.execute-approved-trade", async () => {

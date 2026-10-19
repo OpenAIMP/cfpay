@@ -57,8 +57,11 @@ export class VoiceAgent extends VoiceBase<Env> {
       // pipeline as the public-chat HTTP route, without the HTTP round
       // trip. Failure mapping mirrors the route's: 409 -> not-connected,
       // 502 -> generic desk failure, transport throw -> unreachable.
-      const { hostStub } = await import("./agent-stubs");
-      const host = await hostStub(this.env);
+      // P3 tenancy (issue #252): the voice instance's own tenant host
+      // (`agent:<uid>`), parsed from its instance name.
+      const { hostStubFor } = await import("./agent-stubs");
+      const { ownTenantId } = await import("./tenancy");
+      const host = await hostStubFor(this.env, ownTenantId(this.ctx.id.name));
       const result = (await host.deskAsk(question)) as
         | { ok: true; answer: string }
         | { ok: false; code: string };

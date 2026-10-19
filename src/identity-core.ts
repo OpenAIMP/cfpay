@@ -655,3 +655,31 @@ export function runRetentionPurge(
   );
   return report;
 }
+
+export interface FgaTupleView {
+  subjectType: string;
+  subjectId: string;
+  relation: string;
+  objectType: string;
+  objectId: string;
+}
+
+/**
+ * List every tuple on one object. The trade-approval workflow uses this
+ * for its integrity check: execution requires an approver tuple to exist
+ * for the proposal, no matter which subject holds it (the route that
+ * seeded it already verified tenant ownership).
+ */
+export function listTuplesForObject(
+  db: SqlDb,
+  objectType: string,
+  objectId: string,
+): FgaTupleView[] {
+  return db.all<FgaTupleView>(
+    `SELECT subject_type AS subjectType, subject_id AS subjectId, relation, ` +
+      `object_type AS objectType, object_id AS objectId FROM fga_tuples ` +
+      `WHERE object_type = ? AND object_id = ?`,
+    objectType,
+    objectId,
+  );
+}

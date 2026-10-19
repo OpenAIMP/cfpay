@@ -30,7 +30,12 @@ import {
 } from "./autopilot-core";
 import type { Env } from "./types";
 import { mintCorrelationId, withTracePart } from "./aspect-logging";
-import { tenantIdFor, userIdFor } from "./tenancy";
+import {
+  checkDispatchEnvelope,
+  ownTenantId,
+  resolveTenantInstance,
+  type CutoverEnv,
+} from "./tenancy";
 
 interface ObjectiveRow {
   id: string;
@@ -86,12 +91,14 @@ function parseNotifications(raw: string | null): Record<string, string> {
 
 // WS1 aspects (issue #252, design §2.3): every in-process A2A dispatch
 // carries the private trace part so the receiving executor emits under the
-// same correlationId. P1: the operator tenant; P3 resolves per credential.
-function a2aTrace() {
+// same correlationId. P3: the trace carries this instance's own tenant
+// (parsed from its instance name), so the cross-tenant envelope rule
+// holds for autopilot → scheduler/email/slack/host dispatches.
+function a2aTraceFor(tenantId: string) {
   return {
     correlationId: mintCorrelationId(),
-    tenantId: tenantIdFor(),
-    userId: userIdFor(),
+    tenantId,
+    userId: tenantId,
   };
 }
 
@@ -192,6 +199,11 @@ export class AutopilotAgent extends Think<Env> {
   /**
    * Dispatch an A2A operation to another agent's stub in-process,
    * over message/stream, reading the reply via the fleet contract.
+   *
+   * P3 tenancy (issue #252, design §4): the target instance is resolved
+   * for this instance's own tenant (`scheduler:<sameUid>` for the
+   * objective arming, `slack:<uid>`, `email:<uid>`, `agent:<uid>`), and
+   * the cross-tenant envelope rule is asserted before the call.
    */
   private async dispatchToAgent(
     binding: "SCHEDULED_AGENT" | "CfmailAgent" | "SLACK_AGENT" | "EMAIL_AGENT",
@@ -201,7 +213,12 @@ export class AutopilotAgent extends Think<Env> {
   ): Promise<{ text: string; data?: unknown }> {
     const ns = (this.env as unknown as Record<string, DurableObjectNamespace | undefined>)[binding];
     if (!ns) throw new Error(`${binding} binding is not configured.`);
-    const stub = ns.get(ns.idFromName(instance)) as unknown as {
+    const tenantId = ownTenantId(this.ctx.id.name);
+    const instanceName = resolveTenantInstance(instance, tenantId, this.env as CutoverEnv);
+    const trace = a2aTraceFor(tenantId);
+    const envelope = checkDispatchEnvelope(trace, instanceName);
+    if (!envelope.ok) throw new Error(envelope.reason ?? "cross-tenant dispatch rejected");
+    const stub = ns.get(ns.idFromName(instanceName)) as unknown as {
       handleA2A: (body: unknown, origin: string) => Promise<unknown>;
     };
     const msgId = `autopilot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -221,7 +238,7 @@ export class AutopilotAgent extends Think<Env> {
         },
       },
     };
-    const outcome = await stub.handleA2A(withTracePart(body, a2aTrace()), "https://autopilot-agent.internal");
+    const outcome = await stub.handleA2A(withTracePart(body, a2aTraceFor(ownTenantId(this.ctx.id.name))), "https://autopilot-agent.internal");
     const { a2aReplyFromOutcome } = await import("./a2a");
     return a2aReplyFromOutcome(outcome);
   }

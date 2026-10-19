@@ -48,7 +48,12 @@ import { normalizeCron } from "./cron-next";
 import { oneShotFromDelay, parseOneShotWhen } from "./schedule-once";
 import type { Env } from "./types";
 import { mintCorrelationId, withTracePart } from "./aspect-logging";
-import { tenantIdFor, userIdFor } from "./tenancy";
+import {
+  checkDispatchEnvelope,
+  ownTenantId,
+  resolveTenantInstance,
+  type CutoverEnv,
+} from "./tenancy";
 
 export const MAX_GOAL_CHARS = 500;
 const SCHEDULE_CALLBACK = "runScheduledGoal";
@@ -105,12 +110,13 @@ function toGoal(row: ScheduledGoalRow): ScheduledGoal {
 
 // WS1 aspects (issue #252, design §2.3): every in-process A2A dispatch
 // carries the private trace part so the receiving executor emits under the
-// same correlationId. P1: the operator tenant; P3 resolves per credential.
-function a2aTrace() {
+// same correlationId. P3: the trace carries this instance's own tenant
+// (parsed from its instance name).
+function a2aTraceFor(tenantId: string) {
   return {
     correlationId: mintCorrelationId(),
-    tenantId: tenantIdFor(),
-    userId: userIdFor(),
+    tenantId,
+    userId: tenantId,
   };
 }
 
@@ -412,11 +418,22 @@ export class ScheduledAgent extends Think<Env> {
     return { jobId, status };
   }
 
-  /** Hand one goal to the OrchestratorAgent over A2A; returns the job id. */
+  /**
+   * Hand one goal to the OrchestratorAgent over A2A; returns the job id.
+   *
+   * P3 tenancy (issue #252, design §4): the goal is handed to this
+   * instance's own tenant orchestrator (`orchestrator:<sameUid>`), and the
+   * cross-tenant envelope rule is asserted before the call.
+   */
   private async dispatchGoal(goal: string): Promise<string | null> {
     const binding = (this.env as Env & { ORCHESTRATOR_AGENT?: DurableObjectNamespace }).ORCHESTRATOR_AGENT;
     if (!binding) throw new Error("OrchestratorAgent binding is not configured.");
-    const stub = binding.get(binding.idFromName("orchestrator")) as unknown as {
+    const tenantId = ownTenantId(this.ctx.id.name);
+    const instanceName = resolveTenantInstance("orchestrator", tenantId, this.env as CutoverEnv);
+    const trace = a2aTraceFor(tenantId);
+    const envelope = checkDispatchEnvelope(trace, instanceName);
+    if (!envelope.ok) throw new Error(envelope.reason ?? "cross-tenant dispatch rejected");
+    const stub = binding.get(binding.idFromName(instanceName)) as unknown as {
       handleA2A: (body: unknown, origin: string) => Promise<{
         result?: { parts?: { kind: string; data?: { id?: string } }[] };
       }>;
@@ -437,7 +454,7 @@ export class ScheduledAgent extends Think<Env> {
         },
       },
     };
-    const outcome = await stub.handleA2A(withTracePart(body, a2aTrace()), "https://scheduled-agent.internal");
+    const outcome = await stub.handleA2A(withTracePart(body, a2aTraceFor(ownTenantId(this.ctx.id.name))), "https://scheduled-agent.internal");
     const { a2aReplyFromOutcome } = await import("./a2a");
     const { data } = a2aReplyFromOutcome(outcome);
     return (data as { id?: string } | undefined)?.id ?? null;

@@ -32,6 +32,27 @@ export async function hostStub(env: any): Promise<any> {
 }
 
 /**
+ * Per-tenant host stub (issue #252 P3). Resolves `agent:<tenantId>` for
+ * user tenants; the operator tenant keeps the "agent" singleton, so
+ * hostStub(env) === hostStubFor(env, "operator").
+ */
+export async function hostStubFor(env: any, tenantId: string): Promise<any> {
+  const { getAgentByName } = await import("agents");
+  const { instanceFor } = await import("./tenancy");
+  return (await getAgentByName(env.CfmailAgent as any, instanceFor("agent", tenantId))) as any;
+}
+
+/**
+ * Per-tenant Slack stub (issue #252 P3). Resolves `slack:<tenantId>` for
+ * user tenants; the operator tenant keeps the "slack" singleton.
+ */
+export async function slackAgentStubFor(env: any, tenantId: string): Promise<any> {
+  const { getAgentByName } = await import("agents");
+  const { instanceFor } = await import("./tenancy");
+  return (await getAgentByName(env.SLACK_AGENT as any, instanceFor("slack", tenantId))) as any;
+}
+
+/**
  * The identity agent's RPC-capable stub (issue #252, P2).
  * Single instance, same name ("identity") as every other identity
  * resolution. Carries sessions, the accounting store, and authorization
