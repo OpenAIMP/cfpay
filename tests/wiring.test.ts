@@ -1868,7 +1868,10 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     // wiring
     expect(index).toContain('export { AutopilotAgent } from "./autopilot-agent";');
     expect(index).toContain("A2A_AUTOPILOT_RPC_PATH");
-    expect(index).toContain('env.AUTOPILOT_AGENT.get(env.AUTOPILOT_AGENT.idFromName("autopilot"))');
+    // the route reaches the agent through an RPC-capable stub: a raw
+    // .get() stub cannot invoke @callable() handleA2A and 500s every
+    // dispatch ([QA self-heal] issue #272)
+    expect(index).toContain('getAgentByName(env.AUTOPILOT_AGENT as any, "autopilot")');
     expect(wrangler).toContain('"name": "AUTOPILOT_AGENT"');
     expect(wrangler).toContain('"class_name": "AutopilotAgent"');
     expect(wrangler).toContain('"tag": "v13"');

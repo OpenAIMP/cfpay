@@ -180,7 +180,7 @@ export default {
       try { pbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const pStub = env.PAYMENTS_AGENT.get(env.PAYMENTS_AGENT.idFromName("payments")) as any;
+      const pStub = (await getAgentByName(env.PAYMENTS_AGENT as any, "payments")) as any;
       try {
         const outcome = await pStub.handleA2A(pbody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -222,7 +222,7 @@ export default {
       try { ebody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const eStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName("email")) as any;
+      const eStub = (await getAgentByName(env.EMAIL_AGENT as any, "email")) as any;
       try {
         const outcome = await eStub.handleA2A(ebody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -262,7 +262,7 @@ export default {
       try { wbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const wStub = env.WEBHOOK_AGENT.get(env.WEBHOOK_AGENT.idFromName("webhooks")) as any;
+      const wStub = (await getAgentByName(env.WEBHOOK_AGENT as any, "webhooks")) as any;
       try {
         const outcome = await wStub.handleA2A(wbody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -302,7 +302,7 @@ export default {
       try { sbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const sStub = env.SLACK_AGENT.get(env.SLACK_AGENT.idFromName("slack")) as any;
+      const sStub = (await getAgentByName(env.SLACK_AGENT as any, "slack")) as any;
       try {
         const outcome = await sStub.handleA2A(sbody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -342,7 +342,7 @@ export default {
       try { qbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const qStub = env.QA_AGENT.get(env.QA_AGENT.idFromName("qa")) as any;
+      const qStub = (await getAgentByName(env.QA_AGENT as any, "qa")) as any;
       try {
         const outcome = await qStub.handleA2A(qbody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -379,7 +379,7 @@ export default {
       try { vbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const vStub = env.VOICE_AGENT.get(env.VOICE_AGENT.idFromName("desk")) as any;
+      const vStub = (await getAgentByName(env.VOICE_AGENT as any, "desk")) as any;
       try {
         const outcome = await vStub.handleA2A(vbody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -416,7 +416,7 @@ export default {
       try { sbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const sStub = env.SEARCH_AGENT.get(env.SEARCH_AGENT.idFromName("search")) as any;
+      const sStub = (await getAgentByName(env.SEARCH_AGENT as any, "search")) as any;
       try {
         const outcome = await sStub.handleA2A(sbody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -453,7 +453,7 @@ export default {
       try { obody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const oStub = env.ORCHESTRATOR_AGENT.get(env.ORCHESTRATOR_AGENT.idFromName("orchestrator")) as any;
+      const oStub = (await getAgentByName(env.ORCHESTRATOR_AGENT as any, "orchestrator")) as any;
       try {
         const outcome = await oStub.handleA2A(obody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -490,7 +490,7 @@ export default {
       try { sbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const sStub = env.SCHEDULED_AGENT.get(env.SCHEDULED_AGENT.idFromName("scheduler")) as any;
+      const sStub = (await getAgentByName(env.SCHEDULED_AGENT as any, "scheduler")) as any;
       try {
         const outcome = await sStub.handleA2A(sbody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -527,7 +527,7 @@ export default {
       try { abody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const aStub = env.AUTOPILOT_AGENT.get(env.AUTOPILOT_AGENT.idFromName("autopilot")) as any;
+      const aStub = (await getAgentByName(env.AUTOPILOT_AGENT as any, "autopilot")) as any;
       try {
         const outcome = await aStub.handleA2A(abody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -567,7 +567,7 @@ export default {
       try { cbody = await request.json(); } catch {
         return errorResponse("INVALID_JSON");
       }
-      const cStub = env.CHAT_AGENT.get(env.CHAT_AGENT.idFromName("chat")) as any;
+      const cStub = (await getAgentByName(env.CHAT_AGENT as any, "chat")) as any;
       try {
         const outcome = await cStub.handleA2A(cbody, url.origin);
         if (!outcome) return errorResponse("NO_HANDLER");
@@ -602,8 +602,7 @@ export default {
       // Handling runs inside the Durable Object, which owns the SQL handle the
       // task store needs. The origin is passed through so the agent card carries
       // the host the client actually called - the SDK validates against it.
-      const agentId = env.CfmailAgent.idFromName("agent");
-      const doStub = env.CfmailAgent.get(agentId) as any;
+      const doStub = (await getAgentByName(env.CfmailAgent as any, "agent")) as any;
 
       let body: unknown;
       try {
