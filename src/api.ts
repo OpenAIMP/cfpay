@@ -11,9 +11,9 @@ import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from ".
 import { renderHuntReportHtml } from "./opportunity-hunt";
 import type { HuntRequest } from "./opportunity-hunt";
 import { getAgentByName } from "agents";
-import { qaAgentStub, slackAgentStub } from "./agent-stubs";
+import { qaAgentStub, slackAgentStub, identityStub } from "./agent-stubs";
 import { timingSafeStringEqual } from "./mcp-auth";
-import { getOAuthUserFromRequest } from "./auth";
+import { decideAuth } from "./require-auth";
 import { registerA2ADispatch } from "./a2a-dispatch";
 // WS1 aspects (issue #252): API middleware + callable seam. Response bodies
 // and auth behavior are unchanged; the aspect adds events only.
@@ -83,7 +83,13 @@ function isStripeCheckoutRateLimited(ip: string): boolean {
 }
 
 export function createApp() {
-  const app = new Hono<{ Bindings: Env }>();
+  // Identity context (issue #252 P2): requireAuth records who authenticated
+  // so routes can scope to the caller's tenant. Declared here so c.get/c.set
+  // are typed for every route below.
+  const app = new Hono<{
+    Bindings: Env;
+    Variables: { identityKind: string; identityUserId: string; identityTenantId: string };
+  }>();
   // Global failure funnel (issue #209): any unhandled exception in a
   // route becomes the INTERNAL catalog error. The original is logged
   // server-side; raw exception text never reaches a client.
@@ -132,19 +138,27 @@ export function createApp() {
   ].join("\n");
 
   async function requireAuth(c: any, next: any) {
-    // Dual auth: existing API-key sign-on OR GitHub OAuth session.
-    // API-key path is unchanged; OAuth is purely additive.
-    const presented = c.req.header("X-API-Key") ?? "";
-    if (c.env.DASHBOARD_API_KEY && timingSafeStringEqual(presented, c.env.DASHBOARD_API_KEY)) {
-      return next();
+    // Triple auth (issue #252 P2) — the branch logic lives in the
+    // Vitest-safe src/require-auth.ts; this wrapper only maps the decision
+    // onto Hono. API-key path is unchanged; session branches are additive.
+    const testBackend = (c.env as Record<string, unknown>).__testSessionBackend as
+      | import("./auth").IdentityBackend
+      | undefined;
+    const d = await decideAuth(
+      c.req.raw,
+      c.env,
+      testBackend ? { sessionBackend: testBackend } : undefined,
+    );
+    if (d.kind === "none") {
+      return c.json(errorBody("UNAUTHORIZED"), 401);
     }
-    // Fall back to OAuth session cookie.
-    const oauthUser = await getOAuthUserFromRequest(c.req.raw);
-    if (oauthUser) {
-      return next();
+    if (d.csrfFailed) {
+      return c.json(errorBodyAs("INSUFFICIENT_SCOPE", "CSRF check failed"), 403);
     }
-    // Fail closed: neither valid API key nor valid OAuth session.
-    return c.json(errorBody("UNAUTHORIZED"), 401);
+    c.set("identityKind", d.kind);
+    c.set("identityUserId", d.userId);
+    c.set("identityTenantId", d.tenantId);
+    return next();
   }
 
   // ---------------------------------------------------------------------------
@@ -1900,14 +1914,111 @@ export function createApp() {
     if (scopes.length === 0) return c.json(errorBody("VALIDATION_FAILED"), 400);
     const expiresInSec = Math.min(Math.max(Math.floor(body.expiresInSec ?? 3600), 60), 30 * 24 * 3600);
     const origin = new URL(c.req.url).origin;
+    // Issue #252 P2: the token is issued for the caller's tenant — a
+    // session-signed user mints tenant-scoped tokens; the operator API key
+    // (and legacy sessions) mint operator-scoped ones.
+    const callerUserId = c.get("identityUserId");
+    const identityKind = c.get("identityKind");
+    const sub = identityKind === "session" ? String(callerUserId ?? "operator") : "operator";
+    const tenantId = identityKind === "session" ? String(c.get("identityTenantId") ?? "operator") : "operator";
+    // Session users mint tokens as themselves; operator/legacy callers may
+    // name a subject or default to "operator".
+    const subject = identityKind === "session" ? sub : ((body.subject || "").trim() || sub);
     const issued = await issueToken(secret, {
-      subject: (body.subject || "dashboard").trim() || "dashboard",
+      subject,
       scopes,
       issuer: (c.env.MCP_JWT_ISSUER ?? "").trim() || origin,
       audience: (c.env.MCP_JWT_AUDIENCE ?? "").trim() || "mcp://cfpay",
       expiresInSec,
+      tenantId,
     });
+    // Record the issuance as an authorization tuple (token → actor_for →
+    // tenant) so authz can reason about which tenant a token may act for.
+    // Wrapped: the tuple is an annotation, the signed JWT is the authority —
+    // a tuple write must never fail issuance.
+    try {
+      const stub = await identityStub(c.env);
+      await stub.addTuple("token", issued.claims.jti, "actor_for", "tenant", tenantId);
+    } catch (err) {
+      console.error("identity addTuple for token issuance failed:", err);
+    }
     return c.json({ token: issued.token, expiresAt: issued.expiresAt, scopes });
+  });
+
+  // Identity surfaces (issue #252 P2). Operator routes require the dashboard
+  // API key (identityKind "operator") — legacy and session callers get 403.
+  // The activity route is the mirror: session callers only, and only their
+  // own records.
+  function requireOperator(c: any) {
+    if (c.get("identityKind") !== "operator") {
+      return c.json(errorBodyAs("INSUFFICIENT_SCOPE", "Operator access required"), 403);
+    }
+    return null;
+  }
+
+  app.get("/api/dashboard/identity/accounting", requireAuth, async (c) => {
+    const denied = requireOperator(c);
+    if (denied) return denied;
+    try {
+      const q = c.req.query();
+      const filters: Record<string, unknown> = {};
+      for (const key of ["tenantId", "userId", "eventClass", "from", "to", "limit"]) {
+        if (q[key] !== undefined && q[key] !== "") filters[key] = q[key];
+      }
+      const stub = await identityStub(c.env);
+      const events = await stub.queryAccounting(filters);
+      return c.json({ events });
+    } catch (err) {
+      console.error("identity/accounting failed:", err);
+      return c.json(errorBodyAs("INTERNAL", "Accounting query failed"), 500);
+    }
+  });
+
+  app.get("/api/dashboard/identity/activity", requireAuth, async (c) => {
+    if (c.get("identityKind") !== "session") {
+      return c.json(errorBodyAs("INSUFFICIENT_SCOPE", "Session sign-in required"), 403);
+    }
+    try {
+      const q = c.req.query();
+      const stub = await identityStub(c.env);
+      const events = await stub.myActivity(String(c.get("identityUserId")), {
+        limit: q.limit && q.limit !== "" ? q.limit : undefined,
+        eventClass: q.eventClass && q.eventClass !== "" ? q.eventClass : undefined,
+      });
+      return c.json({ events });
+    } catch (err) {
+      console.error("identity/activity failed:", err);
+      return c.json(errorBodyAs("INTERNAL", "Activity query failed"), 500);
+    }
+  });
+
+  app.post("/api/dashboard/identity/retention", requireAuth, async (c) => {
+    const denied = requireOperator(c);
+    if (denied) return denied;
+    try {
+      const stub = await identityStub(c.env);
+      const report = await stub.runRetentionPurge();
+      return c.json(report);
+    } catch (err) {
+      console.error("identity/retention failed:", err);
+      return c.json(errorBodyAs("INTERNAL", "Retention purge failed"), 500);
+    }
+  });
+
+  app.post("/api/dashboard/identity/seed-operator", requireAuth, async (c) => {
+    const denied = requireOperator(c);
+    if (denied) return denied;
+    const body = await c.req.json().catch(() => ({})) as { userId?: string };
+    const userId = (body.userId ?? "").trim();
+    if (!userId) return c.json(errorBodyAs("VALIDATION_FAILED", "userId is required"), 400);
+    try {
+      const stub = await identityStub(c.env);
+      await stub.seedOperator(userId);
+      return c.json({ ok: true });
+    } catch (err) {
+      console.error("identity/seed-operator failed:", err);
+      return c.json(errorBodyAs("INTERNAL", "Seed operator failed"), 500);
+    }
   });
 
   // Knowledge search (issue #170): the dashboard face of SearchAgent.

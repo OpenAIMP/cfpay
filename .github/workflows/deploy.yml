@@ -75,6 +75,7 @@ jobs:
           SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
           SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
           GH_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
           GH_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
@@ -83,6 +84,7 @@ jobs:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           MCP_AUTH_TOKEN: ${{ secrets.MCP_AUTH_TOKEN }}
           MCP_GITHUB_ORG: ${{ secrets.MCP_GITHUB_ORG }}
+          MCP_GOOGLE_HOSTED_DOMAIN: ${{ secrets.MCP_GOOGLE_HOSTED_DOMAIN }}
           MCP_AUTH_MODE: ${{ secrets.MCP_AUTH_MODE }}
           MCP_ANON_INITIALIZE: ${{ secrets.MCP_ANON_INITIALIZE }}
           MCP_OAUTH_DISCOVERY: ${{ secrets.MCP_OAUTH_DISCOVERY }}
@@ -101,7 +103,9 @@ jobs:
           printf '%s' "$SLACK_APP_TOKEN" | npx wrangler@4 secret put SLACK_APP_TOKEN
           printf '%s' "$SLACK_CLIENT_ID" | npx wrangler@4 secret put SLACK_CLIENT_ID
           printf '%s' "$GH_CLIENT_ID" | npx wrangler@4 secret put GH_CLIENT_ID
+          printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler@4 secret put GOOGLE_CLIENT_ID
           printf '%s' "$GH_CLIENT_SECRET" | npx wrangler@4 secret put GH_CLIENT_SECRET
+          printf '%s' "$GOOGLE_CLIENT_SECRET" | npx wrangler@4 secret put GOOGLE_CLIENT_SECRET
           printf '%s' "$GH_WEBHOOK_SECRET" | npx wrangler@4 secret put GITHUB_WEBHOOK_SECRET
           printf '%s' "$STRIPE_WEBHOOK_SECRET" | npx wrangler@4 secret put STRIPE_WEBHOOK_SECRET
           printf '%s' "$SLACK_WEBHOOK_SECRET" | npx wrangler@4 secret put SLACK_WEBHOOK_SECRET
@@ -137,6 +141,7 @@ jobs:
           # when it is absent, so this must be set before the guard is deployed.
           push_optional MCP_AUTH_TOKEN             "$MCP_AUTH_TOKEN"
           push_optional MCP_GITHUB_ORG             "$MCP_GITHUB_ORG"
+          push_optional MCP_GOOGLE_HOSTED_DOMAIN  "$MCP_GOOGLE_HOSTED_DOMAIN"
           # Not secret, but keep all /mcp configuration in one place.
           push_optional MCP_AUTH_MODE              "$MCP_AUTH_MODE"
           push_optional MCP_ANON_INITIALIZE        "$MCP_ANON_INITIALIZE"

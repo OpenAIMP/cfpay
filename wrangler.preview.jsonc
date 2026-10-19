@@ -59,6 +59,10 @@
       {
         "name": "AUTOPILOT_AGENT",
         "class_name": "AutopilotAgent"
+      },
+      {
+        "name": "IDENTITY_AGENT",
+        "class_name": "IdentityAgent"
       }
     ]
   },
@@ -92,7 +96,8 @@
         "SearchAgent",
         "OrchestratorAgent",
         "ScheduledAgent",
-        "AutopilotAgent"
+        "AutopilotAgent",
+        "IdentityAgent"
       ]
     }
   ],

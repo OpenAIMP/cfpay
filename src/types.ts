@@ -94,6 +94,11 @@ export interface Env {
   // GitHub OAuth for dashboard sign-on (additive; API-key auth untouched)
   GH_CLIENT_ID?: string;
   GH_CLIENT_SECRET?: string;
+  // Google OAuth for dashboard sign-on (issue #252 P2; additive)
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  // IdentityAgent Durable Object (issue #252 P2 identity core)
+  IDENTITY_AGENT: DurableObjectNamespace;
   // Webhook secrets (incoming verification)
   GITHUB_WEBHOOK_SECRET?: string;
   STRIPE_WEBHOOK_SECRET?: string;
@@ -109,6 +114,9 @@ export interface Env {
   MCP_AUTH_TOKEN?: string;
   // When set, a GitHub token must belong to this organisation to be accepted.
   MCP_GITHUB_ORG?: string;
+  // When set, a Google credential's hosted domain (hd claim from tokeninfo)
+  // must equal this value to be accepted on /mcp. Unset accepts any domain.
+  MCP_GOOGLE_HOSTED_DOMAIN?: string;
   // Which credentials /mcp accepts: "either" (default), "static", "github" or
   // "none". "none" serves without authentication and must be set explicitly; an
   // unset or unrecognised value is not treated as "none".

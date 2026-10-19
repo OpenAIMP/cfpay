@@ -59,6 +59,10 @@
       {
         "name": "AUTOPILOT_AGENT",
         "class_name": "AutopilotAgent"
+      },
+      {
+        "name": "IDENTITY_AGENT",
+        "class_name": "IdentityAgent"
       }
     ]
   },
@@ -82,7 +86,8 @@
     { "tag": "v10", "new_sqlite_classes": ["SearchAgent"] },
     { "tag": "v11", "new_sqlite_classes": ["OrchestratorAgent"] },
     { "tag": "v12", "new_sqlite_classes": ["ScheduledAgent"] },
-    { "tag": "v13", "new_sqlite_classes": ["AutopilotAgent"] }
+    { "tag": "v13", "new_sqlite_classes": ["AutopilotAgent"] },
+    { "tag": "v14", "new_sqlite_classes": ["IdentityAgent"] }
   ],
   "workflows": [
     {

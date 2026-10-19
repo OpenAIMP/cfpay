@@ -26,6 +26,9 @@ This project uses **GitHub Environments** to manage secrets for CI/CD deployment
 | `SLACK_CLIENT_ID` | OAuth client ID used by the `/slack/install` redirect | Slack App → Basic Information → App Credentials → Client ID |
 | `SLACK_QA_CHANNEL_ID` | Channel that receives QA file posts (report/desk screenshots, hunt report PDF) via the bot's file-upload API | Slack: open the channel → About → **Channel ID** (bottom); the bot must be a member of the channel |
 | `MCP_JWT_SECRET` | HMAC secret that signs and verifies scoped MCP JWTs (issue #214). Optional: without it, the `jwt` MCP auth path and `POST /api/dashboard/mcp/tokens` stay off; other MCP auth modes are unaffected. Needs a matching `printf ... secret put MCP_JWT_SECRET` line in deploy.yml's secret step (repo-owner edit) | Generate any long random string (e.g. `openssl rand -hex 32`) and store it as the GitHub `PROD` environment secret |
+| `GOOGLE_CLIENT_ID` | Google Cloud OAuth client ID for dashboard sign-in (issue #252 P2). Optional: without it, `/auth/google/*` honestly reports "not configured"; GitHub OAuth and API-key sign-on are unaffected | Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application); authorized redirect URI `https://pay.openaimp.com/auth/google/callback` |
+| `GOOGLE_CLIENT_SECRET` | Google Cloud OAuth client secret (issue #252 P2). Same optionality as above; deployed via deploy.yml's secret step | Same Google Cloud OAuth client as above |
+| `MCP_GOOGLE_HOSTED_DOMAIN` | Optional: restrict the `google` MCP auth mode to one Google Workspace domain (mirrors `MCP_GITHUB_ORG`) | Your Workspace domain, e.g. `example.com` |
 
 ### Cloudflare API Token Permissions
 

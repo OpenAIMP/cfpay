@@ -10,10 +10,18 @@ import { timingSafeEqual } from "./crypto-hmac";
  *
  * Which credential types are accepted is chosen by MCP_AUTH_MODE:
  *
- *   "either" (default) — a static bearer token, a valid GitHub token, or an
- *     OAuth access token issued by this server's own authorization server
+ *   "either" (default) — a static bearer token, a valid GitHub token, a
+ *     valid Google token, or an OAuth access token issued by this server's
+ *     own authorization server
  *   "static"           — only the static bearer token
  *   "github"           — only a valid GitHub token
+ *   "google"           — only a valid Google token (verified against Google's
+ *                        tokeninfo endpoint; no shape pre-check — Google
+ *                        access tokens are opaque, so the GitHub regex
+ *                        cannot apply). Requires GOOGLE_CLIENT_ID to be set:
+ *                        tokens must be issued to our client (aud match),
+ *                        and without it the mode fails closed like the
+ *                        other credential paths.
  *   "jwt"              — only a scoped JWT (issue #214), signed with
  *                        MCP_JWT_SECRET and enforced per method
  *   "none"             — no authorisation; the endpoint is public
@@ -35,7 +43,7 @@ import { timingSafeEqual } from "./crypto-hmac";
  * purpose, because the Worker has observability enabled and would log them.
  */
 
-export type McpAuthMode = "either" | "static" | "github" | "jwt" | "none";
+export type McpAuthMode = "either" | "static" | "github" | "google" | "jwt" | "none";
 
 /** How long a validated GitHub token is trusted before re-checking. */
 const GITHUB_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -44,6 +52,14 @@ const GITHUB_CACHE_MAX = 200;
 
 /** Hash of a validated credential -> expiry timestamp (ms). Per isolate. */
 const githubTokenCache = new Map<string, number>();
+
+/** How long a validated Google token is trusted before re-checking. */
+const GOOGLE_CACHE_TTL_MS = 5 * 60 * 1000;
+/** Bound the cache so a flood of bogus tokens cannot grow it without limit. */
+const GOOGLE_CACHE_MAX = 200;
+
+/** Same cache shape as the GitHub one, keyed by the Google token's hash. */
+const googleTokenCache = new Map<string, number>();
 
 /**
  * Constant-time comparison, so a wrong secret cannot be recovered by measuring
@@ -63,7 +79,7 @@ export function timingSafeStringEqual(a: string, b: string): boolean {
 export function resolveMcpAuthMode(raw: string | undefined): McpAuthMode | null {
   const value = (raw ?? "").trim().toLowerCase();
   if (value === "") return "either";
-  if (value === "either" || value === "static" || value === "github" || value === "jwt" || value === "none") {
+  if (value === "either" || value === "static" || value === "github" || value === "google" || value === "jwt" || value === "none") {
     return value;
   }
   return null;
@@ -95,6 +111,24 @@ function cacheSet(key: string): void {
     if (!oldest.done) githubTokenCache.delete(oldest.value);
   }
   githubTokenCache.set(key, Date.now() + GITHUB_CACHE_TTL_MS);
+}
+
+function googleCacheGet(key: string): boolean {
+  const expiry = googleTokenCache.get(key);
+  if (expiry === undefined) return false;
+  if (Date.now() > expiry) {
+    googleTokenCache.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function googleCacheSet(key: string): void {
+  if (googleTokenCache.size >= GOOGLE_CACHE_MAX) {
+    const oldest = googleTokenCache.keys().next();
+    if (!oldest.done) googleTokenCache.delete(oldest.value);
+  }
+  googleTokenCache.set(key, Date.now() + GOOGLE_CACHE_TTL_MS);
 }
 
 /** Build the outbound request headers for a GitHub API call. */
@@ -141,6 +175,51 @@ async function verifyGitHubToken(credential: string, requiredOrg?: string): Prom
   return true;
 }
 
+/**
+ * Validate a Google access token against Google's tokeninfo endpoint.
+ *
+ * There is no shape pre-check: Google access tokens are opaque (no
+ * "ya29."-style prefix can be relied on for all Google-issued tokens), so
+ * the GitHub regex approach cannot apply. The only authority on whether a
+ * presented credential is a live Google token is Google itself.
+ *
+ * Returns false on any failure, including Google being unreachable — an
+ * authorisation check must not fail open because a dependency is down.
+ * When MCP_GOOGLE_HOSTED_DOMAIN is set, the token's hd claim must equal it
+ * (Workspace tenancy); consumer tokens carry no hd claim, so they fail
+ * closed under that restriction.
+ */
+async function verifyGoogleToken(credential: string, env: Env): Promise<boolean> {
+  const hostedDomain = (
+    (env as unknown as Record<string, string | undefined>).MCP_GOOGLE_HOSTED_DOMAIN ?? ""
+  ).trim();
+  const cacheKey = await sha256Hex("google|" + credential + "|" + hostedDomain);
+  if (googleCacheGet(cacheKey)) return true;
+
+  try {
+    const res = await fetch(
+      "https://oauth2.googleapis.com/tokeninfo?access_token=" + encodeURIComponent(credential),
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    if (!res.ok) return false;
+    const info = (await res.json()) as { aud?: unknown; hd?: unknown; expires_in?: unknown };
+    // An aud claim identifies which client the token was issued to; a
+    // tokeninfo response without one is not a usable identity. When
+    // GOOGLE_CLIENT_ID is configured, the token must have been issued to
+    // OUR client — a token minted for someone else's app is not our user.
+    if (typeof info.aud !== "string" || info.aud === "") return false;
+    const expectedClientId = (env.GOOGLE_CLIENT_ID ?? "").trim();
+    if (expectedClientId && info.aud !== expectedClientId) return false;
+    if (hostedDomain && info.hd !== hostedDomain) return false;
+  } catch (error) {
+    console.error("Google credential verification failed:", error);
+    return false;
+  }
+
+  googleCacheSet(cacheKey);
+  return true;
+}
+
 function jsonResponse(
   body: unknown,
   status: number,
@@ -184,18 +263,20 @@ function allowsAnonymousHandshake(env: Env): boolean {
 }
 
 /** Which credential paths the resolved mode permits. */
-function permittedPaths(mode: McpAuthMode): { static: boolean; github: boolean; jwt: boolean } {
+function permittedPaths(mode: McpAuthMode): { static: boolean; github: boolean; jwt: boolean; google: boolean } {
   switch (mode) {
     case "static":
-      return { static: true, github: false, jwt: false };
+      return { static: true, github: false, jwt: false, google: false };
     case "github":
-      return { static: false, github: true, jwt: false };
+      return { static: false, github: true, jwt: false, google: false };
+    case "google":
+      return { static: false, github: false, jwt: false, google: true };
     case "jwt":
-      return { static: false, github: false, jwt: true };
+      return { static: false, github: false, jwt: true, google: false };
     case "either":
-      return { static: true, github: true, jwt: true };
+      return { static: true, github: true, jwt: true, google: true };
     default:
-      return { static: false, github: false, jwt: false };
+      return { static: false, github: false, jwt: false, google: false };
   }
 }
 
@@ -226,7 +307,7 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
   // A typo must not silently downgrade to a weaker mode.
   if (mode === null) {
     console.error(
-      'MCP_AUTH_MODE is not one of "either", "static", "github", "jwt" or "none"; refusing /mcp.',
+      'MCP_AUTH_MODE is not one of "either", "static", "github", "google", "jwt" or "none"; refusing /mcp.',
     );
     return jsonResponse(errorBodyAs("FEATURE_NOT_CONFIGURED", "MCP authorisation is misconfigured."), 503);
   }
@@ -255,14 +336,21 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
   const staticSecret = (env.MCP_AUTH_TOKEN ?? "").trim();
   const requiredOrg = (env.MCP_GITHUB_ORG ?? "").trim();
   const jwtSecret = (env.MCP_JWT_SECRET ?? "").trim();
+  // The google path is gated on GOOGLE_CLIENT_ID, mirroring the GitHub
+  // path's MCP_GITHUB_ORG gate: with no client id configured there is
+  // nothing to bind tokens against, so the mode must fail closed (503),
+  // not silently accept any live Google token. Unreachable Google fails
+  // closed in verifyGoogleToken instead.
+  const googleClientId = (env.GOOGLE_CLIENT_ID ?? "").trim();
   const paths = permittedPaths(mode);
 
   // Fail closed when the selected mode has nothing to authenticate against.
   const staticReady = paths.static && Boolean(staticSecret);
   const githubReady = paths.github && Boolean(requiredOrg);
   const jwtReady = paths.jwt && Boolean(jwtSecret);
+  const googleReady = paths.google && Boolean(googleClientId);
 
-  if (!staticReady && !githubReady && !jwtReady) {
+  if (!staticReady && !githubReady && !jwtReady && !googleReady) {
     console.error(
       `MCP authorisation is enabled (mode=${mode}) but no usable credential is configured; refusing /mcp.`,
     );
@@ -316,6 +404,13 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
       } catch {
         // Not a valid JWT - fall through to the refusal below.
       }
+    }
+
+    // 5) Google credential, when permitted. Verified live against Google's
+    //    tokeninfo endpoint; optionally restricted to a hosted domain via
+    //    MCP_GOOGLE_HOSTED_DOMAIN.
+    if (paths.google && presented) {
+      if (await verifyGoogleToken(presented, env)) return null;
     }
   }
 
