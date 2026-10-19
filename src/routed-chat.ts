@@ -37,12 +37,16 @@ export interface AiRunner {
 
 export interface RoutedToolTurn {
   completion: NormalisedCompletion;
+  /** The provider's raw response envelope, for callers that parse it. */
+  raw: unknown;
   modelUsed: string;
   /** True when the answer came from the no-tools degradation leg. */
   degraded: boolean;
   /** Attempts on the leg that produced the answer. */
   attempts: number;
 }
+
+
 
 export async function routedToolTurn(
   ai: AiRunner,
@@ -59,7 +63,7 @@ export async function routedToolTurn(
         tools,
         max_tokens: maxTokens,
       } as never);
-      return readCompletion(raw);
+      return { raw, completion: readCompletion(raw) };
     },
     options,
   ).catch((modelError: unknown) => {
@@ -73,7 +77,8 @@ export async function routedToolTurn(
   });
   if (primary) {
     return {
-      completion: primary.result,
+      completion: primary.result.completion,
+      raw: primary.result.raw,
       modelUsed: primary.modelUsed,
       degraded: false,
       attempts: primary.attempts,
@@ -84,12 +89,13 @@ export async function routedToolTurn(
     "chat",
     async (modelId) => {
       const raw = await ai.run(modelId as never, { messages } as never);
-      return readCompletion(raw);
+      return { raw, completion: readCompletion(raw) };
     },
     options,
   );
   return {
-    completion: degraded.result,
+    completion: degraded.result.completion,
+    raw: degraded.result.raw,
     modelUsed: degraded.modelUsed,
     degraded: true,
     attempts: degraded.attempts,

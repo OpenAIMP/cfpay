@@ -10,6 +10,7 @@
  */
 
 import { verifySlackSignature } from "./slack-verify";
+import { importHmacKey, signHmac, timingSafeEqual } from "./crypto-hmac";
 
 export type WebhookProvider = "github" | "stripe" | "slack";
 
@@ -34,31 +35,26 @@ function isConfiguredSecret(value: string | undefined | null): value is string {
 // HMAC helpers
 // ---------------------------------------------------------------------------
 
-async function hmacSha256(key: string, message: string): Promise<ArrayBuffer> {
-  const enc = new TextEncoder();
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(key),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
+async function hmacSha256(key: string, message: string): Promise<Uint8Array> {
+  // Single-owner HMAC (issue #269, remainder): key import + sign delegate
+  // to src/crypto-hmac.ts. The usages list widens ["sign"] -> ["sign",
+  // "verify"], which is unobservable (keys are non-extractable either
+  // way); the produced bytes are identical.
+  const cryptoKey = await importHmacKey(key);
+  return signHmac(cryptoKey, new TextEncoder().encode(message));
 }
 
-function toHex(buf: ArrayBuffer): string {
+function toHex(buf: ArrayBuffer | Uint8Array): string {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function verifyHexSignature(secret: string, message: string, signature: string): Promise<boolean> {
   const expected = toHex(await hmacSha256(secret, message));
-  // constant-time-ish comparison
-  if (expected.length !== signature.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) {
-    diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
-  }
-  return diff === 0;
+  // Constant-time byte comparison via the shared helper (issue #269,
+  // remainder): hex signatures are ASCII, so UTF-8 bytes carry the same
+  // content as the old charCodeAt loop; outcomes are identical.
+  const enc = new TextEncoder();
+  return timingSafeEqual(enc.encode(expected), enc.encode(signature));
 }
 
 // ---------------------------------------------------------------------------

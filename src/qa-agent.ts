@@ -1850,9 +1850,10 @@ export class QAAgent extends Think<Env> {
         }
 
         if (!answer) {
-          // NAMED EXCEPTION (issue #269, cluster C2): budgetSynthesis is
-          // the shared single-owner no-tools synthesis adapter; it honors
-          // the caller's chosen model and is left unrouted by design.
+          // Routed (issue #269, remainder): budgetSynthesis runs through
+          // the shared routing policy with the caller's chosen model as an
+          // explicit single-model chain — no substitution, no silent
+          // degradation of the model choice.
           const synth = await budgetSynthesis(env.AI, modelId, messages, contextWindow);
           if (synth) answer = synth.text;
         }
@@ -2663,7 +2664,7 @@ export class QAAgent extends Think<Env> {
     error?: string;
   }> {
     const env = this.env as Env;
-    const base = origin || env.SELF_ORIGIN || "https://pay.openaimp.com";
+    const base = origin || selfOrigin(env);
     const checks: { name: string; passed: boolean; detail: string }[] = [];
 
     try {
@@ -2770,7 +2771,7 @@ export class QAAgent extends Think<Env> {
     origin?: string,
   ): Promise<{ ok: boolean; detail: string; checks: { name: string; passed: boolean; detail: string }[] }> {
     const env = this.env as Env;
-    const base = origin || env.SELF_ORIGIN || "https://pay.openaimp.com";
+    const base = origin || selfOrigin(env);
     const checks: { name: string; passed: boolean; detail: string }[] = [];
 
     /** A JSON body, not an HTML error page. */

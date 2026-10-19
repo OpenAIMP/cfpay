@@ -119,6 +119,16 @@ export interface RoutingOptions {
   backoffBaseMs?: number;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Explicit chain (issue #269, remainder): overrides the task's
+   * catalogue chain when the CALLER owns the model choice (an
+   * operator-picked model, a pipeline's per-step model ids). Every id
+   * must be in the catalogue — an explicit chain is a selection, not a
+   * bypass, and naming anything outside the catalogue throws. A
+   * single-model chain is legitimate: it applies the retry/terminal
+   * policy to the caller's model without substituting a different one.
+   */
+  chain?: string[];
 }
 
 /**
@@ -131,7 +141,16 @@ export async function runRouted<T>(
   run: (modelId: string) => Promise<T>,
   options: RoutingOptions = {},
 ): Promise<RoutedResult<T>> {
-  const chain = chainForTask(task);
+  const chain = options.chain ?? chainForTask(task);
+  if (options.chain) {
+    const known = new Set(catalogueModelIds());
+    const unknown = chain.filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      throw new Error(
+        `runRouted: explicit chain names models outside the catalogue: ${unknown.join(", ")}`,
+      );
+    }
+  }
   const retries = options.retriesPerModel ?? 1;
   const backoffBase = options.backoffBaseMs ?? 250;
   const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -158,4 +177,40 @@ export async function runRouted<T>(
     }
   }
   throw new RoutingExhaustedError(task, attemptedModels, lastError);
+}
+
+export interface RoutedCompletion {
+  /** The provider's raw response envelope from the winning model. */
+  raw: unknown;
+  modelUsed: string;
+  attempts: number;
+}
+
+/**
+ * One no-tools model call through the shared routing policy (issue
+ * #269, remainder): for call sites that already own the model choice
+ * (the autopilot pipeline's per-step model ids, budgetSynthesis's
+ * caller-chosen model), supplied as an explicit `chain` in options.
+ * The raw envelope is returned so downstream parsing stays the
+ * caller's; what changes hands is only model selection and the
+ * retry/terminal policy.
+ */
+export async function routedCompletion(
+  ai: { run: (model: never, input: never) => Promise<unknown> },
+  messages: unknown[],
+  maxTokens: number,
+  options: RoutingOptions = {},
+): Promise<RoutedCompletion> {
+  const result = await runRouted(
+    "chat",
+    async (modelId) => {
+      const raw = await ai.run(modelId as never, {
+        messages,
+        max_tokens: maxTokens,
+      } as never);
+      return raw;
+    },
+    options,
+  );
+  return { raw: result.result, modelUsed: result.modelUsed, attempts: result.attempts };
 }

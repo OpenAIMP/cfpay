@@ -20,3 +20,13 @@ export async function slackAgentStub(env: any): Promise<any> {
   const { getAgentByName } = await import("agents");
   return (await getAgentByName(env.SLACK_AGENT as any, "slack")) as any;
 }
+
+/**
+ * The host (desk) agent's RPC-capable stub (issue #269, remainder).
+ * Single instance, same name ("agent") as every other host resolution.
+ * Used by the voice channel to reach the desk pipeline in-process.
+ */
+export async function hostStub(env: any): Promise<any> {
+  const { getAgentByName } = await import("agents");
+  return (await getAgentByName(env.CfmailAgent as any, "agent")) as any;
+}

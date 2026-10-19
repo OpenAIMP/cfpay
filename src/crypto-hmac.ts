@@ -9,12 +9,12 @@
  * (`src/mcp-jwt.ts`) and the MCP OAuth server state blobs
  * (`src/mcp-oauth-server.ts`) both delegate to it.
  *
- * Deliberately out of scope: the webhook signature verifiers
- * (`src/webhooks.ts` GitHub/Stripe HMAC, `src/slack-verify.ts` Slack v0)
- * and the bearer-token string comparison (`src/mcp-auth.ts`
- * `timingSafeStringEqual`). They are C1 territory / a different problem
- * (credential comparison, not HMAC); folding them in is a follow-up, not
- * this refactor.
+ * Fold-ins (issue #269, remainder): the webhook signature verifiers now
+ * delegate here too — `src/webhooks.ts` (GitHub/Stripe HMAC sign and the
+ * hex-signature comparison) and the bearer-token comparison
+ * (`src/mcp-auth.ts` `timingSafeStringEqual`, via UTF-8 bytes). Only
+ * `src/slack-verify.ts` keeps its own v0 verifier: it is C1 territory
+ * with a replay-window policy that belongs to the Slack path.
  *
  * Contract notes (byte-identical behavior vs the two copies this replaces):
  *  - `importHmacKey` imports key material verbatim (UTF-8 for strings) —

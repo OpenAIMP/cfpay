@@ -2011,6 +2011,47 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(a2aTest).toContain('rpc: "/a2a/voice"');
   });
 
+  it("the voice channel reaches the desk in-process (issue #269, remainder)", () => {
+    const voice = read("src/voice-agent.ts");
+    const host = read("src/agent.ts");
+    const stubs = read("src/agent-stubs.ts");
+    // The HTTP self-fetch of the Worker's own /api/public/chat is gone:
+    // it is a 522 from the fetch-handler context (issue #264).
+    expect(voice).not.toContain("/api/public/chat");
+    expect(voice).not.toContain("selfOrigin");
+    // The desk pipeline is one @callable on the host, invoked over the
+    // RPC-capable stub from the single-owner stub module.
+    expect(host).toContain("@callable()");
+    expect(host).toContain("async deskAsk(question: string)");
+    expect(stubs).toContain("export async function hostStub(env: any)");
+    expect(voice).toContain('host.deskAsk(question)');
+    // Failure mapping mirrors the route: 409 -> not-connected message,
+    // 502 -> generic desk message, transport throw -> unreachable.
+    expect(voice).toContain('"NOT_CONNECTED"');
+  });
+
+  it("the C2 exceptions are migrated onto the routed owner (issue #269, remainder)", () => {
+    const agent = read("src/agent.ts");
+    const models = read("src/models.ts");
+    // No named exceptions remain: the operator's model choice and the
+    // pipeline per-step model ids travel as explicit single-model chains.
+    expect(agent).not.toContain("NAMED EXCEPTION");
+    expect(read("src/qa-agent.ts")).not.toContain("NAMED EXCEPTION");
+    expect(agent).toContain("chain: [modelId]");
+    expect(agent).toContain("chain: [mid]");
+    expect(models).toContain('chain: [modelId]');
+    // The explicit-chain guard is enforced at the routing seam.
+    expect(read("src/model-routing.ts")).toContain("outside the catalogue");
+  });
+
+  it("every self-origin fallback goes through selfOrigin(env) (issue #269, remainder)", () => {
+    for (const f of ["src/agent.ts", "src/email-tool.ts", "src/qa-agent.ts", "src/voice-agent.ts"]) {
+      expect(read(f)).not.toContain('|| "https://pay.openaimp.com"');
+    }
+    // The parameter-precedence sites keep their explicit origin first.
+    expect(read("src/qa-agent.ts")).toContain("origin || selfOrigin(env)");
+  });
+
   it("the notification center is wired (issue #163)", () => {
     const pdata = read("public/public-data.js");
     expect(pdata).toContain("notifyInit");
