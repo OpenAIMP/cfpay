@@ -305,10 +305,21 @@ interface CdpLike {
 }
 
 /** Name a browser failure's likely cause (the raw refusal text misleads). */
-/** True for the "did not return a WebSocket" capacity refusal. */
+/**
+ * True for a browser-capacity refusal: the session could not be opened at
+ * all ("did not return a WebSocket"), OR the session's CDP socket was closed
+ * remotely mid-check (workerd's "Can't call WebSocket send() after close()"
+ * or the agents SDK's "CDP connection closed"). Both are Browser Rendering
+ * quota/concurrency weather, never evidence about the app; the smoke
+ * defers/skips them instead of failing the section (issue #319).
+ */
 function isCapacityRefusal(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /did not return a WebSocket/i.test(message);
+  return (
+    /did not return a WebSocket/i.test(message) ||
+    /can't call websocket send\(\) after close/i.test(message) ||
+    /cdp connection closed/i.test(message)
+  );
 }
 
 function describeBrowserFailure(err: unknown): string {
@@ -324,6 +335,19 @@ function describeBrowserFailure(err: unknown): string {
       "than a missing binding: sessions are short-lived, and one automatic " +
       "retry was already attempted. Waiting a few minutes before trying again " +
       "is the next thing to try."
+    );
+  }
+  if (/can't call websocket send\(\) after close|cdp connection closed/i.test(message)) {
+    // The session was opened, then Browser Rendering closed the CDP socket
+    // before the check finished. The "Could not open..." prefix is the
+    // contract the smoke's capacity matcher looks for (qa-smoke.mjs).
+    return (
+      "Could not open a browser session. The browser session died mid-check " +
+      "(the CDP socket was closed remotely) - treat this as a transient " +
+      "capacity refusal (concurrency or quota) rather than a missing binding " +
+      "or an app defect: the smoke defers capacity refusals to a retry pass " +
+      "before skipping. Waiting a few minutes before trying again is the " +
+      "next thing to try."
     );
   }
   return `Browser check failed: ${message}`;
@@ -1070,7 +1094,7 @@ export class QAAgent extends Think<Env> {
       return {
         ok: false,
         checks: [],
-        error: err instanceof Error ? err.message : String(err),
+        error: describeBrowserFailure(err),
       };
     } finally {
       stopFrames();
@@ -1622,7 +1646,7 @@ export class QAAgent extends Think<Env> {
         ok: false,
         checks: [],
         pagesAudited: [],
-        error: err instanceof Error ? err.message : String(err),
+        error: describeBrowserFailure(err),
       };
     } finally {
       closeConnectionQuietly(browser);
