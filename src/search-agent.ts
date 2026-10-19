@@ -3,6 +3,7 @@ import { Think } from "@cloudflare/think";
 import type { Env } from "./types";
 import { defaultModelId } from "./models";
 import { normalizeAnswer, normalizeSearch, type SearchOutcome } from "./search-results";
+import { selfProvisionOwnTenant } from "./tenant-provision";
 
 // SearchAgent (issue #170): Cloudflare AI Search as its own
 // capability agent, with the full surface set the other agents
@@ -33,6 +34,15 @@ export interface SearchSnapshot {
 }
 
 export class SearchAgent extends Think<Env> {
+  /**
+   * Issue #315: a tenant instance can wake without any in-process dispatch
+   * (the /agents/* WebSocket path), so it seeds its own FGA tuple here.
+   * Idempotent; operator no-op; failures never block startup (the dispatch
+   * seam retries and the FGA layer denies by default).
+   */
+  async onStart(): Promise<void> {
+    await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
   override getModel(): string {
     return defaultModelId();
   }

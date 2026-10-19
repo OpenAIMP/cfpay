@@ -21,6 +21,7 @@ import { Think } from "@cloudflare/think";
 import type { Env, EmailRecord } from "./types";
 import { generateId } from "./payments";
 import { defaultModelId } from "./models";
+import { selfProvisionOwnTenant } from "./tenant-provision";
 
 /**
  * An attachment, as a caller supplies it.
@@ -86,6 +87,15 @@ const EMPTY: EmailState = {
 };
 
 export class EmailAgent extends Think<Env, EmailState> {
+  /**
+   * Issue #315: a tenant instance can wake without any in-process dispatch
+   * (the /agents/* WebSocket path), so it seeds its own FGA tuple here.
+   * Idempotent; operator no-op; failures never block startup (the dispatch
+   * seam retries and the FGA layer denies by default).
+   */
+  async onStart(): Promise<void> {
+    await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
   initialState: EmailState = { ...EMPTY };
 
   /* ---------------------------- Think surface ---------------------------- */

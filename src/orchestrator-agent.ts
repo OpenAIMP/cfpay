@@ -24,6 +24,7 @@ import {
   type StepOutcome,
   type SupervisorVerdict,
 } from "./orchestrate";
+import { selfProvisionOwnTenant } from "./tenant-provision";
 
 // OrchestratorAgent (issue #180): multi-agent orchestration for
 // cfpay. Its single responsibility is coordinating the other
@@ -70,6 +71,15 @@ export interface OrchestratorJob {
 }
 
 export class OrchestratorAgent extends Think<Env> {
+  /**
+   * Issue #315: a tenant instance can wake without any in-process dispatch
+   * (the /agents/* WebSocket path), so it seeds its own FGA tuple here.
+   * Idempotent; operator no-op; failures never block startup (the dispatch
+   * seam retries and the FGA layer denies by default).
+   */
+  async onStart(): Promise<void> {
+    await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
   override getModel(): string {
     return defaultModelId();
   }

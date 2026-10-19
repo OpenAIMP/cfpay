@@ -30,6 +30,7 @@ import { defaultModelId } from "./models";
 import { runRouted } from "./model-routing";
 import type { Env, PaymentRecord, StripeCheckout, StripeCheckoutStatus } from "./types";
 import { ZERO_ADDRESS, generateId } from "./payments";
+import { selfProvisionOwnTenant } from "./tenant-provision";
 
 /** Bound on ledger size, matching the monolith's previous limit. */
 const MAX_STORED_PAYMENTS = 200;
@@ -76,6 +77,15 @@ function prune(registry: Record<string, string>): Record<string, string> {
 }
 
 export class PaymentsAgent extends Think<Env, PaymentsState> {
+  /**
+   * Issue #315: a tenant instance can wake without any in-process dispatch
+   * (the /agents/* WebSocket path), so it seeds its own FGA tuple here.
+   * Idempotent; operator no-op; failures never block startup (the dispatch
+   * seam retries and the FGA layer denies by default).
+   */
+  async onStart(): Promise<void> {
+    await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
   initialState: PaymentsState = { ...EMPTY };
 
   /* ---------------------------- Think surface ---------------------------- */
