@@ -86,6 +86,7 @@ import {
   resolveModelId,
 } from "./models";
 import { routedToolTurn } from "./routed-chat";
+import { selfOrigin } from "./self-origin";
 import { runRouted } from "./model-routing";
 import {
   formatAmount,
@@ -3262,7 +3263,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     checks?: { name: string; passed: boolean; detail?: string }[];
     error?: string;
   }> {
-    const origin = (this.env as any).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(this.env);
     return this.qaCheck(origin, {
       textContains: ["PaymentAgent"],
     });

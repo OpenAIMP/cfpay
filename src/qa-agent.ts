@@ -26,6 +26,7 @@ import {
   pageStateExpression,
 } from "./investigate";
 import type { Env } from "./types";
+import { selfOrigin } from "./self-origin";
 
 export interface QACheckResult {
   ok: boolean;
@@ -643,7 +644,7 @@ export class QAAgent extends Think<Env> {
   /** RPC: check the dashboard itself. */
   @callable()
   async qaDashboard(apiKey?: string, runId?: string): Promise<QACheckResult> {
-    const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(this.env);
     this.emitLive(runId, { kind: "step", label: "Checking this dashboard" });
     // Check for authenticated dashboard content (not just login page)
     const result = await this.runBrowserCheck(
@@ -680,7 +681,7 @@ export class QAAgent extends Think<Env> {
       return { ok: false, tabs: [], error: "API key required for tab testing" };
     }
 
-    const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(env);
 
     let tabsToTest = knownTabExpectations();
 
@@ -910,7 +911,7 @@ export class QAAgent extends Think<Env> {
     if (!apiKey) {
       return { ok: false, checks: [], error: "API key required for UX audit" };
     }
-    const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(env);
     this.emitLive(runId, { kind: "step", label: "Running UX audit" });
 
     const views: { name: string; tab: string | null; containerId: string; emptyText: string }[] = [
@@ -1246,7 +1247,7 @@ export class QAAgent extends Think<Env> {
       const { targetId } = (await conn.send("Target.createTarget", { url: "about:blank" })) as { targetId: string };
       try {
         const sessionId = await conn.attachToTarget(targetId);
-        const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+        const origin = selfOrigin(env);
         await conn.send("Page.navigate", { url: origin }, { sessionId });
         await new Promise((r) => setTimeout(r, 3000));
         if (key) {
@@ -1277,7 +1278,7 @@ export class QAAgent extends Think<Env> {
     toEmail: string,
     runId?: string,
   ): Promise<{ ok: boolean; emailed: boolean; results: A2ARow[]; error?: string }> {
-    const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(this.env);
     const rows = await runA2AEndpointTests(origin, apiKey);
     const { subject, body, allOk } = composeA2AEmail(rows);
     this.emitLive(runId, {
@@ -1301,7 +1302,7 @@ export class QAAgent extends Think<Env> {
   /** The A2A probes without the email (issue #152): all surfaces, or one by rpc path. */
   @callable()
   async qaA2AProbe(apiKey: string, rpc?: string): Promise<{ ok: boolean; results: A2ARow[] }> {
-    const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(this.env);
     if (rpc) {
       const ep = A2A_ENDPOINTS.find((e) => e.rpc === rpc);
       if (!ep) return { ok: false, results: [] };
@@ -1319,7 +1320,7 @@ export class QAAgent extends Think<Env> {
     toEmail: string,
     runId?: string,
   ): Promise<{ ok: boolean; emailed: boolean; skipped?: string; huntId?: string; trades?: number; slackPosted?: number; slackConfigured?: boolean; error?: string }> {
-    const origin = (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(this.env);
     const headers = { "Content-Type": "application/json", "X-API-Key": apiKey };
     const post = async (path: string, body: unknown) => {
       const res = await fetch(origin + path, { method: "POST", headers, body: JSON.stringify(body) });
@@ -1930,7 +1931,7 @@ export class QAAgent extends Think<Env> {
       investigation = await this.investigateFailure(
         "The dashboard tab checks in the QA report failed.",
         tabResult.tabs.filter((t: any) => !t.passed).map((t: any) => `${t.name} - ${t.detail}`),
-        env.SELF_ORIGIN ?? "https://pay.openaimp.com",
+        selfOrigin(env),
         runId,
       );
     }
@@ -1969,7 +1970,7 @@ export class QAAgent extends Think<Env> {
       }
       // Dashboard screenshot for the attachment, on the SAME session.
       const dashResult = await this.runBrowserCheck(
-        env.SELF_ORIGIN ?? "https://pay.openaimp.com",
+        selfOrigin(env),
         ["PaymentAgent", "Dashboard", "Payments", "Emails"],
         apiKey,
         connection ?? undefined,
@@ -2070,7 +2071,7 @@ export class QAAgent extends Think<Env> {
     if (!toEmail || !/^[^@]+@[^@]+$/.test(toEmail)) {
       return { ok: false, emailed: false, shots: [], error: "Valid toEmail required" };
     }
-    const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(env);
     this.emitLive(runId, { kind: "step", label: "Capturing Autopilot Trading Desk snapshots" });
 
     const shotSpecs: { name: string; anchor: string; fallbackAnchor?: string; label: string }[] = [
@@ -2419,7 +2420,7 @@ export class QAAgent extends Think<Env> {
         investigation = await this.investigateFailure(
           "The post-deploy QA full suite failed on the production dashboard.",
           checks.filter((c) => !c.skipped && !c.passed).map((c) => `${c.name} - ${c.detail}`),
-          (this.env as Env).SELF_ORIGIN ?? "https://pay.openaimp.com",
+          selfOrigin(this.env),
           runId,
         );
       }
@@ -2458,7 +2459,7 @@ export class QAAgent extends Think<Env> {
       return { ok: false, detail: "A valid recipient address is required" };
     }
 
-    const origin = env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(env);
     this.emitLive(runId, { kind: "step", label: "Driving the Send Email form", detail: toEmail });
     // Standalone check, so it owns its session - but the session is opened
     // through the helper so a limit refusal is explained instead of surfacing as

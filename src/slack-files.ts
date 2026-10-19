@@ -9,6 +9,8 @@
  * the email or check that produced the files.
  */
 
+import { slackBotHeaders } from "./slack";
+
 export interface SlackFile {
   filename: string;
   /** base64 content, matching the email-attachment shape used across the app. */
@@ -56,7 +58,7 @@ export async function postFilesToSlack(
   try {
     await doFetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
+      headers: slackBotHeaders(token),
       body: JSON.stringify({ channel, text: headerText }),
     });
   } catch {
@@ -82,7 +84,7 @@ export async function postFilesToSlack(
       if (!put.ok) throw new Error(`file upload POST returned ${put.status}`);
       const doneRes = await doFetch("https://slack.com/api/files.completeUploadExternal", {
         method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
+        headers: slackBotHeaders(token),
         body: JSON.stringify({
           files: [{ id: up.file_id, title: file.title || file.filename }],
           channel_id: channel,

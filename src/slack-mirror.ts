@@ -8,8 +8,8 @@
  * Mirrored records share the host record's id, so the dashboard feed (which
  * merges both stores) dedups them instead of showing every inbound event twice.
  */
-import { getAgentByName } from "agents";
 import { buildSlackRecord } from "./slack-record";
+import { slackAgentStub } from "./agent-stubs";
 import type { SlackEvent } from "./slack";
 import type { EmailRecord, Env, SlackVia } from "./types";
 
@@ -32,7 +32,7 @@ export function buildInboundSlackRecord(
 /** Mirror one record into SlackAgent's history (slack.list reads that store). */
 export async function mirrorToSlackAgent(env: Env, record: EmailRecord): Promise<void> {
   try {
-    const stub = (await getAgentByName((env as any).SLACK_AGENT as any, "slack")) as any;
+    const stub = await slackAgentStub(env);
     await stub.recordMessage(
       record.from.replace(/^slack:/, ""),
       record.to.replace(/^slack:/, ""),
@@ -53,7 +53,7 @@ export async function mirrorToSlackAgent(env: Env, record: EmailRecord): Promise
 /** Record a dashboard notifySlack send in SlackAgent's history. Best-effort. */
 export async function recordNotifySlackToAgent(env: Env, message: string): Promise<void> {
   try {
-    const stub = (await getAgentByName((env as any).SLACK_AGENT as any, "slack")) as any;
+    const stub = await slackAgentStub(env);
     await stub.recordMessage("webhook", "webhook", message, undefined, {
       direction: "outbound",
       via: "dashboard",

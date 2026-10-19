@@ -1209,8 +1209,10 @@ describe("a QA report uses one browser session, not two", () => {
   it("hands the report's session to both checks instead of opening its own", () => {
     // The two calls that used to each open a session must now receive one.
     expect(qa).toContain("this.qaDashboardTabs(apiKey, connection ?? undefined, true, runId)");
+    // Self-origin goes through the shared single-owner helper (issue #269,
+    // cluster C4): same URLs, one expression.
     expect(qa).toMatch(
-      /runBrowserCheck\(\s*env\.SELF_ORIGIN[\s\S]{0,200}?connection \?\? undefined,\s*runId,?\s*\)/,
+      /runBrowserCheck\(\s*selfOrigin\(env\)[\s\S]{0,200}?connection \?\? undefined,\s*runId,?\s*\)/,
     );
   });
 
