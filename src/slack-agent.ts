@@ -32,11 +32,13 @@
  */
 
 import { Agent, callable } from "agents";
+import type { Connection } from "agents";
 import { Think } from "@cloudflare/think";
 import { defaultModelId } from "./models";
 import type { Env, EmailRecord, SlackMechanism, SlackVia } from "./types";
 import { buildSlackRecord, type SlackRecordInput } from "./slack-record";
 import { selfProvisionOwnTenant } from "./tenant-provision";
+import { stampTenantOnConnection } from "./tenant-connection";
 
 /** Bound on stored Slack messages, matching the monolith's shared limit. */
 const MAX_STORED_SLACK_MESSAGES = 500;
@@ -67,6 +69,23 @@ export class SlackAgent extends Think<Env, SlackState> {
    */
   async onStart(): Promise<void> {
     await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
+
+  /**
+   * Issue #316: bind the resolved tenant/user to this socket's connection
+   * state (SDK connection.setState, functional updater — existing
+   * connection state is preserved, never clobbered). Defense-in-depth
+   * BEHIND the /agents/* edge 401/403: the edge still guards the door;
+   * this stamps identity on the connection itself so WS-path handling can
+   * attribute per message. First stamp wins; operator singletons stay
+   * unstamped; stamping never throws and never blocks connect.
+   */
+  async onConnect(
+    connection: Connection,
+    context: { request: Request },
+  ): Promise<void> {
+    await stampTenantOnConnection({ env: this.env, ctx: this.ctx }, connection);
+    await super.onConnect?.(connection, context);
   }
   initialState: SlackState = { ...EMPTY };
 
