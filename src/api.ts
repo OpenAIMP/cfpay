@@ -15,9 +15,12 @@ import { qaAgentStub, slackAgentStub, identityStub } from "./agent-stubs";
 import { timingSafeStringEqual } from "./mcp-auth";
 import { decideAuth } from "./require-auth";
 import { registerA2ADispatch } from "./a2a-dispatch";
-// WS1 aspects (issue #252): API middleware + callable seam. Response bodies
-// and auth behavior are unchanged; the aspect adds events only.
-import { apiAspectsMiddleware, withCallableAspect } from "./aspect-error";
+// WS1 aspects (issue #252): API middleware. Response bodies and auth
+// behavior are unchanged; the aspect adds events only.
+// NOTE (self-heal #301): withCallableAspect is NOT used here — its Proxy
+// wrapper breaks the native Durable Object RPC stub dispatch (every call
+// 500s). Raw stubs until the aspect is RPC-safe.
+import { apiAspectsMiddleware } from "./aspect-error";
 import { registerCapabilityTests } from "./qa-capability-tests";
 import { recordNotifySlackToAgent } from "./slack-mirror";
 import {
@@ -871,31 +874,29 @@ export function createApp() {
 
   async function getOrchestratorAgent(c: any) {
     const stub = await getAgentByName(c.env.ORCHESTRATOR_AGENT as any, "orchestrator");
-    return withCallableAspect(stub as unknown as {
+    return stub as unknown as {
       orchestrateRun(goal: string, mode?: string): Promise<unknown>;
       orchestrateJobs(limit?: number): Promise<unknown>;
       orchestrateJob(id: string): Promise<unknown>;
-    }, { agent: "orchestrator", env: c.env });
+    };
   }
   async function getScheduledAgent(c: any) {
     const { getAgentByName } = await import("agents");
-    // WS1 aspects (issue #252): the helper layer wraps the call in the
-    // aspect so RPC throws become structured events (wire behavior unchanged).
-    return withCallableAspect(getAgentByName(c.env.SCHEDULED_AGENT as any, "scheduler") as any, { agent: "scheduled", env: c.env });
+    return getAgentByName(c.env.SCHEDULED_AGENT as any, "scheduler") as any;
   }
 
   async function getAutopilotAgent(c: any) {
     const { getAgentByName } = await import("agents");
-    return withCallableAspect(getAgentByName(c.env.AUTOPILOT_AGENT as any, "autopilot") as any, { agent: "autopilot", env: c.env });
+    return getAgentByName(c.env.AUTOPILOT_AGENT as any, "autopilot") as any;
   }
 
   async function getSearchAgent(c: any) {
     const stub = await getAgentByName(c.env.SEARCH_AGENT as any, "search");
-    return withCallableAspect(stub as unknown as {
+    return stub as unknown as {
       searchQuery(query: string, limit?: number): Promise<unknown>;
       searchAsk(query: string): Promise<unknown>;
       searchSnapshot(): Promise<unknown>;
-    }, { agent: "search", env: c.env });
+    };
   }
 
   async function getQAAgent(c: any) {
@@ -908,9 +909,10 @@ export function createApp() {
     // getAgentByName<Env, QAAgent>: that form makes the compiler expand QAAgent (which
     // references Env) against Env (which references QA_AGENT) until it reports TS2589.
     const stub = await qaAgentStub(c.env);
-    // WS1 aspects (issue #252): RPC throws become structured events at the
-    // helper layer; the route's own error handling is unchanged.
-    return withCallableAspect(stub as unknown as {
+    // NOTE (self-heal #301): no withCallableAspect here — its Proxy wrapper
+    // breaks the native RPC stub dispatch (every call 500s). Raw stub until
+    // the aspect is RPC-safe.
+    return stub as unknown as {
       qaCheck(url: string, checks?: { textContains?: string[]; apiKey?: string; runId?: string }): Promise<unknown>;
       qaDashboard(apiKey?: string, runId?: string): Promise<unknown>;
       qaDashboardTabs(
@@ -1001,7 +1003,7 @@ export function createApp() {
         investigation?: { question: string; answer: string; steps: number };
         error?: string;
       }>;
-    }, { agent: "qa", env: c.env });
+    };
   }
 
 
