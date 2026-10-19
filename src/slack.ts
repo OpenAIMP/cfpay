@@ -8,6 +8,20 @@ export interface SlackEvent {
   bot_id?: string;
 }
 
+/**
+ * Single-owner bot-API JSON post headers (issue #269, cluster C6).
+ *
+ * Every Slack Web API POST with a JSON body carries this pair. GETs (e.g.
+ * apps.connections.open) and the file-upload endpoints use different shapes
+ * and are not folded in.
+ */
+export function slackBotHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+}
+
 export async function sendSlackMessage(
   token: string,
   channel: string,
@@ -16,10 +30,7 @@ export async function sendSlackMessage(
 ): Promise<boolean> {
   const res = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: slackBotHeaders(token),
     body: JSON.stringify({ channel, text, thread_ts: threadTs }),
   });
   const data = await res.json() as any;
@@ -115,10 +126,7 @@ export async function sendSlackMessageWithButton(
 ): Promise<boolean> {
   const res = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: slackBotHeaders(token),
     body: JSON.stringify({
       channel,
       thread_ts: threadTs,

@@ -1,6 +1,7 @@
 import { callable } from "agents";
 import { Think } from "@cloudflare/think";
 import type { Env } from "./types";
+import { selfOrigin } from "./self-origin";
 import { defaultModelId } from "./models";
 import { runRouted, type ModelTask } from "./model-routing";
 import { createVectorMemory } from "./vector-memory";
@@ -123,7 +124,7 @@ export class OrchestratorAgent extends Think<Env> {
   }
 
   private origin(): string {
-    return this.env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    return selfOrigin(this.env);
   }
 
   /** One model call returning plain text (Workers AI chat shape). */

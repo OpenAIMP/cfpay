@@ -123,7 +123,9 @@ describe("label wiring pins (issue #262)", () => {
     // same record object in, shared id out, so the feed merge dedups.
     expect(host).toContain("await mirrorToSlackAgent(this.env, emailRecord);");
     const mirror = src("src/slack-mirror.ts");
-    expect(mirror).toContain('getAgentByName((env as any).SLACK_AGENT as any, "slack")');
+    // The mirror resolves SlackAgent through the shared single-owner helper
+    // (issue #269, cluster C7): same agent, same fixed instance name.
+    expect(mirror).toContain("await slackAgentStub(env)");
     expect(mirror).toContain("id: record.id");
   });
 

@@ -11,6 +11,7 @@ import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from ".
 import { renderHuntReportHtml } from "./opportunity-hunt";
 import type { HuntRequest } from "./opportunity-hunt";
 import { getAgentByName } from "agents";
+import { qaAgentStub, slackAgentStub } from "./agent-stubs";
 import { timingSafeStringEqual } from "./mcp-auth";
 import { getOAuthUserFromRequest } from "./auth";
 import { registerA2ADispatch } from "./a2a-dispatch";
@@ -882,7 +883,7 @@ export function createApp() {
     // The result is narrowed to the methods this file calls rather than written as
     // getAgentByName<Env, QAAgent>: that form makes the compiler expand QAAgent (which
     // references Env) against Env (which references QA_AGENT) until it reports TS2589.
-    const stub = await getAgentByName(c.env.QA_AGENT as any, "qa");
+    const stub = await qaAgentStub(c.env);
     return stub as unknown as {
       qaCheck(url: string, checks?: { textContains?: string[]; apiKey?: string; runId?: string }): Promise<unknown>;
       qaDashboard(apiKey?: string, runId?: string): Promise<unknown>;
@@ -1586,7 +1587,7 @@ export function createApp() {
     // from appearing twice.
     let extra: EmailRecord[] = [];
     try {
-      const sstub = (await getAgentByName(c.env.SLACK_AGENT as any, "slack")) as any;
+      const sstub = await slackAgentStub(c.env);
       extra = await sstub.listMessages(100);
     } catch (err) {
       console.error("SlackAgent history read failed:", err);

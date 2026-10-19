@@ -6,6 +6,7 @@ import {
   type VoiceTurnContext,
 } from "@cloudflare/voice";
 import type { Env } from "./types";
+import { selfOrigin } from "./self-origin";
 import { defaultModelId } from "./models";
 import { speakable } from "./voice-text";
 
@@ -50,7 +51,7 @@ export class VoiceAgent extends VoiceBase<Env> {
 
   /** Run one question through the desk pipeline; returns speakable prose. */
   async answerQuestion(question: string): Promise<string> {
-    const origin = this.env.SELF_ORIGIN ?? "https://pay.openaimp.com";
+    const origin = selfOrigin(this.env);
     try {
       const res = await fetch(`${origin}/api/public/chat`, {
         method: "POST",

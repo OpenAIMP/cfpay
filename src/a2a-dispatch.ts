@@ -22,13 +22,15 @@
 
 import { A2A_OPS, A2A_SURFACE_RPC, type A2aSurfaceKey } from "./a2a-ops";
 import { errorBody } from "./errors";
+import { qaAgentStub } from "./agent-stubs";
 
 /**
  * Issue #264: the plain fetch-handler context cannot HTTP self-fetch the
  * Worker's own domain in production (Cloudflare 522), so probe legs are
  * delegated to QAAgent's qaHttpProbe callable — the Durable Object context
- * (§12-proven). The dynamic import keeps this module's top level free of
- * the agents SDK (which Vitest cannot import).
+ * (§12-proven). The agents SDK stays out of this module's top level (it is
+ * imported dynamically inside agent-stubs.ts) because Vitest cannot import
+ * it and tests import this module.
  */
 export async function probeViaQAAgent(
   c: any,
@@ -37,8 +39,7 @@ export async function probeViaQAAgent(
   headers: Record<string, string>,
   body?: string,
 ): Promise<{ status: number; text: string }> {
-  const { getAgentByName } = await import("agents");
-  const stub = (await getAgentByName(c.env.QA_AGENT as any, "qa")) as any;
+  const stub = await qaAgentStub(c.env);
   const origin = new URL(c.req.url).origin;
   return stub.qaHttpProbe({ origin, path, method, headers, body });
 }
