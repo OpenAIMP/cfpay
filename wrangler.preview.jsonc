@@ -81,6 +81,12 @@
   // must create a namespace using a new_sqlite_classes migration"). A single
   // v1 tag declaring every class with the SQLite backend is the standard
   // shape for a fresh Worker; production keeps its historical chain untouched.
+  // NOTE: tags are applied ONCE per Worker script. The preview script already
+  // applied v1 (without IdentityAgent) when it was first deployed, so IdentityAgent
+  // gets its own new v2 tag — mirroring how production adds one tag per class.
+  // IdentityAgent must NOT appear in v1's list: wrangler rejects a class
+  // registered in two migrations (dry-run: "Cannot apply new_sqlite_classes
+  // migration to existing class").
   "migrations": [
     {
       "tag": "v1",
@@ -96,9 +102,12 @@
         "SearchAgent",
         "OrchestratorAgent",
         "ScheduledAgent",
-        "AutopilotAgent",
-        "IdentityAgent"
+        "AutopilotAgent"
       ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["IdentityAgent"]
     }
   ],
   "workflows": [
