@@ -2868,7 +2868,7 @@ export class QAAgent extends Think<Env> {
       card: qaCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "qa", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

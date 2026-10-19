@@ -47,6 +47,8 @@ import { defaultModelId } from "./models";
 import { normalizeCron } from "./cron-next";
 import { oneShotFromDelay, parseOneShotWhen } from "./schedule-once";
 import type { Env } from "./types";
+import { mintCorrelationId, withTracePart } from "./aspect-logging";
+import { tenantIdFor, userIdFor } from "./tenancy";
 
 export const MAX_GOAL_CHARS = 500;
 const SCHEDULE_CALLBACK = "runScheduledGoal";
@@ -98,6 +100,17 @@ function toGoal(row: ScheduledGoalRow): ScheduledGoal {
     runs: row.runs,
     lastJobId: row.lastJobId,
     lastStatus: row.lastStatus,
+  };
+}
+
+// WS1 aspects (issue #252, design §2.3): every in-process A2A dispatch
+// carries the private trace part so the receiving executor emits under the
+// same correlationId. P1: the operator tenant; P3 resolves per credential.
+function a2aTrace() {
+  return {
+    correlationId: mintCorrelationId(),
+    tenantId: tenantIdFor(),
+    userId: userIdFor(),
   };
 }
 
@@ -424,7 +437,7 @@ export class ScheduledAgent extends Think<Env> {
         },
       },
     };
-    const outcome = await stub.handleA2A(body, "https://scheduled-agent.internal");
+    const outcome = await stub.handleA2A(withTracePart(body, a2aTrace()), "https://scheduled-agent.internal");
     const { a2aReplyFromOutcome } = await import("./a2a");
     const { data } = a2aReplyFromOutcome(outcome);
     return (data as { id?: string } | undefined)?.id ?? null;
@@ -452,7 +465,7 @@ export class ScheduledAgent extends Think<Env> {
       card: scheduledCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "scheduled", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

@@ -29,6 +29,8 @@ import {
   type AutopilotObjective,
 } from "./autopilot-core";
 import type { Env } from "./types";
+import { mintCorrelationId, withTracePart } from "./aspect-logging";
+import { tenantIdFor, userIdFor } from "./tenancy";
 
 interface ObjectiveRow {
   id: string;
@@ -80,6 +82,17 @@ function parseNotifications(raw: string | null): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+// WS1 aspects (issue #252, design §2.3): every in-process A2A dispatch
+// carries the private trace part so the receiving executor emits under the
+// same correlationId. P1: the operator tenant; P3 resolves per credential.
+function a2aTrace() {
+  return {
+    correlationId: mintCorrelationId(),
+    tenantId: tenantIdFor(),
+    userId: userIdFor(),
+  };
 }
 
 export class AutopilotAgent extends Think<Env> {
@@ -208,7 +221,7 @@ export class AutopilotAgent extends Think<Env> {
         },
       },
     };
-    const outcome = await stub.handleA2A(body, "https://autopilot-agent.internal");
+    const outcome = await stub.handleA2A(withTracePart(body, a2aTrace()), "https://autopilot-agent.internal");
     const { a2aReplyFromOutcome } = await import("./a2a");
     return a2aReplyFromOutcome(outcome);
   }
@@ -455,7 +468,7 @@ export class AutopilotAgent extends Think<Env> {
       card: autopilotCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "autopilot", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

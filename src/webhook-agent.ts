@@ -296,7 +296,7 @@ export class WebhookAgent extends Think<Env, WebhookState> {
       card: webhookCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "webhooks", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

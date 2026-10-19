@@ -15,6 +15,9 @@ import { qaAgentStub, slackAgentStub } from "./agent-stubs";
 import { timingSafeStringEqual } from "./mcp-auth";
 import { getOAuthUserFromRequest } from "./auth";
 import { registerA2ADispatch } from "./a2a-dispatch";
+// WS1 aspects (issue #252): API middleware + callable seam. Response bodies
+// and auth behavior are unchanged; the aspect adds events only.
+import { apiAspectsMiddleware, withCallableAspect } from "./aspect-error";
 import { registerCapabilityTests } from "./qa-capability-tests";
 import { recordNotifySlackToAgent } from "./slack-mirror";
 import {
@@ -88,6 +91,11 @@ export function createApp() {
     console.error("unhandled route error", err);
     return c.json(errorBody("INTERNAL"), 500);
   });
+  // WS1 aspects (issue #252, design §2.1): one structured event per API
+  // operation with a correlation id, woven as the outermost middleware so
+  // every response — including requireAuth's 401s — is observed and none
+  // is changed.
+  app.use("*", apiAspectsMiddleware());
   // The error catalog itself, for the front end (issue #209). Public:
   // it is only user-facing copy and status metadata.
   app.get("/api/errors.json", (c) => c.json(ERROR_CATALOG));
@@ -849,29 +857,31 @@ export function createApp() {
 
   async function getOrchestratorAgent(c: any) {
     const stub = await getAgentByName(c.env.ORCHESTRATOR_AGENT as any, "orchestrator");
-    return stub as unknown as {
+    return withCallableAspect(stub as unknown as {
       orchestrateRun(goal: string, mode?: string): Promise<unknown>;
       orchestrateJobs(limit?: number): Promise<unknown>;
       orchestrateJob(id: string): Promise<unknown>;
-    };
+    }, { agent: "orchestrator", env: c.env });
   }
   async function getScheduledAgent(c: any) {
     const { getAgentByName } = await import("agents");
-    return getAgentByName(c.env.SCHEDULED_AGENT as any, "scheduler") as any;
+    // WS1 aspects (issue #252): the helper layer wraps the call in the
+    // aspect so RPC throws become structured events (wire behavior unchanged).
+    return withCallableAspect(getAgentByName(c.env.SCHEDULED_AGENT as any, "scheduler") as any, { agent: "scheduled", env: c.env });
   }
 
   async function getAutopilotAgent(c: any) {
     const { getAgentByName } = await import("agents");
-    return getAgentByName(c.env.AUTOPILOT_AGENT as any, "autopilot") as any;
+    return withCallableAspect(getAgentByName(c.env.AUTOPILOT_AGENT as any, "autopilot") as any, { agent: "autopilot", env: c.env });
   }
 
   async function getSearchAgent(c: any) {
     const stub = await getAgentByName(c.env.SEARCH_AGENT as any, "search");
-    return stub as unknown as {
+    return withCallableAspect(stub as unknown as {
       searchQuery(query: string, limit?: number): Promise<unknown>;
       searchAsk(query: string): Promise<unknown>;
       searchSnapshot(): Promise<unknown>;
-    };
+    }, { agent: "search", env: c.env });
   }
 
   async function getQAAgent(c: any) {
@@ -884,7 +894,9 @@ export function createApp() {
     // getAgentByName<Env, QAAgent>: that form makes the compiler expand QAAgent (which
     // references Env) against Env (which references QA_AGENT) until it reports TS2589.
     const stub = await qaAgentStub(c.env);
-    return stub as unknown as {
+    // WS1 aspects (issue #252): RPC throws become structured events at the
+    // helper layer; the route's own error handling is unchanged.
+    return withCallableAspect(stub as unknown as {
       qaCheck(url: string, checks?: { textContains?: string[]; apiKey?: string; runId?: string }): Promise<unknown>;
       qaDashboard(apiKey?: string, runId?: string): Promise<unknown>;
       qaDashboardTabs(
@@ -975,7 +987,7 @@ export function createApp() {
         investigation?: { question: string; answer: string; steps: number };
         error?: string;
       }>;
-    };
+    }, { agent: "qa", env: c.env });
   }
 
 

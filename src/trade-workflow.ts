@@ -3,6 +3,11 @@ import type { ThinkWorkflowStep } from "@cloudflare/think/workflows";
 import type { AgentWorkflowEvent } from "agents/workflows";
 import type { CfmailAgentSQLite } from "./agent";
 import type { TradeWorkflowParams } from "./types";
+// WS1 aspects (issue #252, design §2.1): each step boundary emits through
+// the error classifier. The aspect records — it never retries and the
+// workflow's waitForEvent semantics are unchanged.
+import { withWorkflowStepAspect } from "./aspect-error";
+import { mintCorrelationId, type AspectEnv } from "./aspect-logging";
 
 /**
  * The approval gate between a model-proposed Public.com order and its
@@ -34,6 +39,15 @@ import type { TradeWorkflowParams } from "./types";
 export class TradeWorkflow extends ThinkWorkflow<CfmailAgentSQLite, TradeWorkflowParams> {
   async run(event: AgentWorkflowEvent<TradeWorkflowParams>, step: ThinkWorkflowStep): Promise<void> {
     const { proposalId } = event.payload;
+    // WS1 aspects (issue #252, design §2.3): workflow params carry the trace.
+    const correlationId = event.payload.trace?.correlationId ?? mintCorrelationId();
+    const stepAspect = <T>(operation: string, fn: () => Promise<T>): Promise<T> =>
+      withWorkflowStepAspect(fn, {
+        agent: "trade-workflow",
+        operation,
+        correlationId,
+        env: (this.env as AspectEnv | undefined) ?? null,
+      });
 
     let approval: { approved?: boolean; notes?: string } | null = null;
     try {
@@ -48,20 +62,26 @@ export class TradeWorkflow extends ThinkWorkflow<CfmailAgentSQLite, TradeWorkflo
     }
 
     if (!approval) {
-      await step.do("record-expiry", async () => {
-        await this.agent.expireTradeProposal(proposalId);
-      });
+      await step.do("record-expiry", () =>
+        stepAspect("workflow.step.record-expiry", async () => {
+          await this.agent.expireTradeProposal(proposalId);
+        }),
+      );
       return;
     }
 
     const approved = approval.approved === true;
-    await step.do("record-decision", async () => {
-      await this.agent.recordTradeDecision(proposalId, approved, approval.notes);
-    });
+    await step.do("record-decision", () =>
+      stepAspect("workflow.step.record-decision", async () => {
+        await this.agent.recordTradeDecision(proposalId, approved, approval.notes);
+      }),
+    );
     if (!approved) return;
 
-    await step.do("execute-approved-trade", async () => {
-      await this.agent.executeTradeProposal(proposalId);
-    });
+    await step.do("execute-approved-trade", () =>
+      stepAspect("workflow.step.execute-approved-trade", async () => {
+        await this.agent.executeTradeProposal(proposalId);
+      }),
+    );
   }
 }

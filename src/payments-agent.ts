@@ -652,6 +652,7 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
         card: paymentsCard,
         handle: (message, context) => this.handleA2AMessage(message, context),
       },
+      { agentName: "payments", env: this.env },
     );
     return await handleCollecting(transport.transport, body);
   }

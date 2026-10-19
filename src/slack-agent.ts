@@ -356,7 +356,7 @@ export class SlackAgent extends Think<Env, SlackState> {
       card: slackCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "slack", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

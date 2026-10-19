@@ -504,7 +504,7 @@ export class OrchestratorAgent extends Think<Env> {
       card: orchestratorCard,
       handle: (message: any, context: { taskId: string; contextId: string }) =>
         this.handleA2AMessage(message, context),
-    });
+    }, { agentName: "orchestrator", env: this.env });
     return await handleCollecting(a2a.transport, body);
   }
 

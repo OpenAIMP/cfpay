@@ -25,6 +25,18 @@
 
 import { a2aErrorCode, mapUnknownError } from "./errors";
 import type { AgentCard, Message, Task, TaskStatusUpdateEvent } from "@a2a-js/sdk";
+// WS1 aspects (issue #252): the executor strips the private trace part from
+// inbound messages and emits one structured event per execution, so a
+// multi-agent run shows a single correlationId across all its events.
+import {
+  type AspectTrace,
+  type AspectEnv,
+  aspectEventNow,
+  emitAspectEvent,
+  extractTracePart,
+  mintCorrelationId,
+} from "./aspect-logging";
+import { tenantIdFor, userIdFor } from "./tenancy";
 import { A2A_OPS, type A2aOpSpec } from "./a2a-ops";
 
 /** An agent card whose operations are declared machine-readably (issue #258). */
@@ -210,7 +222,10 @@ export interface A2ACapability {
    * phrase them, so a model cannot invent a figure it was not given. Throwing is
    * fine - the executor reports the failure as the reply.
    */
-  handle(message: Message, context: { taskId: string; contextId: string }): Promise<CapabilityResult>;
+  handle(
+    message: Message,
+    context: { taskId: string; contextId: string; trace?: AspectTrace },
+  ): Promise<CapabilityResult>;
 }
 
 /**
@@ -221,7 +236,11 @@ export interface A2ACapability {
  * it into acting: it can only return text.
  */
 export class CapabilityExecutor implements AgentExecutor {
-  constructor(private capability: A2ACapability) {}
+  constructor(
+    private capability: A2ACapability,
+    private agentName?: string,
+    private aspectEnv?: AspectEnv | null,
+  ) {}
 
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
     const { taskId, contextId, userMessage, task } = requestContext;
@@ -246,10 +265,27 @@ export class CapabilityExecutor implements AgentExecutor {
 
     const question = messageText(userMessage) || "Summarise the current state.";
 
+    // WS1 aspects (issue #252, design §2.3): strip the private trace part so
+    // it never reaches the capability's prompt, and emit one structured event
+    // per execution so a multi-agent run shows a single correlationId.
+    const t0 = Date.now();
+    const { trace, parts } = extractTracePart((userMessage as { parts?: unknown })?.parts);
+    const correlationId = trace?.correlationId ?? mintCorrelationId();
+    const tracedMessage = { ...(userMessage as unknown as Record<string, unknown>), parts };
+    const execTrace = trace ?? {
+      correlationId,
+      tenantId: tenantIdFor(),
+      userId: userIdFor(),
+    };
+
     let answer: string;
     let resultData: unknown;
     try {
-      const handled = await this.capability.handle(userMessage, { taskId, contextId });
+      const handled = await this.capability.handle(tracedMessage as Message, {
+        taskId,
+        contextId,
+        trace: execTrace,
+      });
       answer = (handled.text || "").trim();
       resultData = handled.data;
       // Phase 2 of the error catalog (issue #209): a failure's data
@@ -266,6 +302,34 @@ export class CapabilityExecutor implements AgentExecutor {
       resultData = { ok: false, error: "agent_error", code: mapUnknownError(error) };
     }
     if (!answer) answer = "The agent produced no answer for that question.";
+
+    // WS1 logging aspect (issue #252, design §2.2): one structured event per
+    // execution. The outcome follows the capability's own failure signal
+    // (ok:false / error), not the presence of a throw.
+    {
+      const d = resultData as { ok?: unknown; error?: unknown; code?: unknown } | undefined;
+      const failed =
+        d !== null &&
+        typeof d === "object" &&
+        !Array.isArray(d) &&
+        (d.ok === false || typeof d.error === "string");
+      emitAspectEvent(
+        {
+          v: 1,
+          ts: aspectEventNow(),
+          level: failed ? "error" : "info",
+          tenantId: execTrace.tenantId,
+          userId: execTrace.userId,
+          agent: this.agentName ?? "a2a",
+          operation: "a2a.execute",
+          correlationId,
+          durationMs: Date.now() - t0,
+          outcome: failed ? "error" : "ok",
+          ...(failed && typeof d?.code === "string" ? { errorCode: d.code } : {}),
+        },
+        this.aspectEnv ?? undefined,
+      );
+    }
 
     // Structured outcome, when the capability returned one. A caller that asked
     // for work to be done reads this instead of parsing the prose reply. It is
@@ -697,14 +761,22 @@ export function chatCard(origin: string): AgentCardWithOps {
     ],
   };
 }
+export interface A2ATransportOpts {
+  /** Agent name for the WS1 logging aspect's per-execution events. */
+  agentName?: string;
+  /** Worker env (for the LOG_ASPECTS kill flag). Absent = aspects on. */
+  env?: AspectEnv | null;
+}
+
 export function createA2ATransport(
   sql: SqlStorage,
   origin: string,
   card: AgentCard,
   capability: A2ACapability,
+  opts?: A2ATransportOpts,
 ) {
   const store = new AgentTaskStore(sql);
-  const executor = new CapabilityExecutor(capability);
+  const executor = new CapabilityExecutor(capability, opts?.agentName, opts?.env);
   const handler = new DefaultRequestHandler(card, store, executor);
   return { handler, transport: new JsonRpcTransportHandler(handler), store };
 }
