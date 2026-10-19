@@ -459,14 +459,13 @@ export class SlackAgent extends Think<Env, SlackState> {
           return { text: "slack.postFile needs channel, filename, and contentB64 arguments.", data: { ok: false, error: "missing_args" } };
         }
         try {
-          const { postFilesToSlack } = await import("./slack-files");
-          const result = await postFilesToSlack(this.env, {
+          const { postFilesToChannel } = await import("./slack-files");
+          const result = await postFilesToChannel(
+            this.env,
             channel,
-            filename,
-            contentB64,
-            title: String(args.title || filename),
-            initial_comment: String(args.initial_comment || args.text || ""),
-          });
+            String(args.initial_comment || args.text || ""),
+            [{ filename, contentB64, title: String(args.title || filename) }],
+          );
           return result.posted > 0
             ? { text: `Posted file ${filename} to Slack channel ${channel}.`, data: { ok: true, channel, filename } }
             : { text: `Slack file post failed: ${result.error}`, data: { ok: false, error: result.error } };
