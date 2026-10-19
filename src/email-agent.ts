@@ -16,12 +16,14 @@
  */
 
 import { callable } from "agents";
+import type { Connection } from "agents";
 import { Think } from "@cloudflare/think";
 
 import type { Env, EmailRecord } from "./types";
 import { generateId } from "./payments";
 import { defaultModelId } from "./models";
 import { selfProvisionOwnTenant } from "./tenant-provision";
+import { stampTenantOnConnection } from "./tenant-connection";
 
 /**
  * An attachment, as a caller supplies it.
@@ -95,6 +97,23 @@ export class EmailAgent extends Think<Env, EmailState> {
    */
   async onStart(): Promise<void> {
     await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
+
+  /**
+   * Issue #316: bind the resolved tenant/user to this socket's connection
+   * state (SDK connection.setState, functional updater — existing
+   * connection state is preserved, never clobbered). Defense-in-depth
+   * BEHIND the /agents/* edge 401/403: the edge still guards the door;
+   * this stamps identity on the connection itself so WS-path handling can
+   * attribute per message. First stamp wins; operator singletons stay
+   * unstamped; stamping never throws and never blocks connect.
+   */
+  async onConnect(
+    connection: Connection,
+    context: { request: Request },
+  ): Promise<void> {
+    await stampTenantOnConnection({ env: this.env, ctx: this.ctx }, connection);
+    await super.onConnect?.(connection, context);
   }
   initialState: EmailState = { ...EMPTY };
 
