@@ -432,3 +432,99 @@ export async function authorizeMcpRequest(request: Request, env: Env): Promise<R
 
   return jsonResponse(errorBodyAs("UNAUTHORIZED", "Unauthorized"), 401, challenge);
 }
+
+/* ------------------------- P3 MCP identity ------------------------- */
+
+export interface McpIdentity {
+  /** Which credential produced this identity. */
+  source: "static" | "oauth" | "github" | "jwt" | "google" | "anonymous";
+  tenantId: string;
+  userId: string;
+  /** JWT id, when source is "jwt" (the FGA subject for token checks). */
+  jti?: string;
+  /** JWT subject, when source is "jwt". */
+  sub?: string;
+}
+
+/**
+ * Resolve the calling identity for an authorised /mcp request (issue
+ * #252 P3, design §4). Mirrors authorizeMcpRequest's credential order, so
+ * the two can never disagree about which credential authorised the call —
+ * call it only after authorizeMcpRequest returned null.
+ *
+ * Tenant mapping: a scoped JWT resolves to its tenant_id claim (bound to
+ * sub by the verification); every other credential is operator-scoped
+ * (the static secret identifies nobody, our OAuth access tokens are
+ * client-bound with no user subject, GitHub/Google tokens carry no tenant
+ * binding), as is the anonymous handshake. Only JWT-issued tokens get
+ * per-tenant instances; everything else keeps today's operator behavior.
+ */
+export async function resolveMcpIdentity(
+  request: Request,
+  env: Env,
+): Promise<McpIdentity> {
+  const mode = resolveMcpAuthMode(env.MCP_AUTH_MODE);
+  const staticSecret = (env.MCP_AUTH_TOKEN ?? "").trim();
+  const requiredOrg = (env.MCP_GITHUB_ORG ?? "").trim();
+  const jwtSecret = (env.MCP_JWT_SECRET ?? "").trim();
+  const paths = permittedPaths(mode ?? "none");
+
+  const header = request.headers.get("Authorization") ?? "";
+  const presented = header.toLowerCase().startsWith("bearer ")
+    ? header.slice(7).trim()
+    : "";
+
+  const anonymous: McpIdentity = { source: "anonymous", tenantId: "operator", userId: "operator" };
+  if (!presented) return anonymous;
+
+  // 1) Static secret, when permitted.
+  if (paths.static && staticSecret && timingSafeStringEqual(presented, staticSecret)) {
+    return { source: "static", tenantId: "operator", userId: "operator" };
+  }
+
+  // 2) OAuth access token issued by our own authorization server (either
+  //    mode only, mirroring the gate). Client-bound: no user subject, so
+  //    the operator tenant.
+  if (mode === "either" && (await isAcceptedAccessToken(presented, env))) {
+    return { source: "oauth", tenantId: "operator", userId: "operator" };
+  }
+
+  // 3) GitHub credential, when permitted.
+  if (paths.github && looksLikeGitHubToken(presented)) {
+    if (await verifyGitHubToken(presented, requiredOrg || undefined)) {
+      return { source: "github", tenantId: "operator", userId: "operator" };
+    }
+  }
+
+  // 4) Scoped JWT, when permitted and configured. tenant_id claim, bound
+  //    to sub — the only credential that resolves to a user tenant.
+  if (paths.jwt && jwtSecret && looksLikeJwt(presented)) {
+    try {
+      const verified = await verifyToken(jwtSecret, presented, {
+        issuer: (env.MCP_JWT_ISSUER ?? "").trim() || undefined,
+        audience: (env.MCP_JWT_AUDIENCE ?? "").trim() || undefined,
+      });
+      const sub = String(verified.claims.sub ?? "");
+      if (sub) {
+        return {
+          source: "jwt",
+          tenantId: String(verified.claims.tenant_id ?? "operator"),
+          userId: sub,
+          jti: verified.claims.jti,
+          sub,
+        };
+      }
+    } catch {
+      /* not a valid JWT for us — fall through to anonymous */
+    }
+  }
+
+  // 5) Google credential, when permitted.
+  if (paths.google && presented) {
+    if (await verifyGoogleToken(presented, env)) {
+      return { source: "google", tenantId: "operator", userId: "operator" };
+    }
+  }
+
+  return anonymous;
+}

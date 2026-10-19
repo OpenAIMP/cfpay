@@ -99,17 +99,19 @@ export interface A2AAspect {
  * Begin the aspect for one A2A dispatch at the index.ts seam.
  * `correlationId` is minted once per HTTP request by the fetch wrapper and
  * passed in, so the response header and every event agree on the id.
+ * `opts.identity` carries the edge-resolved tenant (P3); absent it falls
+ * back to the operator tenant (P1 behavior).
  */
 export function beginA2AAspect(
   env: AspectEnv | undefined,
   correlationId: string,
-  opts: { agent: string; operation?: string },
+  opts: { agent: string; operation?: string; identity?: { tenantId: string; userId: string } },
 ): A2AAspect {
   const t0 = Date.now();
   const trace: AspectTrace = {
     correlationId,
-    tenantId: tenantIdFor(),
-    userId: userIdFor(),
+    tenantId: opts.identity?.tenantId ?? tenantIdFor(),
+    userId: opts.identity?.userId ?? userIdFor(),
   };
   const base: Omit<AspectEvent, "outcome" | "durationMs" | "ts" | "level"> = {
     v: 1,

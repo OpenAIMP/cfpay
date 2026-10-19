@@ -229,7 +229,10 @@ export const setAccountingSink = setOutcomeLedgerSink;
  * The accounting event taxonomy (IAAA "Accounting"). Authn/session/token
  * events are emitted by the P2 identity work; authz events are emitted by
  * the authz aspect from P1; ai.spend is emitted by the budget guard from
- * P3. All are AspectEvents — the accounting sink persists them unchanged.
+ * P3; migration_fallback is emitted at first-use tenant provisioning
+ * during the P3 cutover (the honest form of the §6 dual-read window: flag
+ * on = tenant instances for users, flag off = singletons — no data moves).
+ * All are AspectEvents — the accounting sink persists them unchanged.
  */
 export type AccountingEventKind =
   | "authn.success"
@@ -240,7 +243,8 @@ export type AccountingEventKind =
   | "token.issue"
   | "authz.allow"
   | "authz.deny"
-  | "ai.spend";
+  | "ai.spend"
+  | "migration_fallback";
 
 /**
  * Build an accounting event in the same AspectEvent shape. The sink
@@ -378,4 +382,35 @@ export function extractTracePart(parts: unknown): {
     rest.push(p);
   }
   return { trace, parts: rest };
+}
+
+/**
+ * Replace any client-supplied trace part with the edge-resolved one.
+ *
+ * The _trace part is the platform's private convention: at the HTTP edge
+ * the trace is built from the authenticated credential, so a _trace part
+ * arriving in the request body is either confused or forged (cross-tenant
+ * correlation replay). Stripping it before appending the true trace keeps
+ * the event stream's tenant attribution honest. In-process dispatches
+ * build their bodies fresh and keep using withTracePart.
+ */
+export function replaceTracePart(body: unknown, trace: AspectTrace): unknown {
+  if (typeof body !== "object" || body === null) return body;
+  const params = (body as Record<string, unknown>).params;
+  if (typeof params !== "object" || params === null) return body;
+  const message = (params as Record<string, unknown>).message;
+  if (typeof message !== "object" || message === null) return body;
+  const parts = (message as Record<string, unknown>).parts;
+  if (!Array.isArray(parts)) return body;
+  const { parts: stripped } = extractTracePart(parts);
+  return {
+    ...(body as Record<string, unknown>),
+    params: {
+      ...(params as Record<string, unknown>),
+      message: {
+        ...(message as Record<string, unknown>),
+        parts: [...stripped, { kind: "data", data: { [TRACE_DATA_KEY]: trace } }],
+      },
+    },
+  };
 }

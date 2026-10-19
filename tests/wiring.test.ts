@@ -109,7 +109,10 @@ describe("A2A routing stays complete", () => {
       "A2A_EMAIL_RPC_PATH",
       "A2A_WEBHOOK_CARD_PATH",
       "A2A_WEBHOOK_RPC_PATH",
-      "a2aAuthorised",
+      // P3 (issue #252): the credential gate is resolveA2AIdentity (per-
+      // credential tenant resolution); a2aAuthorised's key-only check lives
+      // on in a2a.ts for the card routes.
+      "resolveA2AIdentity",
     ];
     for (const name of required) {
       expect(index, `${name} must be handled in the Worker`).toContain(name);
@@ -141,10 +144,14 @@ describe("A2A routing stays complete", () => {
   });
 
   it("gates every A2A endpoint behind the credential", () => {
-    // Three endpoints, three gates. An ungated endpoint spends Workers AI tokens or
-    // sends mail on the operator's account.
-    const gates = index.match(/a2aAuthorised\(request, env\)/g) ?? [];
-    expect(gates.length).toBeGreaterThanOrEqual(4);
+    // Twelve RPC branches, one shared gate. An ungated endpoint spends
+    // Workers AI tokens or sends mail on the operator's account.
+    // P3 (issue #252): the branches share a2aBranch, which resolves the
+    // calling tenant via resolveA2AIdentity and 401s when no credential
+    // authorises the call.
+    const branches = index.match(/return a2aBranch\(request, env, correlationId,/g) ?? [];
+    expect(branches.length).toBeGreaterThanOrEqual(12);
+    expect(index).toContain("resolveA2AIdentity(request, env)");
   });
 });
 
@@ -1840,6 +1847,7 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     const wrangler = read("wrangler.jsonc");
     const api = read("src/api.ts");
     const a2a = read("src/a2a.ts");
+    const dispatch = read("src/tenant-dispatch.ts");
     // pure core: validation edges live in the unit tests, pinned here
     expect(core).toContain("validateObjective");
     expect(core).toContain("AUTOPILOT_CYCLE_GOAL_TEXT");
@@ -1872,8 +1880,13 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     expect(index).toContain("A2A_AUTOPILOT_RPC_PATH");
     // the route reaches the agent through an RPC-capable stub: a raw
     // .get() stub cannot invoke @callable() handleA2A and 500s every
-    // dispatch ([QA self-heal] issue #272)
-    expect(index).toContain('getAgentByName(env.AUTOPILOT_AGENT as any, "autopilot")');
+    // dispatch ([QA self-heal] issue #272). P3 (issue #252): the twelve
+    // branches share a2aBranch → dispatchToTenantInstance, which resolves
+    // the tenant's instance and dispatches via getAgentByName (raw stub,
+    // never Proxy-wrapped — self-heal #301).
+    expect(index).toContain('binding: "AUTOPILOT_AGENT",');
+    expect(index).toContain('base: "autopilot",');
+    expect(dispatch).toContain("getAgentByName(ns as any, instanceName)");
     expect(wrangler).toContain('"name": "AUTOPILOT_AGENT"');
     expect(wrangler).toContain('"class_name": "AutopilotAgent"');
     expect(wrangler).toContain('"tag": "v13"');
@@ -1938,7 +1951,9 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     // classification with one call; the body is byte-identical (pinned by
     // tests/aspect-error.test.ts).
     expect(index).toContain("a2aAspect.fail(err)");
-    expect(index).toContain('beginA2AAspect(env, correlationId, { agent: "');
+    // P3 (issue #252): the twelve branches share a2aBranch, which begins
+    // the aspect with the edge-resolved identity.
+    expect(index).toContain("beginA2AAspect(env, correlationId, { agent:");
     expect(index).not.toContain("error: String(err)");
     // Public proxy routes and dashboard stats no longer leak raw errors
     expect(api).not.toContain("err.message : String(err) }, 502)");

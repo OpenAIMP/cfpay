@@ -11,10 +11,24 @@ import { CfmailAgentSQLite as CfmailAgent, PAYMENT_CLAIM_REUSED_PREFIX } from ".
 import { renderHuntReportHtml } from "./opportunity-hunt";
 import type { HuntRequest } from "./opportunity-hunt";
 import { getAgentByName } from "agents";
-import { qaAgentStub, slackAgentStub, identityStub } from "./agent-stubs";
+import { qaAgentStub, slackAgentStubFor, identityStub } from "./agent-stubs";
 import { timingSafeStringEqual } from "./mcp-auth";
 import { decideAuth } from "./require-auth";
 import { registerA2ADispatch } from "./a2a-dispatch";
+// P3 tenancy (issue #252, design §4): per-tenant instance resolution and
+// FGA enforcement at the route boundary. Stubs stay raw — never
+// Proxy-wrapped (self-heal #301).
+import { OPERATOR_TENANT_ID, resolveTenantInstance } from "./tenancy";
+import { tenantAgentStub, ensureTenantProvisioned } from "./tenant-dispatch";
+import {
+  enforceAuthz,
+  enforceObjectAuthz,
+  findHttpDeclaration,
+  instantiateDeclaration,
+  subjectForIdentity,
+  type AuthzIdentity,
+} from "./aspect-authz";
+import { mintCorrelationId, CORRELATION_HEADER } from "./aspect-logging";
 // WS1 aspects (issue #252): API middleware. Response bodies and auth
 // behavior are unchanged; the aspect adds events only.
 // NOTE (self-heal #301): withCallableAspect is NOT used here — its Proxy
@@ -162,6 +176,46 @@ export function createApp() {
     c.set("identityUserId", d.userId);
     c.set("identityTenantId", d.tenantId);
     return next();
+  }
+
+  /**
+   * P3 tenancy (issue #252, design §4): the calling tenant for this
+   * request, from the identity requireAuth resolved. The dashboard API
+   * key → operator tenant (today's behavior, unchanged); a session user
+   * → their own tenant. Defaults to the operator tenant when no identity
+   * was resolved (routes without requireAuth keep today's meaning).
+   */
+  function tenantIdForRequest(c: any): string {
+    const t = typeof c.get === "function" ? c.get("identityTenantId") : undefined;
+    return typeof t === "string" && t ? t : OPERATOR_TENANT_ID;
+  }
+
+  /** The authz aspect's identity for this request's caller. */
+  function authzIdentityForRequest(c: any): AuthzIdentity {
+    const kind = typeof c.get === "function" ? c.get("identityKind") : undefined;
+    const userIdRaw = typeof c.get === "function" ? c.get("identityUserId") : undefined;
+    const tenantId = tenantIdForRequest(c);
+    const userId = typeof userIdRaw === "string" && userIdRaw ? userIdRaw : tenantId;
+    if (kind === "session") {
+      return { kind: "session", tenantId, userId, role: "owner" };
+    }
+    return {
+      kind: "operator",
+      tenantId: OPERATOR_TENANT_ID,
+      userId: OPERATOR_TENANT_ID,
+      role: "operator",
+    };
+  }
+
+  /** The request's correlation id for aspect events (edge-minted). */
+  function correlationForRequest(c: any): string {
+    try {
+      const incoming = c.req.header(CORRELATION_HEADER);
+      if (typeof incoming === "string" && incoming.trim()) return incoming.trim().slice(0, 128);
+    } catch {
+      /* fall through */
+    }
+    return mintCorrelationId();
   }
 
   // ---------------------------------------------------------------------------
@@ -733,9 +787,38 @@ export function createApp() {
     if (typeof body.approved !== "boolean") {
       return c.json(errorBodyAs("VALIDATION_FAILED", "approved (boolean) is required."), 400);
     }
+    // THE money gate (issue #252 P3, design §2.4/§5.4): (approver,
+    // trade_proposal:<id>), deny-by-default, decided here at the route
+    // boundary on values that cross the wire. The proposal is read from
+    // the caller's own tenant instance (a guessed id from another tenant
+    // 404s without leaking); the approver tuple is seeded for the tenant
+    // owner via enforceObjectAuthz's backfill — the route verified tenant
+    // ownership first, so this is not self-granting. The seeded tuple is
+    // what the trade-approval workflow re-verifies before executing.
+    const id = c.req.param("id");
+    const tenantId = tenantIdForRequest(c);
+    const identity = authzIdentityForRequest(c);
+    const correlationId = correlationForRequest(c);
     const agent = getAgent(c);
+    const existing = await agent.getTradeProposal(id).catch(() => null);
+    if (!existing) {
+      return c.json(errorBody("NOT_FOUND"), errorStatus("NOT_FOUND"));
+    }
+    await ensureTenantProvisioned(c.env, "agent", tenantId).catch(() => {});
+    const gate = await enforceObjectAuthz(
+      identity,
+      tenantId,
+      instantiateDeclaration(findHttpDeclaration("POST", "/api/public/trades/:id/decision")!, {
+        tenantId,
+        id,
+      }),
+      { correlationId, identityEnv: c.env, env: c.env },
+    );
+    if (!gate.allow) {
+      return c.json(errorBodyAs("INSUFFICIENT_SCOPE", "Not an approver for this trade proposal."), 403);
+    }
     try {
-      const proposal = await agent.decideTradeProposal(c.req.param("id"), body.approved, body.notes);
+      const proposal = await agent.decideTradeProposal(id, body.approved, body.notes);
       return c.json({ proposal });
     } catch (err) {
       const mapped = mapUnknownError(err);
@@ -828,8 +911,25 @@ export function createApp() {
       return c.json(errorBody(code), errorStatus(code));
     }
   });
+  /**
+   * The host agent for this request's tenant (issue #252 P3, design §4).
+   * The dashboard key resolves to the operator tenant → the "agent"
+   * singleton, exactly as today; a session user resolves to their own
+   * `agent:<uid>` instance. First-use provisioning runs as a backstop
+   * (fire-and-forget: the tuple is idempotent and the instance resolves
+   * regardless; routes with FGA checks await it explicitly).
+   */
   function getAgent(c: any) {
-    const agentId = c.env.CfmailAgent.idFromName("agent");
+    return getHostAgentFor(c, tenantIdForRequest(c));
+  }
+
+  /** Explicit-tenant variant of getAgent. */
+  function getHostAgentFor(c: any, tenantId: string) {
+    const instanceName = resolveTenantInstance("agent", tenantId, c.env);
+    if (tenantId !== OPERATOR_TENANT_ID && instanceName !== "agent") {
+      void ensureTenantProvisioned(c.env, "agent", tenantId, instanceName).catch(() => {});
+    }
+    const agentId = c.env.CfmailAgent.idFromName(instanceName);
     return c.env.CfmailAgent.get(agentId) as any;
   }
 
@@ -872,8 +972,16 @@ export function createApp() {
     }
   }
 
+  // P3 tenancy (issue #252, design §4): each helper resolves the request's
+  // tenant — the dashboard key keeps the operator singleton (today's
+  // behavior, unchanged); a session user reaches their own `<base>:<uid>`
+  // instance. The explicit-tenant `...For` variants are the seams new
+  // call sites should use. Stubs are raw, never Proxy-wrapped (#301).
   async function getOrchestratorAgent(c: any) {
-    const stub = await getAgentByName(c.env.ORCHESTRATOR_AGENT as any, "orchestrator");
+    return getOrchestratorAgentFor(c, tenantIdForRequest(c));
+  }
+  async function getOrchestratorAgentFor(c: any, tenantId: string) {
+    const { stub } = await tenantAgentStub(c.env, "ORCHESTRATOR_AGENT", "orchestrator", tenantId);
     return stub as unknown as {
       orchestrateRun(goal: string, mode?: string): Promise<unknown>;
       orchestrateJobs(limit?: number): Promise<unknown>;
@@ -881,17 +989,26 @@ export function createApp() {
     };
   }
   async function getScheduledAgent(c: any) {
-    const { getAgentByName } = await import("agents");
-    return getAgentByName(c.env.SCHEDULED_AGENT as any, "scheduler") as any;
+    return getScheduledAgentFor(c, tenantIdForRequest(c));
+  }
+  async function getScheduledAgentFor(c: any, tenantId: string) {
+    const { stub } = await tenantAgentStub(c.env, "SCHEDULED_AGENT", "scheduler", tenantId);
+    return stub as any;
   }
 
   async function getAutopilotAgent(c: any) {
-    const { getAgentByName } = await import("agents");
-    return getAgentByName(c.env.AUTOPILOT_AGENT as any, "autopilot") as any;
+    return getAutopilotAgentFor(c, tenantIdForRequest(c));
+  }
+  async function getAutopilotAgentFor(c: any, tenantId: string) {
+    const { stub } = await tenantAgentStub(c.env, "AUTOPILOT_AGENT", "autopilot", tenantId);
+    return stub as any;
   }
 
   async function getSearchAgent(c: any) {
-    const stub = await getAgentByName(c.env.SEARCH_AGENT as any, "search");
+    return getSearchAgentFor(c, tenantIdForRequest(c));
+  }
+  async function getSearchAgentFor(c: any, tenantId: string) {
+    const { stub } = await tenantAgentStub(c.env, "SEARCH_AGENT", "search", tenantId);
     return stub as unknown as {
       searchQuery(query: string, limit?: number): Promise<unknown>;
       searchAsk(query: string): Promise<unknown>;
@@ -1615,7 +1732,8 @@ export function createApp() {
     // from appearing twice.
     let extra: EmailRecord[] = [];
     try {
-      const sstub = await slackAgentStub(c.env);
+      // P3 tenancy: the per-tenant Slack history, not the operator's.
+      const sstub = await slackAgentStubFor(c.env, tenantIdForRequest(c));
       extra = await sstub.listMessages(100);
     } catch (err) {
       console.error("SlackAgent history read failed:", err);
@@ -1838,12 +1956,39 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({})) as {
       goal?: string; cron?: string; kind?: string; at?: string; delaySeconds?: number;
     };
+    // FGA (issue #252 P3, design §2.4): (owner, tenant:<uid>) — only the
+    // tenant's owner may create standing goals in it.
+    const tenantId = tenantIdForRequest(c);
+    const identity = authzIdentityForRequest(c);
+    const correlationId = correlationForRequest(c);
+    await ensureTenantProvisioned(c.env, "scheduler", tenantId).catch(() => {});
+    const gate = await enforceAuthz(
+      identity,
+      instantiateDeclaration(findHttpDeclaration("POST", "/api/dashboard/scheduled-goals")!, {
+        tenantId,
+      }),
+      { correlationId, identityEnv: c.env, env: c.env },
+    );
+    if (!gate.allow) {
+      return c.json(errorBodyAs("INSUFFICIENT_SCOPE", "Only the tenant owner may create scheduled goals."), 403);
+    }
     const scheduled = await getScheduledAgent(c);
     const result =
       body.kind === "once"
         ? await scheduled.scheduledOnce((body.goal || "").trim(), body.at, body.delaySeconds)
         : await scheduled.scheduledCreate((body.goal || "").trim(), (body.cron || "").trim());
     if (!result.ok) return c.json(errorBody("VALIDATION_FAILED"), 400);
+    // Seed the object tuple so the per-object delete check resolves.
+    // Best-effort: the goal exists; a seed failure only means the next
+    // delete falls back to the tenant-owner check (deny-by-default keeps
+    // it safe either way).
+    const goalId = (result as { goal?: { id?: string } }).goal?.id;
+    if (goalId) {
+      const subject = subjectForIdentity(identity);
+      await identityStub(c.env)
+        .then((stub) => stub.addTuple(subject.subjectType, subject.subjectId, "owner", "scheduled_goal", String(goalId)))
+        .catch(() => {});
+    }
     return c.json(result);
   });
 
@@ -1863,8 +2008,27 @@ export function createApp() {
   });
 
   app.delete("/api/dashboard/scheduled-goals/:id", requireAuth, async (c) => {
+    // FGA (issue #252 P3, design §2.4): (owner, scheduled_goal:<id>), with
+    // tenant-owner backfill for goals created before their tuples existed.
+    const id = c.req.param("id");
+    const tenantId = tenantIdForRequest(c);
+    const identity = authzIdentityForRequest(c);
+    const correlationId = correlationForRequest(c);
+    await ensureTenantProvisioned(c.env, "scheduler", tenantId).catch(() => {});
+    const gate = await enforceObjectAuthz(
+      identity,
+      tenantId,
+      instantiateDeclaration(findHttpDeclaration("DELETE", "/api/dashboard/scheduled-goals/:id")!, {
+        tenantId,
+        id,
+      }),
+      { correlationId, identityEnv: c.env, env: c.env },
+    );
+    if (!gate.allow) {
+      return c.json(errorBodyAs("INSUFFICIENT_SCOPE", "Only the goal's owner may delete it."), 403);
+    }
     const scheduled = await getScheduledAgent(c);
-    const result = await scheduled.scheduledDelete(c.req.param("id"));
+    const result = await scheduled.scheduledDelete(id);
     return c.json(result);
   });
 
@@ -1880,6 +2044,22 @@ export function createApp() {
     const body = await c.req.json().catch(() => ({})) as {
       goal?: string; budget?: number; cadenceCron?: string; symbols?: string[]; notifyEmail?: string;
     };
+    // FGA (issue #252 P3, design §2.4): (owner, tenant:<uid>) — only the
+    // tenant's owner may set the standing objective.
+    const tenantId = tenantIdForRequest(c);
+    const identity = authzIdentityForRequest(c);
+    const correlationId = correlationForRequest(c);
+    await ensureTenantProvisioned(c.env, "autopilot", tenantId).catch(() => {});
+    const gate = await enforceAuthz(
+      identity,
+      instantiateDeclaration(findHttpDeclaration("POST", "/api/dashboard/autopilot/objective")!, {
+        tenantId,
+      }),
+      { correlationId, identityEnv: c.env, env: c.env },
+    );
+    if (!gate.allow) {
+      return c.json(errorBodyAs("INSUFFICIENT_SCOPE", "Only the tenant owner may set the autopilot objective."), 403);
+    }
     const autopilot = await getAutopilotAgent(c);
     const result = await autopilot.autopilotObjectiveSet({
       goal: body.goal,
@@ -1911,6 +2091,23 @@ export function createApp() {
   app.post("/api/dashboard/mcp/tokens", requireAuth, async (c) => {
     const secret = (c.env.MCP_JWT_SECRET ?? "").trim();
     if (!secret) return c.json(errorBody("MCP_JWT_NOT_CONFIGURED"), errorStatus("MCP_JWT_NOT_CONFIGURED"));
+    // FGA (issue #252 P3, design §2.4): (owner, tenant:<uid>) — only the
+    // tenant's owner may mint tokens that act for the tenant. The check
+    // runs before issuance; a deny emits authz.deny and issues nothing.
+    const tenantId = tenantIdForRequest(c);
+    const identity = authzIdentityForRequest(c);
+    const correlationId = correlationForRequest(c);
+    await ensureTenantProvisioned(c.env, "agent", tenantId).catch(() => {});
+    const gate = await enforceAuthz(
+      identity,
+      instantiateDeclaration(findHttpDeclaration("POST", "/api/dashboard/mcp/tokens")!, {
+        tenantId,
+      }),
+      { correlationId, identityEnv: c.env, env: c.env },
+    );
+    if (!gate.allow) {
+      return c.json(errorBodyAs("INSUFFICIENT_SCOPE", "Only the tenant owner may issue MCP tokens."), 403);
+    }
     const body = await c.req.json().catch(() => ({})) as { subject?: string; scopes?: string[]; expiresInSec?: number };
     const scopes = (body.scopes ?? []).filter((x): x is McpScope => (MCP_SCOPES as readonly string[]).includes(x));
     if (scopes.length === 0) return c.json(errorBody("VALIDATION_FAILED"), 400);
@@ -1922,7 +2119,6 @@ export function createApp() {
     const callerUserId = c.get("identityUserId");
     const identityKind = c.get("identityKind");
     const sub = identityKind === "session" ? String(callerUserId ?? "operator") : "operator";
-    const tenantId = identityKind === "session" ? String(c.get("identityTenantId") ?? "operator") : "operator";
     // Session users mint tokens as themselves; operator/legacy callers may
     // name a subject or default to "operator".
     const subject = identityKind === "session" ? sub : ((body.subject || "").trim() || sub);
@@ -1934,13 +2130,15 @@ export function createApp() {
       expiresInSec,
       tenantId,
     });
-    // Record the issuance as an authorization tuple (token → actor_for →
-    // tenant) so authz can reason about which tenant a token may act for.
-    // Wrapped: the tuple is an annotation, the signed JWT is the authority —
-    // a tuple write must never fail issuance.
+    // Record the issuance as authorization tuples (token → actor_for →
+    // tenant, and token → actor_for → the tenant's objective) so authz can
+    // reason about which tenant — and which objective — a token may act
+    // for. Wrapped: the tuple is an annotation, the signed JWT is the
+    // authority — a tuple write must never fail issuance.
     try {
       const stub = await identityStub(c.env);
       await stub.addTuple("token", issued.claims.jti, "actor_for", "tenant", tenantId);
+      await stub.addTuple("token", issued.claims.jti, "actor_for", "objective", tenantId);
     } catch (err) {
       console.error("identity addTuple for token issuance failed:", err);
     }
