@@ -36,6 +36,7 @@ import { Think } from "@cloudflare/think";
 import { defaultModelId } from "./models";
 import type { Env, EmailRecord, SlackMechanism, SlackVia } from "./types";
 import { buildSlackRecord, type SlackRecordInput } from "./slack-record";
+import { selfProvisionOwnTenant } from "./tenant-provision";
 
 /** Bound on stored Slack messages, matching the monolith's shared limit. */
 const MAX_STORED_SLACK_MESSAGES = 500;
@@ -58,6 +59,15 @@ export interface SlackState {
 const EMPTY: SlackState = { messages: [], totalReceived: 0 };
 
 export class SlackAgent extends Think<Env, SlackState> {
+  /**
+   * Issue #315: a tenant instance can wake without any in-process dispatch
+   * (the /agents/* WebSocket path), so it seeds its own FGA tuple here.
+   * Idempotent; operator no-op; failures never block startup (the dispatch
+   * seam retries and the FGA layer denies by default).
+   */
+  async onStart(): Promise<void> {
+    await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
   initialState: SlackState = { ...EMPTY };
 
   /* ---------------------------- Think surface ---------------------------- */

@@ -54,6 +54,7 @@ import {
   resolveTenantInstance,
   type CutoverEnv,
 } from "./tenancy";
+import { selfProvisionOwnTenant } from "./tenant-provision";
 
 export const MAX_GOAL_CHARS = 500;
 const SCHEDULE_CALLBACK = "runScheduledGoal";
@@ -121,6 +122,15 @@ function a2aTraceFor(tenantId: string) {
 }
 
 export class ScheduledAgent extends Think<Env> {
+  /**
+   * Issue #315: a tenant instance can wake without any in-process dispatch
+   * (the /agents/* WebSocket path), so it seeds its own FGA tuple here.
+   * Idempotent; operator no-op; failures never block startup (the dispatch
+   * seam retries and the FGA layer denies by default).
+   */
+  async onStart(): Promise<void> {
+    await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
   override getModel() {
     return defaultModelId();
   }

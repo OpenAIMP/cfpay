@@ -8,6 +8,7 @@ import {
 import type { Env } from "./types";
 import { defaultModelId } from "./models";
 import { speakable } from "./voice-text";
+import { selfProvisionOwnTenant } from "./tenant-provision";
 
 // Voice channel for the Public.com desk (issue #168), built on the
 // documented @cloudflare/voice mixin: Workers AI speech-to-text
@@ -31,6 +32,16 @@ import { speakable } from "./voice-text";
 const VoiceBase = withVoice(Think);
 
 export class VoiceAgent extends VoiceBase<Env> {
+  /**
+   * Issue #315: a tenant instance can wake without any in-process dispatch
+   * (the /agents/* WebSocket path), so it seeds its own FGA tuple here.
+   * Idempotent; operator no-op; failures never block startup (the dispatch
+   * seam retries and the FGA layer denies by default).
+   */
+  async onStart(): Promise<void> {
+    await selfProvisionOwnTenant({ env: this.env, ctx: this.ctx });
+  }
+
   transcriber = new WorkersAIFluxSTT(this.env.AI);
   tts = new WorkersAITTS(this.env.AI);
 
