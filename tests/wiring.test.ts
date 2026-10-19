@@ -1255,6 +1255,27 @@ describe("a QA report uses one browser session, not two", () => {
     expect(qa).toContain("message.startsWith(\"Could not open a browser session\")");
   });
 
+  it("classifies a mid-check CDP socket death as a capacity refusal", () => {
+    // Issue #319: the UX audit's browser session died mid-check and workerd's
+    // raw "Can't call WebSocket send() after close()" failed the section. The
+    // smoke's capacity matcher keys on describeBrowserFailure's prefix, so
+    // the classification must recognize the closed-socket shape too.
+    expect(qa).toMatch(/can't call websocket send\(\) after close/i);
+    expect(qa).toContain("cdp connection closed");
+    // The audits' outer catches must translate through describeBrowserFailure,
+    // not pass the raw message through (which the smoke reads as a failure).
+    for (const name of ["async qaUxAudit(", "async qaUxAuditUrl("]) {
+      const start = qa.indexOf(name);
+      const end = qa.indexOf("async qa", start + name.length);
+      const body = qa.slice(start, end);
+      const catchAt = body.lastIndexOf("} catch (err) {");
+      expect(catchAt, `${name} outer catch`).toBeGreaterThan(-1);
+      expect(body.slice(catchAt, catchAt + 300), `${name} translates the error`).toContain(
+        "describeBrowserFailure(err)",
+      );
+    }
+  });
+
   it("does not leak a session from the report's early-return path", () => {
     // The specific mistake made while writing this: the catch that handles a
     // failed tab check returned without closing the connection it had opened.
