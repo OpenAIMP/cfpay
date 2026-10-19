@@ -55,7 +55,7 @@ import {
   slackAgentTool,
   webhookAgentTool,
 } from "./agent-tools";
-import { callTool, isOrderPlacingTool, safeJson } from "./public-mcp";
+import { callTool, isOrderPlacingTool, listTools, safeJson } from "./public-mcp";
 import type { McpSession, McpTool } from "./public-mcp";
 import {
   AUTOPILOT_STEP_TOOL_BUDGET,
@@ -86,6 +86,7 @@ import {
   resolveModelId,
 } from "./models";
 import { routedToolTurn } from "./routed-chat";
+import { routedCompletion } from "./model-routing";
 import { selfOrigin } from "./self-origin";
 import { runRouted } from "./model-routing";
 import {
@@ -1278,7 +1279,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
     args: Record<string, unknown>,
     text: string,
   ): Promise<{ text: string; data?: any } | null> {
-    const origin = (this.env as any).SELF_ORIGIN || "https://pay.openaimp.com";
+    const origin = selfOrigin(this.env);
     const key = (this.env as any).DASHBOARD_API_KEY || "";
     if (!key) return null;
 
@@ -2077,17 +2078,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
       }
       let response: any = undefined;
       try {
-        // NAMED EXCEPTION (issue #269, cluster C2): this call is
-        // deliberately NOT routed. modelId is the operator's explicit
-        // choice on the Public tab (resolveModelId), and the routing
-        // policy would silently substitute a different model. The
-        // bespoke recovery here is the context-length retry, not a
-        // fallback chain; quota and other errors propagate to the
-        // error catalog unchanged.
-        response = await this.env.AI.run(
-          modelId as never,
-          { messages, tools: toolSpecs, max_tokens: maxTokens } as never,
-        );
+        // Routed (issue #269, remainder): the operator's explicit model
+        // choice travels as an explicit single-model chain, so the
+        // routing policy (retry once on transients, 4006 terminal)
+        // applies WITHOUT substituting a different model. The bespoke
+        // recovery here is the context-length retry, not a fallback
+        // chain; quota and other errors propagate to the error catalog
+        // unchanged.
+        response = (
+          await routedToolTurn(this.env.AI, messages, toolSpecs, maxTokens, {
+            chain: [modelId],
+          })
+        ).raw;
       } catch (err) {
         // Only the context-length rejection is recoverable here; anything else
         // propagates unchanged.
@@ -2100,10 +2102,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
         const retryTokens = limit - reportedInput - 512;
         if (retryTokens < 128) throw contextError(limit, reportedInput);
         try {
-          response = await this.env.AI.run(
-            modelId as never,
-            { messages, tools: toolSpecs, max_tokens: retryTokens } as never,
-          );
+          response = (
+            await routedToolTurn(this.env.AI, messages, toolSpecs, retryTokens, {
+              chain: [modelId],
+            })
+          ).raw;
         } catch {
           // The reported count is a floor ("at least"), so a retry can still
           // overflow. State it plainly rather than leaking a second AiError.
@@ -2247,6 +2250,48 @@ Do not claim to have completed a payment unless you have received confirmation.`
   }
 
   /**
+   * Desk ask for the voice channel (issue #269, remainder): the exact
+   * pipeline the dashboard reaches via POST /api/public/chat —
+   * Public token, tool list, operator-chosen model, then
+   * answerInstrumentQuestion — exposed as one @callable() so the
+   * VoiceAgent can invoke it in-process over an RPC-capable stub
+   * instead of HTTP self-fetch. The HTTP route is untouched; this
+   * shares its logic, not its transport. Validation of the question
+   * stays the caller's (voice trims and rejects empties).
+   *
+   * @callable() matters: VoiceAgent reaches this over a
+   * getAgentByName stub, and only decorated methods are on the RPC
+   * surface (see issue #272 / PR #293).
+   */
+  @callable()
+  async deskAsk(question: string): Promise<
+    | {
+        ok: true;
+        answer: string;
+        trace: ToolTrace[];
+        model: string;
+        cost: UsageCost | null;
+        finishReason: string;
+      }
+    | { ok: false; code: "NOT_CONNECTED" | "NO_TOOLS" }
+  > {
+    const token = await this.getPublicToken();
+    if (!token) return { ok: false, code: "NOT_CONNECTED" };
+    const session: McpSession = {};
+    const tools = await listTools(token, session);
+    if (tools.length === 0) return { ok: false, code: "NO_TOOLS" };
+    const storedModel = await this.getPublicModel();
+    const { answer, trace, model, cost, finishReason } = await this.answerInstrumentQuestion(
+      token,
+      question,
+      tools,
+      session,
+      storedModel,
+    );
+    return { ok: true, answer, trace, model, cost, finishReason };
+  }
+
+  /**
    * Translate MCP tool definitions into the Workers AI chat-completions tool
    * schema: [{type:"function", function:{name, description, parameters}}].
    *
@@ -2298,12 +2343,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const modelId = resolveModelId(model);
     return runAutopilotPipeline(
       {
-        // NAMED EXCEPTION (issue #269, cluster C2): deliberately NOT
-        // routed. The pipeline threads its own per-step model ids (mid);
-        // a per-call chain router would silently substitute models the
-        // pipeline chose, breaking its model threading and cost tracing.
-        aiRun: (mid, messages, maxTokens) =>
-          this.env.AI.run(mid as never, { messages, max_tokens: maxTokens } as never),
+        // Routed (issue #269, remainder): each per-step model id
+        // travels as an explicit single-model chain, so the routing
+        // policy (retry once on transients, 4006 terminal) applies
+        // WITHOUT substituting a different model — the pipeline's model
+        // threading and cost tracing are preserved, and aiRun's raw
+        // envelope contract is unchanged.
+        aiRun: async (mid, messages, maxTokens) =>
+          (
+            await routedCompletion(this.env.AI, messages, maxTokens, {
+              chain: [mid],
+            })
+          ).raw,
         runStep: (question) =>
           this.answerInstrumentQuestion(token, question, tools, session, modelId, {
             maxToolCalls: AUTOPILOT_STEP_TOOL_BUDGET,
@@ -2335,12 +2386,18 @@ Do not claim to have completed a payment unless you have received confirmation.`
     const modelId = resolveModelId(model);
     const result = await runAutopilotPipeline(
       {
-        // NAMED EXCEPTION (issue #269, cluster C2): deliberately NOT
-        // routed. The pipeline threads its own per-step model ids (mid);
-        // a per-call chain router would silently substitute models the
-        // pipeline chose, breaking its model threading and cost tracing.
-        aiRun: (mid, messages, maxTokens) =>
-          this.env.AI.run(mid as never, { messages, max_tokens: maxTokens } as never),
+        // Routed (issue #269, remainder): each per-step model id
+        // travels as an explicit single-model chain, so the routing
+        // policy (retry once on transients, 4006 terminal) applies
+        // WITHOUT substituting a different model — the pipeline's model
+        // threading and cost tracing are preserved, and aiRun's raw
+        // envelope contract is unchanged.
+        aiRun: async (mid, messages, maxTokens) =>
+          (
+            await routedCompletion(this.env.AI, messages, maxTokens, {
+              chain: [mid],
+            })
+          ).raw,
         runStep: (question) =>
           this.answerInstrumentQuestion(token, question, tools, session, modelId, {
             maxToolCalls: AUTOPILOT_STEP_TOOL_BUDGET,

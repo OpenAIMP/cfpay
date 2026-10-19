@@ -29,6 +29,7 @@
  */
 
 import catalogue from "./models.json";
+import { routedCompletion } from "./model-routing";
 
 export interface ModelInfo {
   id: string;
@@ -209,6 +210,11 @@ export interface BudgetSynthesisResult {
  * instruction restates the answer contract (verdict first where called
  * for, evidence-only figures, n/a for anything unretrieved) because the
  * synthesis is only as honest as the evidence it is forced to cite.
+ *
+ * Routed (issue #269, remainder): the caller's chosen model travels as
+ * an explicit single-model chain, so the shared retry/terminal policy
+ * applies without substituting a different model. Prompt, parameters
+ * and parsing are unchanged; any failure still resolves to null.
  */
 export async function budgetSynthesis(
   ai: { run: (model: never, input: never) => Promise<unknown> },
@@ -224,21 +230,18 @@ export async function budgetSynthesis(
     maxTokens = Math.max(384, Math.min(2048, contextWindow - est - 512));
   }
   try {
-    const raw: any = await ai.run(
-      modelId as never,
+    const messagesWithInstruction = [
+      ...messages,
       {
-        messages: [
-          ...messages,
-          {
-            role: "user",
-            content:
-              "You have no tool calls left. Answer the original question NOW from the evidence already gathered above. Follow the answer contract exactly (verdict first where one is called for, evidence-only figures, n/a for anything the tools did not return). Do not say you need more data; state plainly what the gathered evidence does and does not support.",
-          },
-        ],
-        max_tokens: maxTokens,
-      } as never,
-    );
-    const completion = readCompletion(raw);
+        role: "user",
+        content:
+          "You have no tool calls left. Answer the original question NOW from the evidence already gathered above. Follow the answer contract exactly (verdict first where one is called for, evidence-only figures, n/a for anything the tools did not return). Do not say you need more data; state plainly what the gathered evidence does and does not support.",
+      },
+    ];
+    const { raw } = await routedCompletion(ai, messagesWithInstruction, maxTokens, {
+      chain: [modelId],
+    });
+    const completion = readCompletion(raw as any);
     const text = (completion.text || "").trim();
     if (!text) return null;
     const u: any = completion.usage || {};

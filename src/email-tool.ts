@@ -17,6 +17,7 @@
  */
 
 import type { Env } from "./types";
+import { selfOrigin } from "./self-origin";
 import { A2A_EMAIL_RPC_PATH } from "./a2a";
 
 /**
@@ -129,7 +130,7 @@ export async function callEmailAgent(
   args: Record<string, unknown>,
   text: string,
 ): Promise<EmailToolResult | null> {
-  const origin = (env as any).SELF_ORIGIN || "https://pay.openaimp.com";
+  const origin = selfOrigin(env);
   const key = (env as any).DASHBOARD_API_KEY || "";
   if (!key) return null;
 

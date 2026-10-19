@@ -3,6 +3,7 @@ import { allowsDiscovery, resourceMetadataUrl } from "./mcp-oauth";
 import { isAcceptedAccessToken } from "./mcp-oauth-server";
 import { looksLikeJwt, requiredScopesForCall, verifyToken, WRITE_TOOLS } from "./mcp-jwt";
 import { errorBody, errorBodyAs } from "./errors";
+import { timingSafeEqual } from "./crypto-hmac";
 
 /**
  * Authorisation for the /mcp endpoint.
@@ -46,15 +47,13 @@ const githubTokenCache = new Map<string, number>();
 
 /**
  * Constant-time comparison, so a wrong secret cannot be recovered by measuring
- * how long the check takes.
+ * how long the check takes. Delegates to the single-owner byte comparison
+ * (issue #269, remainder): UTF-8 encoding is injective, so outcomes are
+ * identical for all inputs; the bearer tokens compared here are ASCII.
  */
 export function timingSafeStringEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
+  const enc = new TextEncoder();
+  return timingSafeEqual(enc.encode(a), enc.encode(b));
 }
 
 /**

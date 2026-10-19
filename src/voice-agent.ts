@@ -6,7 +6,6 @@ import {
   type VoiceTurnContext,
 } from "@cloudflare/voice";
 import type { Env } from "./types";
-import { selfOrigin } from "./self-origin";
 import { defaultModelId } from "./models";
 import { speakable } from "./voice-text";
 
@@ -22,11 +21,13 @@ import { speakable } from "./voice-text";
 // dispatch, and a read-only snapshot for A2A callers.
 //
 // The agent's one job is the voice channel. The answers come from
-// the desk pipeline itself, reached the same way the dashboard
-// reaches it (POST /api/public/chat) - so a spoken question gets
-// exactly the typed pipeline's answer, including its guard rails:
-// order-placing calls still become approval-gated proposals there,
-// never executions.
+// the desk pipeline itself, reached in-process through the host
+// agent's deskAsk callable (issue #269, remainder) - so a spoken
+// question gets exactly the typed pipeline's answer, including its
+// guard rails: order-placing calls still become approval-gated
+// proposals there, never executions. The old HTTP self-fetch of the
+// Worker's own public-chat route is gone (that path is a 522 in the
+// fetch-handler context; see issue #264).
 const VoiceBase = withVoice(Think);
 
 export class VoiceAgent extends VoiceBase<Env> {
@@ -51,27 +52,26 @@ export class VoiceAgent extends VoiceBase<Env> {
 
   /** Run one question through the desk pipeline; returns speakable prose. */
   async answerQuestion(question: string): Promise<string> {
-    const origin = selfOrigin(this.env);
     try {
-      const res = await fetch(`${origin}/api/public/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": this.env.DASHBOARD_API_KEY,
-        },
-        body: JSON.stringify({ message: question }),
-      });
-      const json = (await res.json().catch(() => null)) as {
-        answer?: string;
-        error?: string;
-      } | null;
-      if (res.status === 409) {
-        return "The Public dot com desk is not connected yet. Connect it in the Public tab first, then ask me again.";
-      }
-      if (!res.ok || !json?.answer) {
+      // In-process RPC to the host (issue #269, remainder): the same
+      // pipeline as the public-chat HTTP route, without the HTTP round
+      // trip. Failure mapping mirrors the route's: 409 -> not-connected,
+      // 502 -> generic desk failure, transport throw -> unreachable.
+      const { hostStub } = await import("./agent-stubs");
+      const host = await hostStub(this.env);
+      const result = (await host.deskAsk(question)) as
+        | { ok: true; answer: string }
+        | { ok: false; code: string };
+      if (!result.ok) {
+        if (result.code === "NOT_CONNECTED") {
+          return "The Public dot com desk is not connected yet. Connect it in the Public tab first, then ask me again.";
+        }
         return "The trading desk could not answer that just now. The details are in the Public tab.";
       }
-      return speakable(json.answer);
+      if (!result.answer) {
+        return "The trading desk could not answer that just now. The details are in the Public tab.";
+      }
+      return speakable(result.answer);
     } catch {
       return "I could not reach the trading desk just now.";
     }
