@@ -1,0 +1,99 @@
+# Self-heal fixer — GitHub Actions edition, COPILOT-FREE (issue #195).
+#
+# Owner directive (2026-10-18): self-healing stays, Copilot is out for
+# now. This is the original Copilot variant with every Copilot step
+# COMMENTED OUT (not deleted), so the workflow remains the repo-side
+# shell of the self-healing loop and Copilot can be switched back on
+# by uncommenting the marked blocks.
+#
+# HOW IT WORKS NOW: this workflow does not assign or fix anything.
+# When a [QA self-heal] issue is filed (and on a 6-hour sweep), the
+# jobs below simply note the queue state. The actual fixing is done
+# by the Muse fixer lane — the qa-self-heal-fixer cron (every
+# 30 minutes) plus the qa-self-heal-watch hook (60-second poll) —
+# which claims issues under branch-as-lock, opens fix PRs, and merges
+# them when the checks are green. The post-deploy smoke files the
+# issues and auto-closes them when a section passes again.
+#
+# TO RE-ENABLE COPILOT: uncomment the blocks marked "COPILOT (disabled
+# 2026-10-18)" in both jobs and restore the name/env lines noted
+# inline. The Copilot path also needs the Copilot coding agent
+# available on the repo (the account's Copilot plan) and optionally a
+# COPILOT_ASSIGN_TOKEN secret if GITHUB_TOKEN cannot assign.
+#
+# INSTALL: create .github/workflows/self-heal-fixer.yml with exactly
+# this content (same file in both OpenAIMP/cfpay and OpenAIMP/cfagent).
+
+name: Self-heal Fixer
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  assign-opened:
+    name: Note the new self-heal issue (Muse fixer lane owns the queue)
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'issues' && startsWith(github.event.issue.title, '[QA self-heal]')
+    # COPILOT (disabled 2026-10-18): env for the assignment step below.
+    # env:
+    #   GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN || secrets.GITHUB_TOKEN }}
+    #   ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - name: Queue note
+        run: |
+          echo "New [QA self-heal] issue #${{ github.event.issue.number }}: queued for the Muse fixer lane (cron + watch hook). Copilot assignment is disabled by owner directive (2026-10-18)."
+      # COPILOT (disabled 2026-10-18): the original assignment step.
+      # - name: Assign to Copilot
+      #   run: |
+      #     set -euo pipefail
+      #     OWNER="${{ github.repository_owner }}"
+      #     NAME="${{ github.event.repository.name }}"
+      #     REPO_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { id } }" --jq '.data.repository.id')
+      #     BOT_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { suggestedActors(first: 20) { nodes { id login } } } }" --jq '.data.repository.suggestedActors.nodes[]? | select(.login == "copilot-swe-agent") | .id' 2>/dev/null | head -1 || true)
+      #     if [ -z "${BOT_ID}" ]; then
+      #       gh issue comment "${ISSUE_NUMBER}" --body "Self-heal fixer (Actions/Copilot): Copilot coding agent is not available on this repository, so no assignment was made. The Muse fixer remains on this queue."
+      #       exit 0
+      #     fi
+      #     ISSUE_ID=$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}" --jq '.node_id')
+      #     gh api graphql -H 'GraphQL-Features: issues_copilot_assignment_api_support,coding_agent_model_selection' -f query="mutation { replaceActorsForAssignable(input: { assignableId: \"$ISSUE_ID\", actorIds: [\"$BOT_ID\"], agentAssignment: { targetRepositoryId: \"$REPO_ID\", baseRef: \"main\", customInstructions: \"This is an automated post-deploy QA failure; the issue body is your brief. Triage first: if the cause is environmental (browser capacity, Workers AI neuron limits, provider transients) or needs the owner (a dashboard step, a secret, a policy decision), post that triage as an issue comment and make NO code changes. Otherwise make the minimal fix, run npx tsc --noEmit and npm test until both are green, and keep the pull request as a draft for human review - never merge. Never edit .github/workflows. Keep the change scoped to the failing area.\", customAgent: \"\", model: \"\" } }) { assignable { ... on Issue { id } } } }"
+      #     gh issue comment "${ISSUE_NUMBER}" --body "Assigned to Copilot by the self-heal fixer workflow. Copilot's draft PR is the fix candidate; a human reviews and merges."
+
+  sweep:
+    name: Sweep note (Muse fixer lane owns the queue)
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'issues'
+    # COPILOT (disabled 2026-10-18): env for the sweep step below.
+    # env:
+    #   GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Sweep note
+        run: |
+          echo "Self-heal sweep: the Muse fixer lane works the [QA self-heal] queue on a 30-minute cycle. Copilot assignment is disabled by owner directive (2026-10-18)."
+      # COPILOT (disabled 2026-10-18): the original sweep step.
+      # - name: Sweep
+      #   run: |
+      #     set -euo pipefail
+      #     OWNER="${{ github.repository_owner }}"
+      #     NAME="${{ github.event.repository.name }}"
+      #     REPO_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { id } }" --jq '.data.repository.id')
+      #     BOT_ID=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { suggestedActors(first: 20) { nodes { id login } } } }" --jq '.data.repository.suggestedActors.nodes[]? | select(.login == "copilot-swe-agent") | .id' 2>/dev/null | head -1 || true)
+      #     if [ -z "${BOT_ID}" ]; then
+      #       echo "Copilot coding agent not available; nothing to sweep."
+      #       exit 0
+      #     fi
+      #     CUTOFF=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+      #     gh issue list --state open --limit 100 --json number,title,assignees,comments \
+      #       --jq '.[] | select(.title | startswith("[QA self-heal]")) | select(.assignees | length == 0) | select([.comments[] | select(.body | contains("Fix PR:"))] | length == 0) | select([.comments[] | select(.body | contains("Fix claimed by")) | select(.createdAt > "'"$CUTOFF"'")] | length == 0) | .number' \
+      #     | while read -r N; do
+      #         ISSUE_ID=$(gh api "repos/${{ github.repository }}/issues/${N}" --jq '.node_id')
+      #         gh api graphql -H 'GraphQL-Features: issues_copilot_assignment_api_support,coding_agent_model_selection' -f query="mutation { replaceActorsForAssignable(input: { assignableId: \"$ISSUE_ID\", actorIds: [\"$BOT_ID\"], agentAssignment: { targetRepositoryId: \"$REPO_ID\", baseRef: \"main\", customInstructions: \"This is an automated post-deploy QA failure; the issue body is your brief. Triage first: if the cause is environmental (browser capacity, Workers AI neuron limits, provider transients) or needs the owner (a dashboard step, a secret, a policy decision), post that triage as an issue comment and make NO code changes. Otherwise make the minimal fix, run npx tsc --noEmit and npm test until both are green, and keep the pull request as a draft for human review - never merge. Never edit .github/workflows. Keep the change scoped to the failing area.\", customAgent: \"\", model: \"\" } }) { assignable { ... on Issue { id } } } }"
+      #         gh issue comment "${N}" --body "Assigned to Copilot by the self-heal fixer sweep. Copilot's draft PR is the fix candidate; a human reviews and merges."
+      #       done
