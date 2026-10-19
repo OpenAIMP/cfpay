@@ -429,3 +429,8 @@ export interface TradeWorkflowParams {
    */
   trace?: { correlationId: string };
 }
+
+/** Parameters handed to an EvidenceWorkflow instance: which recommendation it owns. */
+export interface EvidenceWorkflowParams {
+  recommendationId: string;
+}

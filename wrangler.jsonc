@@ -89,6 +89,11 @@
       "name": "trade-workflow",
       "binding": "TRADE_WORKFLOW",
       "class_name": "TradeWorkflow"
+    },
+    {
+      "name": "evidence-workflow",
+      "binding": "EVIDENCE_WORKFLOW",
+      "class_name": "EvidenceWorkflow"
     }
   ],
   "send_email": [

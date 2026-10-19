@@ -1933,6 +1933,159 @@ Do not claim to have completed a payment unless you have received confirmation.`
     await this.writeTradeProposal(proposal);
   }
 
+  // ========================================
+  // Test-harness evidence lanes (cfpay #245)
+  // ========================================
+  //
+  // On-demand trigger surface (desk pattern): startEvidenceRun /
+  // getEvidence / evidenceAdvance are @callable() so the dashboard and
+  // agents reach them over RPC. Scheduled triggers use the goal-text
+  // contract from src/test-harness/lanes.ts: a ScheduledAgent goal whose
+  // text is `Advance the evidence run for recommendation <id>
+  // (evidence.advance).` — no new scheduler is built. The evidence
+  // workflow arms `scheduled.once` follow-ups with that text while a lane
+  // is still open (see evidenceAdvanceAndArm below).
+
+  /**
+   * Start an evidence run for one recommendation: creates the evidence
+   * record (both lanes pending) and starts its EvidenceWorkflow. Throws
+   * when the workflow cannot be started; the record is left behind so the
+   * dashboard shows why nothing is running.
+   */
+  @callable()
+  async startEvidenceRun(
+    spec: import("./evidence-agent").EvidenceStartSpec,
+  ): Promise<import("./test-harness/evidence").EvidenceRecord> {
+    const mod = await import("./evidence-agent");
+    const record = mod.startEvidenceRun(this.ctx.storage.sql, spec);
+    try {
+      record.workflowId = await this.runWorkflow(
+        "EVIDENCE_WORKFLOW",
+        { recommendationId: record.recommendationId },
+        { metadata: { recommendationId: record.recommendationId } },
+      );
+    } catch (err) {
+      const store = new (await import("./evidence-store")).EvidenceStore(
+        this.ctx.storage.sql,
+      );
+      store.save(record);
+      throw err;
+    }
+    const store = new (await import("./evidence-store")).EvidenceStore(
+      this.ctx.storage.sql,
+    );
+    store.save(record);
+    return record;
+  }
+
+  /** Read an evidence record (dossier text once finalized). */
+  @callable()
+  async getEvidence(
+    recommendationId: string,
+  ): Promise<import("./test-harness/evidence").EvidenceRecord | null> {
+    const mod = await import("./evidence-agent");
+    return mod.getEvidenceRecord(this.ctx.storage.sql, recommendationId);
+  }
+
+  /**
+   * Advance an open evidence run: poll backtest handles, re-read the paper
+   * order and evaluate the exit, finalize when both lanes are terminal.
+   * Idempotent — safe to call from duplicate scheduled follow-ups.
+   */
+  @callable()
+  async evidenceAdvance(
+    recommendationId: string,
+  ): Promise<{ rearmed: boolean }> {
+    const mod = await import("./evidence-agent");
+    const env = this.env as unknown as import("./test-harness/providers").ProviderEnv;
+    const { rearmed } = await mod.advanceEvidence(
+      this.ctx.storage.sql,
+      env,
+      recommendationId,
+    );
+    return { rearmed };
+  }
+
+  /** Workflow step: submit the backtest lane (records failure, never throws for lane errors). */
+  async evidenceSubmitBacktest(recommendationId: string): Promise<void> {
+    const mod = await import("./evidence-agent");
+    const env = this.env as unknown as import("./test-harness/providers").ProviderEnv;
+    await mod.submitBacktestFor(this.ctx.storage.sql, env, recommendationId);
+  }
+
+  /** Workflow step: place the forward paper order (paper-guarded, idempotent). */
+  async evidenceSubmitForward(recommendationId: string): Promise<void> {
+    const mod = await import("./evidence-agent");
+    const env = this.env as unknown as import("./test-harness/providers").ProviderEnv;
+    await mod.submitForwardFor(this.ctx.storage.sql, env, recommendationId);
+  }
+
+  /**
+   * Workflow step: advance whatever is already terminal, then arm a
+   * `scheduled.once` follow-up (goal-text contract) while a lane is still
+   * open. Arming is best-effort: if the dispatch fails the run simply
+   * waits for the next on-demand or scheduled advance — the evidence
+   * record is the truth either way.
+   */
+  async evidenceAdvanceAndArm(recommendationId: string): Promise<void> {
+    const mod = await import("./evidence-agent");
+    const env = this.env as unknown as import("./test-harness/providers").ProviderEnv;
+    const { rearmed, goalText, followUpDelaySeconds } = await mod.advanceEvidence(
+      this.ctx.storage.sql,
+      env,
+      recommendationId,
+    );
+    if (!rearmed || !goalText) return;
+    try {
+      await this.dispatchToScheduledAgent("scheduled.once", {
+        goal: goalText,
+        delaySeconds: followUpDelaySeconds,
+      });
+    } catch {
+      // Best-effort: the record stays correct; the next advance (on-demand
+      // or scheduled) picks the run up.
+    }
+  }
+
+  /**
+   * In-process A2A dispatch to the ScheduledAgent ("scheduler" instance),
+   * mirroring AutopilotAgent.dispatchToAgent: message/stream with the
+   * snapshot text part plus the operation data part, read back through the
+   * shared a2aReplyFromOutcome reader. Dynamic a2a import keeps this module
+   * Vitest-safe at the top level.
+   */
+  private async dispatchToScheduledAgent(
+    operation: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const ns = (this.env as unknown as Record<string, DurableObjectNamespace | undefined>)
+      .SCHEDULED_AGENT;
+    if (!ns) throw new Error("SCHEDULED_AGENT binding is not configured.");
+    const stub = ns.get(ns.idFromName("scheduler")) as unknown as {
+      handleA2A: (body: unknown, origin: string) => Promise<unknown>;
+    };
+    const msgId = `evidence-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const body = {
+      jsonrpc: "2.0",
+      id: msgId,
+      method: "message/stream",
+      params: {
+        message: {
+          role: "user",
+          parts: [
+            { kind: "text", text: operation },
+            { kind: "data", data: { operation, ...args } },
+          ],
+          messageId: msgId,
+          kind: "message",
+        },
+      },
+    };
+    const outcome = await stub.handleA2A(body, "https://cfmail-agent.internal");
+    const { a2aReplyFromOutcome } = await import("./a2a");
+    return a2aReplyFromOutcome(outcome);
+  }
+
   /**
    * Workflow callback: execute the recorded call against Public.com
    * exactly as approved. Fail-closed in three places: the proposal must

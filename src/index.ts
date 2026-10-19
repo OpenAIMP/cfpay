@@ -87,6 +87,7 @@ export { OrchestratorAgent } from "./orchestrator-agent";
 export { ScheduledAgent } from "./scheduled-agent";
 export { AutopilotAgent } from "./autopilot-agent";
 export { TradeWorkflow } from "./trade-workflow";
+export { EvidenceWorkflow } from "./evidence-workflow";
 
 const app = createApp();
 

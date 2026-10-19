@@ -106,6 +106,14 @@
       "name": "trade-workflow-preview",
       "binding": "TRADE_WORKFLOW",
       "class_name": "TradeWorkflow"
+    },
+    {
+      // Same deliberately-different-name rule as trade-workflow-preview:
+      // deploying this config under production's "evidence-workflow" name
+      // would reassign the live workflow away from the cfmail-agent Worker.
+      "name": "evidence-workflow-preview",
+      "binding": "EVIDENCE_WORKFLOW",
+      "class_name": "EvidenceWorkflow"
     }
   ],
   "send_email": [
