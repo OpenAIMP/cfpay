@@ -38,20 +38,36 @@ export interface SlackEnv {
   SLACK_QA_CHANNEL_ID?: string;
 }
 
-/** Post a header message, then upload each file into the channel. */
+/** Post a header message, then upload each file into SLACK_QA_CHANNEL_ID. */
 export async function postFilesToSlack(
   env: SlackEnv,
   headerText: string,
   files: SlackFile[],
   doFetch: FetchFn = fetch,
 ): Promise<SlackPostResult> {
+  return postFilesToChannel(env, env.SLACK_QA_CHANNEL_ID, headerText, files, doFetch);
+}
+
+/**
+ * Post a header message, then upload each file into `channel`.
+ *
+ * Split out of postFilesToSlack (issue #331): A2A callers address a channel
+ * per request, while the email/QA callers keep posting to
+ * SLACK_QA_CHANNEL_ID. The upload path itself is identical.
+ */
+export async function postFilesToChannel(
+  env: SlackEnv,
+  channel: string | undefined,
+  headerText: string,
+  files: SlackFile[],
+  doFetch: FetchFn = fetch,
+): Promise<SlackPostResult> {
   const token = env.SLACK_BOT_TOKEN;
-  const channel = env.SLACK_QA_CHANNEL_ID;
   if (!token || !channel) {
     return {
       configured: false,
       posted: 0,
-      error: "Slack file posting is not configured (SLACK_BOT_TOKEN / SLACK_QA_CHANNEL_ID).",
+      error: "Slack file posting is not configured (SLACK_BOT_TOKEN / channel).",
     };
   }
   const headers = { Authorization: `Bearer ${token}` };
