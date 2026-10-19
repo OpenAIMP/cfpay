@@ -1,25 +1,40 @@
 import { errorResponseAs } from "./errors";
 import type { Env } from "./types";
+import { accountingEvent, emitAspectEvent, mintCorrelationId } from "./aspect-logging";
+import { verifyGoogleIdToken } from "./google-oauth";
 
 /**
- * GitHub OAuth sign-on for the dashboard.
+ * Dashboard OAuth sign-on (issue #252 P2): provider-parameterized GitHub +
+ * Google flows backed by app-scoped sessions minted by the IdentityAgent.
  *
- * Additive auth capability: the existing X-API-Key sign-on is untouched.
- * This module provides:
- *   GET  /auth/login    → start GitHub OAuth flow
- *   GET  /auth/callback → GitHub redirect target, exchanges code for token
- *   GET  /auth/me       → current OAuth user (or 401)
- *   POST /auth/logout   → clear session cookies
+ * Endpoints:
+ *   GET  /auth/login           → start GitHub OAuth flow
+ *   GET  /auth/callback        → GitHub redirect target, exchanges code
+ *   GET  /auth/google/login    → start Google OAuth flow
+ *   GET  /auth/google/callback → Google redirect target, exchanges code
+ *   GET  /auth/me              → current user (session or legacy cookie)
+ *   POST /auth/logout          → revoke session + clear cookies
  *
- * Session is held in httpOnly cookies (no tokens in localStorage).
- * Follows the pattern from cloudflare/agents examples/auth-agent.
+ * Session is held in the httpOnly `app_session` cookie whose value is the
+ * opaque session token minted by IdentityAgent.loginComplete. Max-Age is
+ * 86400 (24h sliding); the absolute cap is enforced server-side by the
+ * identity core. The provider access token is NEVER stored: on callback
+ * success it is exchanged, used once for the user lookup, and discarded.
+ *
+ * The existing X-API-Key sign-on is untouched.
  */
 
-const STATE_COOKIE = "gh_oauth_state";
-const TOKEN_COOKIE = "gh_access_token";
+export const APP_SESSION_COOKIE = "app_session";
+
+export type OAuthProvider = "github" | "google";
+
+const GH_STATE_COOKIE = "gh_oauth_state";
+const GO_STATE_COOKIE = "go_oauth_state";
+/** DEPRECATED (kept one release): legacy GitHub access-token session cookie. */
+const LEGACY_TOKEN_COOKIE = "gh_access_token";
 const STATE_TTL_SECONDS = 600; // 10 minutes
 
-function buildCookie(
+export function buildCookie(
   name: string,
   value: string,
   opts: { maxAge?: number; secure: boolean },
@@ -30,11 +45,11 @@ function buildCookie(
   return parts.join("; ");
 }
 
-function clearCookie(name: string, secure: boolean): string {
+export function clearCookie(name: string, secure: boolean): string {
   return buildCookie(name, "", { maxAge: 0, secure });
 }
 
-function getCookie(request: Request, name: string): string | null {
+export function getCookie(request: Request, name: string): string | null {
   const header = request.headers.get("Cookie");
   if (!header) return null;
   for (const part of header.split(";")) {
@@ -50,6 +65,41 @@ function isSecure(request: Request): boolean {
 
 function noStoreHeaders(): HeadersInit {
   return { "Cache-Control": "no-store" };
+}
+
+/** Identity backend contract (test seam). */
+export interface IdentityBackend {
+  loginComplete(
+    provider: string,
+    subject: string,
+    profile: { login?: string | null; email?: string | null; name?: string | null },
+  ): Promise<{
+    user: { id: string; primaryEmail: string | null; createdAt: string; lastSeenAt: string };
+    created: boolean;
+    session: { token: string };
+  }>;
+  validateSession(
+    token: string,
+  ): Promise<{ session: unknown; user: { id: string; primaryEmail: string | null; createdAt?: string } } | null>;
+  revokeSession(token: string): Promise<unknown>;
+}
+
+/**
+ * Default backend: the IdentityAgent Durable Object's @callable surface via
+ * a stub. The `agents` SDK import stays dynamic inside agent-stubs.ts so this
+ * module's top level remains SDK-free.
+ */
+export function defaultIdentityBackend(env: any): IdentityBackend {
+  async function id(): Promise<any> {
+    const { identityStub } = (await import("./agent-stubs")) as any;
+    return identityStub(env);
+  }
+  return {
+    loginComplete: (provider, subject, profile) =>
+      id().then((stub) => stub.loginComplete(provider, subject, profile)),
+    validateSession: (token) => id().then((stub) => stub.validateSession(token)),
+    revokeSession: (token) => id().then((stub) => stub.revokeSession(token)),
+  };
 }
 
 export interface GitHubUser {
@@ -105,15 +155,63 @@ async function validateToken(token: string): Promise<GitHubUser | null> {
 }
 
 /**
- * Resolve the OAuth user from the request's session cookie.
- * Returns null when there is no session or the token is invalid.
+ * Resolve the legacy OAuth user from the request's legacy session cookie.
+ * Behavior is unchanged from before the #252 P2 rewrite (legacy branch).
  */
 export async function getOAuthUserFromRequest(
   request: Request,
 ): Promise<GitHubUser | null> {
-  const token = getCookie(request, TOKEN_COOKIE);
+  const token = getCookie(request, LEGACY_TOKEN_COOKIE);
   if (!token) return null;
   return validateToken(token);
+}
+
+function authnFailure(
+  env: Env,
+  provider: OAuthProvider,
+  reason: string,
+  correlationId: string,
+): void {
+  emitAspectEvent(
+    accountingEvent("authn.failure", {
+      tenantId: "unknown",
+      userId: "unknown",
+      correlationId,
+      agent: "identity",
+      detail: { provider, reason },
+    }),
+    env,
+  );
+}
+
+function authnSuccessEvents(
+  env: Env,
+  provider: OAuthProvider,
+  tenantId: string,
+  userId: string,
+  created: boolean,
+): void {
+  const correlationId = mintCorrelationId();
+  emitAspectEvent(
+    accountingEvent("authn.success", {
+      tenantId,
+      userId,
+      correlationId,
+      agent: "identity",
+      detail: { provider, created },
+    }),
+    env,
+  );
+  emitAspectEvent(
+    accountingEvent("session.mint", {
+      tenantId,
+      userId,
+      correlationId,
+      agent: "identity",
+      detail: { provider },
+    }),
+    env,
+  );
 }
 
 /** GET /auth/login — start the GitHub OAuth flow. */
@@ -135,63 +233,257 @@ export function handleAuthLogin(request: Request, env: Env): Response {
     status: 302,
     headers: {
       Location: authorize.toString(),
-      "Set-Cookie": buildCookie(STATE_COOKIE, state, { maxAge: STATE_TTL_SECONDS, secure }),
+      "Set-Cookie": buildCookie(GH_STATE_COOKIE, state, { maxAge: STATE_TTL_SECONDS, secure }),
       ...noStoreHeaders(),
     },
   });
 }
 
-/** GET /auth/callback — GitHub redirect target. */
-export async function handleAuthCallback(request: Request, env: Env): Promise<Response> {
+/**
+ * GET /auth/callback — GitHub redirect target.
+ *
+ * Exchanges the code, fetches the GitHub user, mints an app session via the
+ * identity backend, sets the app_session cookie, DISCARDS the GitHub access
+ * token (it is never stored), and 302s to "/".
+ */
+export async function handleAuthCallback(
+  request: Request,
+  env: Env,
+  backend?: IdentityBackend,
+): Promise<Response> {
   const secure = isSecure(request);
   const url = new URL(request.url);
   const headers = new Headers(noStoreHeaders());
   // Always clear the state cookie.
-  headers.append("Set-Cookie", clearCookie(STATE_COOKIE, secure));
+  headers.append("Set-Cookie", clearCookie(GH_STATE_COOKIE, secure));
+  const correlationId = mintCorrelationId();
 
   const error = url.searchParams.get("error");
   if (error) {
+    authnFailure(env, "github", "provider_error", correlationId);
     return new Response(`OAuth error: ${error}`, { status: 400, headers });
   }
 
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  const expectedState = getCookie(request, STATE_COOKIE);
+  const expectedState = getCookie(request, GH_STATE_COOKIE);
 
   if (!code || !state || !expectedState || state !== expectedState) {
+    authnFailure(env, "github", "invalid_state", correlationId);
     return new Response("Invalid OAuth state", { status: 400, headers });
   }
 
   const redirectUri = `${url.origin}/auth/callback`;
   const token = await exchangeCodeForToken(code, env, redirectUri);
   if (!token) {
+    authnFailure(env, "github", "exchange_failed", correlationId);
     return new Response("OAuth token exchange failed", { status: 502, headers });
   }
   const user = await fetchGitHubUser(token);
   if (!user) {
+    authnFailure(env, "github", "user_lookup_failed", correlationId);
     return new Response("OAuth user lookup failed", { status: 502, headers });
   }
 
-  // NOTE: same simplification as the auth-agent example — the GitHub access
-  // token is stored directly in the httpOnly session cookie. For a production
-  // deployment, exchange it for an app-scoped session token instead.
+  // Mint the app session; the GitHub access token is discarded here (not stored).
+  const id = backend ?? defaultIdentityBackend(env);
+  const result = await id.loginComplete("github", String(user.id), {
+    login: user.login,
+    email: null,
+    name: user.name,
+  });
+  const tenantId = result.user.id;
+  authnSuccessEvents(env, "github", tenantId, tenantId, result.created);
+
   headers.append(
     "Set-Cookie",
-    buildCookie(TOKEN_COOKIE, token, { secure }), // session cookie (no Max-Age)
+    buildCookie(APP_SESSION_COOKIE, result.session.token, { maxAge: 86400, secure }),
   );
   headers.set("Location", "/");
   return new Response(null, { status: 302, headers });
 }
 
-/** GET /auth/me — current OAuth user or 401. */
-export async function handleAuthMe(request: Request): Promise<Response> {
-  const user = await getOAuthUserFromRequest(request);
+/** GET /auth/google/login — start the Google OAuth flow. */
+export function handleGoogleAuthLogin(request: Request, env: Env): Response {
+  if (!env.GOOGLE_CLIENT_ID) {
+    return new Response("Google OAuth not configured", { status: 503, headers: noStoreHeaders() });
+  }
+  const url = new URL(request.url);
+  const state = crypto.randomUUID();
+  const redirectUri = `${url.origin}/auth/google/callback`;
+  const authorize = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authorize.searchParams.set("client_id", env.GOOGLE_CLIENT_ID);
+  authorize.searchParams.set("redirect_uri", redirectUri);
+  authorize.searchParams.set("response_type", "code");
+  authorize.searchParams.set("scope", "openid email profile");
+  authorize.searchParams.set("state", state);
+
   const secure = isSecure(request);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: authorize.toString(),
+      "Set-Cookie": buildCookie(GO_STATE_COOKIE, state, { maxAge: STATE_TTL_SECONDS, secure }),
+      ...noStoreHeaders(),
+    },
+  });
+}
+
+/**
+ * GET /auth/google/callback — Google redirect target.
+ *
+ * Exchanges the code for tokens, verifies the id_token, mints an app session
+ * via the identity backend, sets the app_session cookie, and 302s to "/".
+ */
+export async function handleGoogleAuthCallback(
+  request: Request,
+  env: Env,
+  backend?: IdentityBackend,
+): Promise<Response> {
+  const secure = isSecure(request);
+  const url = new URL(request.url);
+  const headers = new Headers(noStoreHeaders());
+  headers.append("Set-Cookie", clearCookie(GO_STATE_COOKIE, secure));
+  const correlationId = mintCorrelationId();
+
+  if (!env.GOOGLE_CLIENT_ID) {
+    authnFailure(env, "google", "not_configured", correlationId);
+    return new Response("Google OAuth not configured", { status: 503, headers });
+  }
+
+  const error = url.searchParams.get("error");
+  if (error) {
+    authnFailure(env, "google", "provider_error", correlationId);
+    return new Response(`OAuth error: ${error}`, { status: 400, headers });
+  }
+
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const expectedState = getCookie(request, GO_STATE_COOKIE);
+
+  if (!code || !state || !expectedState || state !== expectedState) {
+    authnFailure(env, "google", "invalid_state", correlationId);
+    return new Response("Invalid OAuth state", { status: 400, headers });
+  }
+
+  const redirectUri = `${url.origin}/auth/google/callback`;
+  let tokenData: { id_token?: string };
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET ?? "",
+        code,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code",
+      }).toString(),
+    });
+    if (!tokenRes.ok) throw new Error(`HTTP ${tokenRes.status}`);
+    tokenData = (await tokenRes.json()) as { id_token?: string };
+  } catch {
+    authnFailure(env, "google", "exchange_failed", correlationId);
+    return new Response("OAuth token exchange failed", { status: 502, headers });
+  }
+
+  let claims;
+  try {
+    if (!tokenData.id_token) throw new Error("No id_token in token response");
+    claims = await verifyGoogleIdToken(tokenData.id_token, env.GOOGLE_CLIENT_ID);
+  } catch (e) {
+    authnFailure(env, "google", "user_lookup_failed", correlationId);
+    return new Response("OAuth user lookup failed", { status: 502, headers });
+  }
+
+  const id = backend ?? defaultIdentityBackend(env);
+  const result = await id.loginComplete("google", claims.sub, {
+    login: claims.email ? claims.email.split("@")[0] : null,
+    email: claims.email ?? null,
+    name: claims.name ?? null,
+  });
+  const tenantId = result.user.id;
+  authnSuccessEvents(env, "google", tenantId, tenantId, result.created);
+
+  headers.append(
+    "Set-Cookie",
+    buildCookie(APP_SESSION_COOKIE, result.session.token, { maxAge: 86400, secure }),
+  );
+  headers.set("Location", "/");
+  return new Response(null, { status: 302, headers });
+}
+
+/** Best-effort provider list for a user; falls back to ["github"]. */
+async function resolveProviders(
+  backend: IdentityBackend,
+  userId: string,
+): Promise<string[]> {
+  try {
+    const getIdentities = (backend as { getUserIdentities?: (userId: string) => Promise<Array<{ provider: string }>> })
+      .getUserIdentities;
+    if (typeof getIdentities === "function") {
+      const identities = await getIdentities.call(backend, userId);
+      const providers = [...new Set(identities.map((i) => i.provider))];
+      if (providers.length > 0) return providers;
+    }
+  } catch {
+    /* fall through to default */
+  }
+  return ["github"];
+}
+
+/**
+ * GET /auth/me — current user or 401.
+ *
+ * New branch: the app_session cookie → 200 with the user record
+ * { id, tenantId: id, providers, primaryEmail, createdAt } (tenant = user 1:1).
+ *
+ * DEPRECATED branch (kept one release): the legacy gh_access_token cookie →
+ * the old GitHubUser shape, unchanged.
+ */
+export async function handleAuthMe(
+  request: Request,
+  env: Env,
+  backend?: IdentityBackend,
+): Promise<Response> {
+  const secure = isSecure(request);
+
+  const sessionToken = getCookie(request, APP_SESSION_COOKIE);
+  if (sessionToken) {
+    const id = backend ?? defaultIdentityBackend(env);
+    try {
+      const validated = await id.validateSession(sessionToken);
+      if (validated) {
+        const user = validated.user;
+        const providers = await resolveProviders(id, user.id);
+        return new Response(
+          JSON.stringify({
+            id: user.id,
+            tenantId: user.id,
+            providers,
+            primaryEmail: user.primaryEmail ?? null,
+            createdAt: (user as { createdAt?: string }).createdAt ?? null,
+          }),
+          { headers: { "Content-Type": "application/json", ...noStoreHeaders() } },
+        );
+      }
+    } catch {
+      /* invalid session → fall through to 401 */
+    }
+    const headers = new Headers(noStoreHeaders());
+    headers.append("Set-Cookie", clearCookie(APP_SESSION_COOKIE, secure));
+    return errorResponseAs("UNAUTHORIZED", "Unauthorized", {
+      "Content-Type": "application/json",
+      ...Object.fromEntries(headers),
+    });
+  }
+
+  // DEPRECATED legacy branch: gh_access_token cookie → old GitHubUser shape.
+  const user = await getOAuthUserFromRequest(request);
   if (!user) {
     const headers: Record<string, string> = { ...noStoreHeaders() };
-    // Clear a stale token cookie.
-    if (getCookie(request, TOKEN_COOKIE)) {
-      headers["Set-Cookie"] = clearCookie(TOKEN_COOKIE, secure);
+    if (getCookie(request, LEGACY_TOKEN_COOKIE)) {
+      headers["Set-Cookie"] = clearCookie(LEGACY_TOKEN_COOKIE, secure);
     }
     return errorResponseAs("UNAUTHORIZED", "Unauthorized", { "Content-Type": "application/json", ...headers });
   }
@@ -200,13 +492,73 @@ export async function handleAuthMe(request: Request): Promise<Response> {
   });
 }
 
-/** POST /auth/logout — clear session cookies. */
-export function handleAuthLogout(request: Request): Response {
+/** POST /auth/logout — revoke the app session and clear cookies. */
+export async function handleAuthLogout(
+  request: Request,
+  env: Env,
+  backend?: IdentityBackend,
+): Promise<Response> {
   const secure = isSecure(request);
-  // Multiple Set-Cookie headers: join via array is not supported in plain
-  // object; use Headers.
+  const token = getCookie(request, APP_SESSION_COOKIE);
+  if (token) {
+    const id = backend ?? defaultIdentityBackend(env);
+    try {
+      await id.revokeSession(token);
+      emitAspectEvent(
+        accountingEvent("session.revoke", {
+          tenantId: "unknown",
+          userId: "unknown",
+          correlationId: mintCorrelationId(),
+          agent: "identity",
+          detail: { provider: "unknown" },
+        }),
+        env,
+      );
+    } catch {
+      /* revoke is best-effort; cookie clearing still happens */
+    }
+  }
   const headers = new Headers(noStoreHeaders());
-  headers.append("Set-Cookie", clearCookie(STATE_COOKIE, secure));
-  headers.append("Set-Cookie", clearCookie(TOKEN_COOKIE, secure));
+  headers.append("Set-Cookie", clearCookie(APP_SESSION_COOKIE, secure));
+  headers.append("Set-Cookie", clearCookie(GH_STATE_COOKIE, secure));
+  headers.append("Set-Cookie", clearCookie(GO_STATE_COOKIE, secure));
+  // DEPRECATED: clear the legacy cookie too.
+  headers.append("Set-Cookie", clearCookie(LEGACY_TOKEN_COOKIE, secure));
   return new Response(null, { status: 204, headers });
+}
+
+/**
+ * New session branch for requireAuth (wired into api.ts by a sibling lane).
+ * Resolves the app_session cookie to the session user; null when missing/invalid.
+ */
+export async function getSessionUserFromRequest(
+  request: Request,
+  env: Env,
+  backend?: IdentityBackend,
+): Promise<{
+  userId: string;
+  tenantId: string;
+  kind: "session";
+  login?: string | null;
+  providers: string[];
+  primaryEmail: string | null;
+} | null> {
+  const token = getCookie(request, APP_SESSION_COOKIE);
+  if (!token) return null;
+  const id = backend ?? defaultIdentityBackend(env);
+  try {
+    const validated = await id.validateSession(token);
+    if (!validated) return null;
+    const user = validated.user;
+    const providers = await resolveProviders(id, user.id);
+    return {
+      userId: user.id,
+      tenantId: user.id, // tenant = user 1:1 (issue #252 §8)
+      kind: "session",
+      providers,
+      primaryEmail: user.primaryEmail ?? null,
+    };
+  } catch {
+    return null;
+  }
 }

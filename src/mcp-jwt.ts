@@ -122,6 +122,8 @@ export interface IssueTokenOptions {
   issuer: string;
   audience: string;
   expiresInSec?: number; // default 3600
+  /** Issue #252 P2: which tenant the token is issued for (claim "tenant_id"). */
+  tenantId?: string;
 }
 
 export async function issueToken(
@@ -139,6 +141,9 @@ export async function issueToken(
     jti: crypto.randomUUID(),
     scope: opts.scopes,
   };
+  // Additive only: McpTokenClaims already allows the index signature, so
+  // existing tokens and verifiers are untouched when tenantId is absent.
+  if (opts.tenantId) claims.tenant_id = opts.tenantId;
   const header = { alg: "HS256", typ: "JWT", kid: "mcp-v1" };
   const data = `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(JSON.stringify(claims))}`;
   const key = await importHmacKey(secret);

@@ -10,6 +10,8 @@ import { verifyAndParseWebhook } from "./webhooks";
 import {
   handleAuthLogin,
   handleAuthCallback,
+  handleGoogleAuthLogin,
+  handleGoogleAuthCallback,
   handleAuthMe,
   handleAuthLogout,
 } from "./auth";
@@ -73,6 +75,7 @@ import {
   withTracePart,
 } from "./aspect-logging";
 import { beginA2AAspect } from "./aspect-error";
+import { ensureAccountingSink } from "./identity-sink";
 
 export { CfmailAgentSQLite, CfmailAgentSQLite as CfmailAgent };
 export { PaymentsAgent } from "./payments-agent";
@@ -86,6 +89,7 @@ export { SearchAgent } from "./search-agent";
 export { OrchestratorAgent } from "./orchestrator-agent";
 export { ScheduledAgent } from "./scheduled-agent";
 export { AutopilotAgent } from "./autopilot-agent";
+export { IdentityAgent } from "./identity-agent";
 export { TradeWorkflow } from "./trade-workflow";
 export { EvidenceWorkflow } from "./evidence-workflow";
 
@@ -129,11 +133,19 @@ async function handleFetch(
     if (url.pathname === "/auth/callback") {
       return handleAuthCallback(request, env);
     }
+    // Google sign-on for the dashboard (issue #252 P2): session-based,
+    // tenant-aware; the app session is the new preferred path.
+    if (url.pathname === "/auth/google/login") {
+      return handleGoogleAuthLogin(request, env);
+    }
+    if (url.pathname === "/auth/google/callback") {
+      return handleGoogleAuthCallback(request, env);
+    }
     if (url.pathname === "/auth/me") {
-      return handleAuthMe(request);
+      return handleAuthMe(request, env);
     }
     if (url.pathname === "/auth/logout" && request.method === "POST") {
-      return handleAuthLogout(request);
+      return handleAuthLogout(request, env);
     }
 
     // A2A protocol (agent-to-agent).
@@ -814,6 +826,9 @@ export default {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
+    // Issue #252 P2: wire the aspect accounting feed to the IdentityAgent's
+    // durable store, once per isolate.
+    ensureAccountingSink(env);
     const correlationId = resolveCorrelationId(request);
     const res = await handleFetch(request, env, ctx, correlationId);
     return withCorrelationHeader(res, correlationId);

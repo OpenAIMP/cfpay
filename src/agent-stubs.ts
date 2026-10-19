@@ -30,3 +30,14 @@ export async function hostStub(env: any): Promise<any> {
   const { getAgentByName } = await import("agents");
   return (await getAgentByName(env.CfmailAgent as any, "agent")) as any;
 }
+
+/**
+ * The identity agent's RPC-capable stub (issue #252, P2).
+ * Single instance, same name ("identity") as every other identity
+ * resolution. Carries sessions, the accounting store, and authorization
+ * tuples; reachable from the Worker edge and the API.
+ */
+export async function identityStub(env: any): Promise<any> {
+  const { getAgentByName } = await import("agents");
+  return (await getAgentByName(env.IDENTITY_AGENT as any, "identity")) as any;
+}
