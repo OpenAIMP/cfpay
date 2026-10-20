@@ -1988,7 +1988,10 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     // and the read op says plainly when nothing is persisted yet
     expect(agent).toContain('error: "no_objective"');
     expect(agent).toContain("skipped: hunt returned no plan");
-    expect(agent).toContain("No rebalance proposals yet.");
+    // P2.3 (#330): the honest empty state is owned by the one shared
+    // renderer in the proposals module; the agent renders through it.
+    expect(proposals).toContain("No rebalance proposals yet.");
+    expect(agent).toContain("renderProposalText");
     // the guardrail: proposals are review records - no trade path is
     // referenced by the seam, the builder, or the agent's new code
     expect(proposals).not.toContain("proposeTrade");
