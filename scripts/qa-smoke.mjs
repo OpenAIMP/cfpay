@@ -338,6 +338,16 @@ async function fileSelfHealIssues() {
   }
 }
 
+// Issue #344: the harness itself is a named section. A run that completes
+// without an uncaught error records a PASS here, so the self-heal loop's
+// existing auto-close retires a "[QA self-heal] smoke harness" issue on the
+// next healthy deploy. A crash records a FAIL instead (see the entry-point
+// guard at the bottom of this file), so the loop files one.
+async function finishAfterHealthyRun() {
+  record("smoke harness", true, "no uncaught errors");
+  await finish();
+}
+
 async function finish() {
   await investigateFailures();
   await fileSelfHealIssues();
@@ -363,13 +373,13 @@ async function main() {
     record("worker responds on /health", res.ok, `status=${res.status}`);
   } catch (err) {
     record("worker responds on /health", false, err.message);
-    await finish();
+    await finishAfterHealthyRun();
     return;
   }
 
   if (!API_KEY) {
     skip("authenticated QA checks", "DASHBOARD_API_KEY is not set");
-    await finish();
+    await finishAfterHealthyRun();
     return;
   }
 
@@ -388,7 +398,7 @@ async function main() {
     await runSections();
   }
 
-  await finish();
+  await finishAfterHealthyRun();
 }
 
 async function runSections() {
@@ -1060,7 +1070,51 @@ async function runSections() {
   }
 }
 
-main().catch((err) => {
-  console.error("QA smoke run crashed:", err);
-  process.exit(1);
+// Issue #344: phase-1 detection gap. An uncaught error anywhere in main()
+// used to fail the step with exit 1 and NO [QA self-heal] issue - the loop
+// went blind for exactly the failure class it most needs to see (observed
+// in run 39210893041, where finish() itself crashed before
+// fileSelfHealIssues ran). The guard records the crash as a named synthetic
+// section ("smoke harness", under the same [QA self-heal] title convention
+// so dedupe/comment/auto-close keep working) and still runs finish(), so the
+// issue is filed/commented and the summary email still sends. Nested
+// try/catch throughout: the guard itself cannot throw, filing stays
+// best-effort and never changes the exit code - the crash still exits 1.
+main().catch(async (err) => {
+  const message = err && err.message ? String(err.message) : String(err);
+  const stackHead = String((err && err.stack) || "")
+    .split("\n")
+    .slice(1, 6)
+    .join(" | ")
+    .slice(0, 500);
+  try {
+    record(
+      "smoke harness",
+      false,
+      `uncaught: ${message}${stackHead ? ` - ${stackHead}` : ""}`,
+    );
+  } catch {
+    // record() cannot realistically throw, but the guard must not either.
+    results.push({ name: "smoke harness", ok: false, detail: `uncaught: ${message}` });
+    failed += 1;
+  }
+  try {
+    await finish();
+  } catch (finishErr) {
+    // The crash happened inside finish() itself: give the issue filing one
+    // direct attempt anyway, then exit 1.
+    console.error(
+      "QA smoke finish() also failed after the crash:",
+      finishErr && finishErr.message ? finishErr.message : finishErr,
+    );
+    try {
+      await fileSelfHealIssues();
+    } catch (filingErr) {
+      console.error(
+        "QA smoke self-heal filing also failed:",
+        filingErr && filingErr.message ? filingErr.message : filingErr,
+      );
+    }
+    process.exit(1);
+  }
 });
