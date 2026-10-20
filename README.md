@@ -222,6 +222,39 @@ The Public tab is an analysis and execution desk over a connected Public.com acc
 
 The other ten agents own **no** objectives: they hold no standing goals and run no schedules, and act only when invoked (a chat turn, a host tool call, an orchestrator step, a webhook). That is deliberate. An objective here means a standing commitment plus a cadence to re-evaluate it plus the means to act; bolting an evaluation loop onto a reactive agent would give it a second problem that is not its own. The fleet's agency is in the composition above: one agent owns time and standing commitments, one owns evaluation and coordination, one loop owns production health, and every other agent owns exactly one capability that the evaluators can call.
 
+### Agent tiers: micro and deep (issue #246)
+
+The objectives view above is one cut through the fleet; the construction view is the **tier** each agent is built to. The tier is a contract, not a packaging choice - it decides what a new capability is allowed to become.
+
+- **Micro agent** - one capability, one problem. It owns **no** standing objective and runs no loop of its own: it is invoked - as an A2A operation, a host tool, or a workflow step - does its one job, and returns. It is deterministic wherever the domain allows (sizing, verification, pricing math are code, not model judgment), cheap to run, and testable in isolation. Form follows need: a small Think agent (Durable Object) where isolation or its own state warrants it, an agent-tool module where a DO would be waste.
+- **Deep agent** - owns an objective and a loop. It holds a standing objective (or accepts goals), plans, composes micro agents and peers, judges results, and iterates - with memory of outcomes feeding the next cycle.
+- **Infrastructure** - neither tier: the layers compositions plug into (cadence, identity). They hold state and guarantees, evaluate nothing.
+
+**Composition** is how workflows get built. ThinkWorkflow is the durable composition substrate (the `src/trade-workflow.ts` pattern): a trading workflow is a named composition of micro invocations, deep-agent delegations, durable waits, and approval events. A2A is the invocation protocol; the orchestrator catalog is the composition vocabulary; ScheduledAgent supplies the cadence entry, and any composition is equally startable on demand. A new trading workflow should mean a new *composition*, not a new monolith: if a workflow needs a capability no micro has, the work is "add the micro, then compose it in."
+
+| Agent | Tier | Note |
+|---|---|---|
+| EmailAgent | micro | One capability: mail |
+| SlackAgent | micro | One capability: messaging |
+| PaymentsAgent | micro | Ledger + x402 payments |
+| WebhookAgent | micro | Intake + routing |
+| ChatAgent | micro | Conversation history/context |
+| SearchAgent | micro | Retrieval |
+| VoiceAgent | micro | Voice channel around the desk pipeline |
+| QAAgent | micro capabilities + one deep loop | Checks are micros; `qaInvestigate` is a deep loop |
+| ScheduledAgent | infrastructure | Owns standing goals, evaluates none - the cadence layer compositions plug into |
+| IdentityAgent | infrastructure | Identity, sessions, FGA tuples, and the append-only accounting store; RPC-only, no A2A surface by design (issue #252) |
+| OrchestratorAgent | deep | Evaluates goals by composing the fleet |
+| Host (CfmailAgent) | deep + micro host | Desk reasoning and the trade / hunt pipelines |
+| AutopilotAgent | deep | The portfolio objective owner; composes everything below it (issue #242) |
+
+Rules that follow from the tiers:
+
+- A micro never acquires an objective; if it needs a loop, the loop lives in a deep agent or in a workflow that composes it.
+- A deep agent never re-implements a micro's capability inline - it composes the micro (shared machinery is shared correctness).
+- New trading features are designed by answering: which micros exist, which are missing, what composition wires them?
+- Guardrails are inherited, not renegotiated per workflow: human approval for live orders, deterministic sizing, budget guard caps, attributable chains.
+
 ### Multi-agent orchestration
 
 The OrchestratorAgent (issue #180) is the coordination layer above the agents. The host agent has always been able to dispatch one agent at a time inside its own chat; the orchestrator takes a **goal** and runs it as a durable, multi-agent job.
