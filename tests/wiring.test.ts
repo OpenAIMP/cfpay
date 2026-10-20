@@ -1128,6 +1128,45 @@ describe("the post-deploy QA job cannot break a deploy", () => {
   });
 });
 
+describe("a crashed QA harness still files its self-heal issue (issue #344)", () => {
+  // The outage this covers: run 39210893041's Post-deploy QA step failed
+  // with an uncaught exception (inside finish(), before fileSelfHealIssues
+  // ran), so the step exited 1 with NO [QA self-heal] issue - phase-1
+  // detection went blind for exactly the failure class it most needs to see.
+  const smoke = read("scripts/qa-smoke.mjs");
+
+  it("records the crash as a named synthetic section", () => {
+    // The entry point catches; it must not just log-and-exit.
+    expect(smoke).toMatch(/main\(\)\.catch\(async \(err\)/);
+    expect(smoke).toContain('record(\n      "smoke harness",\n      false,');
+    // The detail carries the error message plus a stack head for diagnosis.
+    expect(smoke).toContain("uncaught: ${message}");
+  });
+
+  it("still runs finish() after a crash, with a guard that cannot throw", () => {
+    // finish() runs the investigator, the issue filing, and the summary email.
+    const guard = smoke.slice(smoke.indexOf("main().catch(async (err)"));
+    expect(guard).toContain("await finish();");
+    // A crash inside finish() itself gets one direct filing attempt, then exit 1.
+    expect(guard).toContain("await fileSelfHealIssues();");
+    expect(guard).toContain("process.exit(1)");
+  });
+
+  it("files under the same [QA self-heal] title convention", () => {
+    // The synthetic entry flows through the existing per-section template,
+    // so dedupe, "Still failing" comments, and auto-close keep working.
+    expect(smoke).toContain("`[QA self-heal] ${f.name}`");
+  });
+
+  it("records a harness PASS on a clean run so the issue auto-closes", () => {
+    expect(smoke).toContain('record("smoke harness", true, "no uncaught errors")');
+    // One definition plus the three normal finish() paths in main(); the
+    // crash guard calls finish() directly (never a PASS on a crash).
+    const uses = smoke.split("finishAfterHealthyRun()").length - 1;
+    expect(uses).toBe(4);
+  });
+});
+
 describe("browser teardown cannot fail a QA run", () => {
   // The outage this covers: `await browser.close().catch(...)` where close() is
   // declared `close(): void`. The throw happened in a `finally`, so it replaced
