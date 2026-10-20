@@ -134,6 +134,13 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       access: "read",
       inputs: [],
     },
+    {
+      operation: "desk.funding",
+      summary:
+        "Read the account's brokerage funding movements (deposits/withdrawals) from the Public read surface (issue #242 P3.1). Reports observable:false when the account offers no funding/activity feed - movements are then unobservable and none are invented. Read-only; records nothing.",
+      access: "read",
+      inputs: [],
+    },
   ],
 
   payments: [
@@ -157,6 +164,28 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       summary: "Payment totals.",
       access: "read",
       inputs: [],
+    },
+    {
+      operation: "funding.list",
+      summary: "List recorded brokerage funding movements (issue #242 P3.1), newest first.",
+      access: "read",
+      inputs: [s("limit", "number", false, "Max records (default 50, cap 200).")],
+    },
+    {
+      operation: "funding.totals",
+      summary:
+        "Funding position from the recorded ledger: deposits, withdrawals, net for the named tenant (or this instance's whole book). Zero state when nothing is recorded.",
+      access: "read",
+      inputs: [s("tenantId", "string", false, "Tenant to total; default is the instance's own book.")],
+    },
+    {
+      operation: "funding.record",
+      summary:
+        "Record brokerage funding movements into the funding ledger with objective attribution (issue #242 P3.1). Idempotent on each movement's source reference. Recording only - executes no payment, checkout, or transfer.",
+      access: "write",
+      inputs: [
+        s("records", "json", true, "FundingRecord array: movements (sourceRef, direction, amount, currency, ts) each with attribution {tenantId, objectiveId, goal}."),
+      ],
     },
     {
       operation: "payment.process",
@@ -588,6 +617,20 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       summary: "Recent persisted rebalance proposals: target vs current holdings with delta actions and reasons. Review records only - nothing is executed.",
       access: "read",
       inputs: [s("limit", "number", false, "Max proposals to return.")],
+    },
+    {
+      operation: "autopilot.funding",
+      summary:
+        "Recorded funding position for the objective, read from PaymentsAgent's funding ledger at read time (issue #242 P3.1): totals plus recent movements. Explicit zero state when nothing is recorded.",
+      access: "read",
+      inputs: [s("limit", "number", false, "Max recorded movements to return.")],
+    },
+    {
+      operation: "autopilot.fundingSync",
+      summary:
+        "Read the account's funding movements from the host's Public surface and record them in PaymentsAgent's ledger, attributed to the objective (issue #242 P3.1). Idempotent; reports unobservable when the account offers no funding feed. Recording only - initiates no transfer and moves no money.",
+      access: "action",
+      inputs: [],
     },
   ],
 };

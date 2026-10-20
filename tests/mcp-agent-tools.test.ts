@@ -22,7 +22,7 @@ describe("MCP agent tools (issue #173)", () => {
   it("has unique tool names and unique (agent, operation) pairs", () => {
     expect(new Set(MCP_AGENT_TOOLS.map((t) => t.tool)).size).toBe(MCP_AGENT_TOOLS.length);
     expect(new Set(MCP_AGENT_TOOLS.map((t) => `${t.agent}:${t.operation}`)).size).toBe(MCP_AGENT_TOOLS.length);
-    expect(MCP_AGENT_TOOLS.length).toBe(65); // +2 desk ops (#242 P0), +6 autopilot (#242 P1), +1 slack.postFile (#331), +1 identity.loopMetrics (#326), +1 desk.portfolio +1 autopilot.proposals (#242 P2.2)
+    expect(MCP_AGENT_TOOLS.length).toBe(71); // +2 desk ops (#242 P0), +6 autopilot (#242 P1), +1 slack.postFile (#331), +1 identity.loopMetrics (#326), +1 desk.portfolio +1 autopilot.proposals (#242 P2.2), +1 desk.funding +3 funding.* +1 autopilot.funding +1 autopilot.fundingSync (#242 P3.1)
   });
 
   it("classifies writes; the JWT write set is built from the same table", () => {

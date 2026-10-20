@@ -74,7 +74,7 @@ import {
   parseCandidates,
   sizePlan,
 } from "./opportunity-hunt";
-import { deskAutopilot, deskHunt, deskPortfolio } from "./desk-ops";
+import { deskAutopilot, deskFunding, deskHunt, deskPortfolio } from "./desk-ops";
 import type { HuntRequest, StoredHunt } from "./opportunity-hunt";
 import {
   computeCost,
@@ -1594,13 +1594,16 @@ Do not claim to have completed a payment unless you have received confirmation.`
       case "desk.portfolio":
         return deskPortfolio(this, args, text);
 
+      case "desk.funding":
+        return deskFunding(this, args, text);
+
       default:
         return {
           text: `Unknown operation: ${op}`,
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["chat.summary", "chat.facts", "chat.send", "desk.hunt", "desk.autopilot", "identity.loopMetrics", "desk.portfolio"],
+            supported: ["chat.summary", "chat.facts", "chat.send", "desk.hunt", "desk.autopilot", "identity.loopMetrics", "desk.portfolio", "desk.funding"],
           },
         };
     }
