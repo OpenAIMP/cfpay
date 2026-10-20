@@ -14,12 +14,12 @@
  *   (legacy owner path); anonymous → operator tenant.
  * - `tenantOfInstance(instanceName)`: parse `<base>:<uid>` back out, so an
  *   agent can learn its own tenant from its instance name.
- * - `TENANT_CUTOVER`: comma-separated base names or "all" (default "all").
- *   Flag off for a surface = today's singleton resolution for everyone
- *   (kill switch / rollback). The operator → singleton identity mapping is
- *   kept (instanceFor returns the base for the operator tenant), so the
- *   owner's own usage changes zero and NO data moves — the operator's
- *   singleton data is never copied.
+ * - Per-tenant resolution is unconditional (the staged-rollout flag was
+ *   removed by issue #346 once its staging condition — two consecutive
+ *   green deploys post-P3 — was verified met). The operator → singleton
+ *   identity mapping is kept (instanceFor returns the base for the
+ *   operator tenant), so the owner's own usage changes zero and NO data
+ *   moves — the operator's singleton data is never copied.
  * - `checkDispatchEnvelope`: the cross-tenant rule — an in-process dispatch
  *   envelope's trace tenantId must equal the target instance's tenant; the
  *   only cross-tenant dispatch allowed is to operator singletons (qa,
@@ -51,7 +51,7 @@ export function instanceFor(base: string, tenantId: string = OPERATOR_TENANT_ID)
 }
 
 /**
- * Bases that never get per-tenant instances, regardless of TENANT_CUTOVER.
+ * Bases that never get per-tenant instances.
  * QAAgent tests production for the operator — it is platform ops, not user
  * data (design §4). Agent cards / fleet index / error catalog are not DO
  * dispatches at all and stay global by construction.
@@ -135,40 +135,15 @@ export function tenantOfInstance(instanceName: string): { base: string; tenantId
   };
 }
 
-export interface CutoverEnv {
-  TENANT_CUTOVER?: string;
-}
-
 /**
- * TENANT_CUTOVER: comma-separated base names or "all" (default "all").
- * "none" disables every surface. Singleton bases (qa) are never cut over.
- * Flag off for a surface = today's singleton resolution for everyone —
- * the kill switch / rollback. The "dual-read window" per surface IS this
- * flag: flag on = tenant instances for users; flag off = singletons.
+ * The instance name for a tenant — unconditional since issue #346 removed
+ * the staged-rollout flag. Singleton bases (TENANT_SINGLETON_BASES) always
+ * resolve to the base; every other base resolves per-tenant. Because the
+ * operator → singleton identity mapping is kept, the operator's own usage
+ * resolves exactly as today and no data ever moves.
  */
-export function cutoverEnabled(base: string, env?: CutoverEnv | null): boolean {
-  if (TENANT_SINGLETON_BASES.has(base)) return false;
-  const raw = (env?.TENANT_CUTOVER ?? "all").trim().toLowerCase();
-  if (raw === "" || raw === "all") return true;
-  if (raw === "none" || raw === "off" || raw === "false") return false;
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .includes(base.toLowerCase());
-}
-
-/**
- * The cutover-aware instance name for a tenant. Because the operator →
- * singleton identity mapping is kept, the operator's own usage resolves
- * exactly as today and no data ever moves.
- */
-export function resolveTenantInstance(
-  base: string,
-  tenantId: string,
-  env?: CutoverEnv | null,
-): string {
-  if (!cutoverEnabled(base, env)) return base;
+export function resolveTenantInstance(base: string, tenantId: string): string {
+  if (TENANT_SINGLETON_BASES.has(base)) return base;
   return instanceFor(base, tenantId);
 }
 

@@ -925,7 +925,7 @@ export function createApp() {
 
   /** Explicit-tenant variant of getAgent. */
   function getHostAgentFor(c: any, tenantId: string) {
-    const instanceName = resolveTenantInstance("agent", tenantId, c.env);
+    const instanceName = resolveTenantInstance("agent", tenantId);
     if (tenantId !== OPERATOR_TENANT_ID && instanceName !== "agent") {
       void ensureTenantProvisioned(c.env, "agent", tenantId, instanceName).catch(() => {});
     }

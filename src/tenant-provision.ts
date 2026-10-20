@@ -9,18 +9,17 @@
  * on wake and on restart alike.
  *
  * Idempotent by construction (the tuple write is INSERT OR IGNORE), a
- * no-op for the operator tenant and when the cutover kill switch is off,
- * and fail-safe: a seed failure never blocks startup — the FGA layer
- * still denies what the missing tuple should deny, and the dispatch seam
- * retries on the next dispatch (the same backstop semantics as
- * ensureTenantProvisioned).
+ * no-op for the operator tenant and for singleton bases, and fail-safe: a
+ * seed failure never blocks startup — the FGA layer still denies what the
+ * missing tuple should deny, and the dispatch seam retries on the next
+ * dispatch (the same backstop semantics as ensureTenantProvisioned).
  *
  * Top level is SDK-free (tenant-dispatch only imports `agents` dynamically
  * inside functions), so this module stays importable from Vitest.
  */
 
 import { ensureTenantProvisioned } from "./tenant-dispatch";
-import { cutoverEnabled, isOperatorTenant, tenantOfInstance, type CutoverEnv } from "./tenancy";
+import { TENANT_SINGLETON_BASES, isOperatorTenant, tenantOfInstance } from "./tenancy";
 
 /** Test seam for the identity tuple store (mirrors tenant-dispatch). */
 export interface ProvisionIdentityDeps {
@@ -65,10 +64,9 @@ export async function selfProvisionOwnTenant(
   if (!name) return;
   const { base, tenantId } = tenantOfInstance(name);
   if (isOperatorTenant(tenantId)) return;
-  // A tenant-suffixed name can only exist when the surface is cut over; if
-  // the kill switch is off (or the base is a singleton), the runtime wakes
-  // the singleton — never provision into a tenant that shouldn't exist.
-  if (!cutoverEnabled(base, agent.env as CutoverEnv | null)) return;
+  // Singleton bases never get per-tenant instances, so a tenant-suffixed
+  // name for one should not exist; never provision into it.
+  if (TENANT_SINGLETON_BASES.has(base)) return;
   // ensureTenantProvisioned carries the same guards again downstream.
   await ensureTenantProvisioned(agent.env, base, tenantId, name, deps);
 }

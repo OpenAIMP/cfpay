@@ -22,9 +22,9 @@
  *   per-message coverage consumes via `readTenantConnectionStamp`.
  * - Operator singletons are never stamped (nothing to bind; the legacy
  *   path stays byte-identical).
- * - The `cutoverEnabled` guard is the defensive re-check behind the edge
- *   403: a tenant-suffixed instance name should only exist when its base
- *   is cut over; anything else stamps nothing.
+ * - The singleton-base check is the defensive re-check behind the edge
+ *   403: a tenant-suffixed instance name should only exist for a base
+ *   that gets per-tenant instances; singleton bases (qa) stamp nothing.
  * - First stamp wins: a connection already stamped with a DIFFERENT
  *   tenantId keeps the original — a connection cannot be restamped to a
  *   new tenant.
@@ -36,10 +36,9 @@
  */
 
 import {
-  cutoverEnabled,
+  TENANT_SINGLETON_BASES,
   isOperatorTenant,
   tenantOfInstance,
-  type CutoverEnv,
 } from "./tenancy";
 
 /** Connection-state key carrying the stamp (namespaced to avoid collisions). */
@@ -68,17 +67,16 @@ export interface StampableAgentLike {
 
 /**
  * Derive the stamp for an instance name, or null when nothing should be
- * stamped (operator singleton, cutover off for this base, missing name).
+ * stamped (operator singleton, singleton base, missing name).
  * Pure — safe to unit test without a DO.
  */
 export function stampForInstance(
   instanceName: string | undefined | null,
-  env: unknown,
 ): TenantConnectionStamp | null {
   if (!instanceName) return null;
   const { base, tenantId } = tenantOfInstance(instanceName);
   if (isOperatorTenant(tenantId)) return null;
-  if (!cutoverEnabled(base, env as CutoverEnv | null)) return null;
+  if (TENANT_SINGLETON_BASES.has(base)) return null;
   return {
     tenantId,
     userId: tenantId,
@@ -129,7 +127,7 @@ export async function stampTenantOnConnection(
   connection: ConnectionLike,
 ): Promise<TenantConnectionStamp | null> {
   const name = agent.ctx?.id?.name;
-  const stamp = stampForInstance(name, agent.env);
+  const stamp = stampForInstance(name);
   if (!stamp) return null;
   try {
     const existing = readTenantConnectionStamp(connection);

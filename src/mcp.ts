@@ -15,7 +15,6 @@ import {
   OPERATOR_TENANT_ID,
   resolveTenantInstance,
   checkDispatchEnvelope,
-  type CutoverEnv,
 } from "./tenancy";
 import { ensureTenantProvisioned } from "./tenant-dispatch";
 import { enforceAuthz } from "./aspect-authz";
@@ -57,9 +56,8 @@ export function createCfmailMcpHandler(env: Env, mcpIdentity?: McpIdentity | nul
     userId: OPERATOR_TENANT_ID,
   };
   const tenantId = identity.tenantId || OPERATOR_TENANT_ID;
-  const cutoverEnv = env as unknown as CutoverEnv;
 
-  const hostInstance = resolveTenantInstance("agent", tenantId, cutoverEnv);
+  const hostInstance = resolveTenantInstance("agent", tenantId);
   // First-use provisioning is a backstop here (the factory is sync); the
   // per-dispatch path awaits it properly below.
   void ensureTenantProvisioned(env, "agent", tenantId, hostInstance).catch(() => {});
@@ -361,7 +359,7 @@ export function createCfmailMcpHandler(env: Env, mcpIdentity?: McpIdentity | nul
     // P3 tenancy: the instance comes from the token claims (never request
     // params); the trace carries the same tenant so the cross-tenant
     // envelope rule holds end to end.
-    const instanceName = resolveTenantInstance(toolSpec.instance, tenantId, cutoverEnv);
+    const instanceName = resolveTenantInstance(toolSpec.instance, tenantId);
     // P3 FGA (design §2.4/§5.4): write-class tools need the actor_for tuple
     // the issuance seeded — the token acts for its tenant, bounded by
     // issuance. Non-JWT credentials are operator-scoped by construction

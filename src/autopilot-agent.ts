@@ -88,7 +88,6 @@ import {
   checkDispatchEnvelope,
   ownTenantId,
   resolveTenantInstance,
-  type CutoverEnv,
 } from "./tenancy";
 import { selfProvisionOwnTenant } from "./tenant-provision";
 import { stampTenantOnConnection } from "./tenant-connection";
@@ -305,7 +304,7 @@ export class AutopilotAgent extends Think<Env> {
     const ns = (this.env as unknown as Record<string, DurableObjectNamespace | undefined>)[binding];
     if (!ns) throw new Error(`${binding} binding is not configured.`);
     const tenantId = ownTenantId(this.ctx.id.name);
-    const instanceName = resolveTenantInstance(instance, tenantId, this.env as CutoverEnv);
+    const instanceName = resolveTenantInstance(instance, tenantId);
     const trace = a2aTraceFor(tenantId);
     const envelope = checkDispatchEnvelope(trace, instanceName);
     if (!envelope.ok) throw new Error(envelope.reason ?? "cross-tenant dispatch rejected");
