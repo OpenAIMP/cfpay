@@ -21,22 +21,22 @@
  *   level, tenant_id, user_id, correlation_id, outcome
  *   ("ok" | "error" | "denied" | "skipped"), auth_decision (JSON),
  *   scope_used, detail (JSON, redacted at emission).
- * - DOES NOT CARRY as columns: `durationMs` and `errorCode`. The
- *   AspectEvent has both at emission time, but `appendAccounting`
- *   persists neither — they are dropped at the store boundary.
- *   `errorCode` survives only opportunistically: the API seam's catch
- *   path stores the thrown error in `detail`, and a catalog error's
- *   enumerable `code` property survives redaction, so SOME failure rows
- *   carry `detail.code`. The ledger extracts it best-effort and says so
- *   (see failureSignatureFor); failures without it group under
- *   "unclassified" rather than being silently dropped or invented.
- * - CYCLE TIME: with one timestamp per event and durationMs dropped,
- *   true per-operation cycle time is NOT computable from the persisted
- *   stream today. `durationMs` is therefore extracted only when a
- *   producer actually recorded it inside `detail` (none does yet), and
- *   CycleTimeStats reports `available: false, samples: 0` otherwise.
- *   Persisting durationMs at the sink is a producer-side fix for R0.3 —
- *   the ledger never fabricates it.
+ * - SINCE R0.3 (#327), also carries as columns: `error_code` and
+ *   `duration_ms`. The AspectEvent always had both at emission time,
+ *   but before #327 `appendAccounting` persisted neither — they were
+ *   dropped at the store boundary, and `errorCode` survived only
+ *   opportunistically inside `detail` (a catalog error's enumerable
+ *   `code` property survives redaction there). loopOutcomeFromRow
+ *   therefore reads the columns first and falls back to `detail.code` /
+ *   `detail.durationMs` for rows written before #327; failures with
+ *   neither group under "unclassified" rather than being silently
+ *   dropped or invented (see failureSignatureFor). The columns also
+ *   survive the retention purge, which strips detail past the hot
+ *   window but never touches them.
+ * - CYCLE TIME: computed only over rows that carry a duration (column,
+ *   or detail for pre-#327 rows). Operations whose producers still
+ *   record none report `available: false, samples: 0` — the ledger
+ *   never fabricates a duration.
  *
  * Tenant scoping is structural, not a filter callers must remember:
  * metrics are grouped per (tenantId, operation), the seam always queries
@@ -75,9 +75,11 @@ export interface LoopOutcomeRecord {
   tenantId: string;
   userId: string;
   level: string;
-  /** Only when a producer recorded it inside detail; null otherwise. */
+  /** From the row's duration_ms column (#327), else a duration a
+   *  producer recorded inside detail; null when neither exists. */
   durationMs: number | null;
-  /** Best-effort from detail.code; null when the row carries none. */
+  /** From the row's error_code column (#327), else best-effort from
+   *  detail.code; null when the row carries neither. */
   errorCode: string | null;
   /** Failures only: `${operation}::${errorCode ?? "unclassified"}`. */
   failureSignature: string | null;
@@ -131,13 +133,21 @@ function resultForOutcome(outcome: string): LoopResult {
 /** Derive the loop-outcome record for one accounting event row. */
 export function loopOutcomeFromRow(row: AccountingRow): LoopOutcomeRecord {
   const detail = parseDetail(row.detail);
+  // #327: the dedicated columns win; the detail fields are the fallback
+  // for rows written before the sink persisted the columns.
   const rawCode = detail?.code;
-  const errorCode = typeof rawCode === "string" && rawCode ? rawCode : null;
+  const detailCode = typeof rawCode === "string" && rawCode ? rawCode : null;
+  const errorCode =
+    typeof row.errorCode === "string" && row.errorCode ? row.errorCode : detailCode;
   const rawDuration = detail?.durationMs;
-  const durationMs =
+  const detailDuration =
     typeof rawDuration === "number" && Number.isFinite(rawDuration) && rawDuration >= 0
       ? rawDuration
       : null;
+  const durationMs =
+    typeof row.durationMs === "number" && Number.isFinite(row.durationMs) && row.durationMs >= 0
+      ? row.durationMs
+      : detailDuration;
   const result = resultForOutcome(row.outcome);
   return {
     loop: row.operation,
@@ -414,8 +424,11 @@ export type LoopRecording = "recorded" | "not_yet_recorded";
  * stream. These are named, typed coverage entries — the ledger surfaces
  * them with recording: "not_yet_recorded" and NO metrics, rather than
  * silently omitting the loop (which would read as "the loop is fine" or
- * "the loop does not exist" — both false). R0.3 (#327) wires producers
- * for them; until then this list is the honest boundary of R0's vision.
+ * "the loop does not exist" — both false). R0.3 (#327) wired producers
+ * for every loop that runs INSIDE the Worker (orchestrator plans,
+ * autopilot cycles, scheduled firings, QAAgent suite runs — see
+ * src/loop-accounting.ts); what remains on this list runs OUTSIDE the
+ * Worker, where no in-Worker producer can emit for it.
  */
 export interface LoopCoverage {
   loop: string;
@@ -428,23 +441,28 @@ export interface LoopCoverage {
 export const UNRECORDED_LOOPS: LoopCoverage[] = [
   {
     loop: "self-heal-fixer",
-    producer: "GitHub-side QA self-heal fixer (fixer cron + watch hook)",
+    producer: "Muse QA self-heal fixer (cron + watch hook), outside the Worker",
     recording: "not_yet_recorded",
     note:
-      "Fix attempts, merges and verdicts live in GitHub issues, PRs and " +
-      "check runs; nothing emits accounting events for them, so the " +
-      "ledger cannot count this loop's outcomes yet. R0.3 (#327) wires " +
-      "a producer.",
+      "The fixer runs in Muse, not in the Worker: its fix attempts, " +
+      "merges and verdicts live in GitHub issues, PRs and check runs, " +
+      "and there is no in-Worker emission point an honest producer " +
+      "could write from. It stays not_yet_recorded by construction — " +
+      "recording it would require the fixer itself to report into the " +
+      "Worker, a separate surface #327 does not add.",
   },
   {
     loop: "post-deploy-smoke",
-    producer: "GitHub Actions qa-smoke job (scripts/qa-smoke.mjs)",
+    producer: "GitHub Actions qa-smoke job (scripts/qa-smoke.mjs), outside the Worker",
     recording: "not_yet_recorded",
     note:
-      "Smoke section verdicts surface as [QA self-heal] issues on " +
-      "GitHub, not as accounting events. The smoke run's own section " +
-      "outcomes are invisible to this ledger until R0.3 (#327) wires " +
-      "a producer.",
+      "The smoke script runs in GitHub Actions and delivers its " +
+      "section verdicts as [QA self-heal] GitHub issues and email; " +
+      "verified in scripts/qa-smoke.mjs, it never posts its own " +
+      "verdicts back into the Worker, so no in-Worker producer can " +
+      "emit them. (The in-Worker QA loop — QAAgent's own suite runs — " +
+      "IS recorded since #327, under qa.suite; it is a different loop " +
+      "from this deploy-gate script.)",
   },
 ];
 
@@ -501,7 +519,7 @@ export function buildLoopMetricsLedger(
  * - An empty stream says "no outcomes recorded yet" — never a table of
  *   zeroes dressed as data.
  * - Cycle time appears only when the ledger's stats say samples exist;
- *   today's stream records no durations, so the normal rendering is
+ *   operations whose producers record no durations render as
  *   "cycle time unavailable (no durations recorded)", stated per
  *   operation rather than silently omitted.
  * - Unrecorded loops are named as not yet recorded, with their
@@ -554,7 +572,7 @@ export function renderLoopMetricsSummary(ledger: LoopMetricsLedger): string {
     }
   }
   if (ledger.unrecordedLoops.length) {
-    lines.push("Not yet recorded (outcomes exist but reach no ledger until a producer is wired, #327):");
+    lines.push("Not yet recorded (these loops run outside the Worker, so no in-Worker producer can emit for them):");
     for (const l of ledger.unrecordedLoops) {
       lines.push(`- ${l.loop} — ${l.producer}.`);
     }

@@ -57,6 +57,7 @@ import {
 } from "./tenancy";
 import { selfProvisionOwnTenant } from "./tenant-provision";
 import { stampTenantOnConnection } from "./tenant-connection";
+import { emitLoopOutcome } from "./loop-accounting";
 
 export const MAX_GOAL_CHARS = 500;
 const SCHEDULE_CALLBACK = "runScheduledGoal";
@@ -444,6 +445,31 @@ export class ScheduledAgent extends Think<Env> {
         row.id,
       );
     }
+    // R0.3 (#327): the firing loop's outcome, recorded once the firing's
+    // outcome is persisted on the goal row — exactly one event per
+    // firing. "dispatched" (the orchestrator accepted the goal and
+    // returned a job id) is the success this seam genuinely knows; the
+    // job's own outcome is the orchestrator loop's event, not this one.
+    const failed = status.startsWith("error");
+    emitLoopOutcome(
+      {
+        agent: "scheduled",
+        operation: "scheduled.firing",
+        tenantId: ownTenantId(this.ctx.id.name),
+        outcome: failed ? "error" : "ok",
+        durationMs: Date.now() - startedAt,
+        ...(failed
+          ? {
+              errorCode:
+                status === "error: orchestrator returned no job id"
+                  ? "NO_JOB_ID"
+                  : "DISPATCH_FAILED",
+            }
+          : {}),
+        detail: { goalId: row.id, kind: row.kind, jobId, status },
+      },
+      this.env,
+    );
     return { jobId, status };
   }
 

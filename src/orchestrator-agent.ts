@@ -27,6 +27,8 @@ import {
 } from "./orchestrate";
 import { selfProvisionOwnTenant } from "./tenant-provision";
 import { stampTenantOnConnection } from "./tenant-connection";
+import { ownTenantId } from "./tenancy";
+import { emitLoopOutcome, errorCodeOf } from "./loop-accounting";
 
 // OrchestratorAgent (issue #180): multi-agent orchestration for
 // cfpay. Its single responsibility is coordinating the other
@@ -369,6 +371,20 @@ export class OrchestratorAgent extends Think<Env> {
     const id = `job-${crypto.randomUUID().slice(0, 8)}`;
     const createdAt = Date.now();
     if (!g) {
+      // R0.3 (#327): every terminal state of a run emits exactly one
+      // loop-outcome event — including this validation failure.
+      emitLoopOutcome(
+        {
+          agent: "orchestrator",
+          operation: "orchestrator.plan",
+          tenantId: ownTenantId(this.ctx.id.name),
+          outcome: "error",
+          durationMs: Date.now() - createdAt,
+          errorCode: "MISSING_GOAL",
+          detail: { jobId: id, mode: m, status: "failed", stage: "validation", revisions: 0 },
+        },
+        this.env,
+      );
       return { id, goal: g, status: "failed", mode: m, revisions: 0, plan: [], outcomes: [], result: "orchestrate.run needs a goal.", createdAt };
     }
     const brief = await this.memoryBriefWithRecall(g);
@@ -381,8 +397,21 @@ export class OrchestratorAgent extends Think<Env> {
       plan = await this.plan(g, brief);
     } catch (err) {
       const result = String(err);
-      this.db().exec(`UPDATE orchestrate_jobs SET status = 'failed', result = ?, finished_at = ? WHERE id = ?`, result, Date.now(), id);
-      return { id, goal: g, status: "failed", mode: m, revisions: 0, plan: [], outcomes: [], result, createdAt, finishedAt: Date.now() };
+      const failedAt = Date.now();
+      this.db().exec(`UPDATE orchestrate_jobs SET status = 'failed', result = ?, finished_at = ? WHERE id = ?`, result, failedAt, id);
+      emitLoopOutcome(
+        {
+          agent: "orchestrator",
+          operation: "orchestrator.plan",
+          tenantId: ownTenantId(this.ctx.id.name),
+          outcome: "error",
+          durationMs: failedAt - createdAt,
+          errorCode: errorCodeOf(err, "PLANNING_FAILED"),
+          detail: { jobId: id, mode: m, status: "failed", stage: "planning", revisions: 0 },
+        },
+        this.env,
+      );
+      return { id, goal: g, status: "failed", mode: m, revisions: 0, plan: [], outcomes: [], result, createdAt, finishedAt: failedAt };
     }
     this.db().exec(`UPDATE orchestrate_jobs SET status = 'running', plan_json = ? WHERE id = ?`, JSON.stringify(plan), id);
 
@@ -459,6 +488,32 @@ export class OrchestratorAgent extends Think<Env> {
     const finishedAt = Date.now();
     this.db().exec(`UPDATE orchestrate_jobs SET status = ?, result = ?, revisions = ?, finished_at = ? WHERE id = ?`, status, result, revisions, finishedAt, id);
     this.recordOpStats(outcomes);
+    // R0.3 (#327): the plan loop's outcome, recorded once the job's
+    // terminal status is known — done is a success; partial and failed
+    // are failures with stable codes, so recurrences group honestly.
+    emitLoopOutcome(
+      {
+        agent: "orchestrator",
+        operation: "orchestrator.plan",
+        tenantId: ownTenantId(this.ctx.id.name),
+        outcome: status === "done" ? "ok" : "error",
+        durationMs: finishedAt - createdAt,
+        ...(status === "done"
+          ? {}
+          : { errorCode: status === "partial" ? "PLAN_PARTIAL" : "PLAN_FAILED" }),
+        detail: {
+          jobId: id,
+          mode: m,
+          status,
+          revisions,
+          stepsTotal: outcomes.length,
+          stepsOk: okCount,
+          stepsFailed: outcomes.filter((o) => !o.ok && !o.skipped).length,
+          stepsSkipped: outcomes.filter((o) => o.skipped).length,
+        },
+      },
+      this.env,
+    );
     await this.rememberJobInVectorMemory(g, status, result);
     return { id, goal: g, status, mode: m, revisions, plan, outcomes, result, memoryBrief: brief || undefined, createdAt, finishedAt };
   }

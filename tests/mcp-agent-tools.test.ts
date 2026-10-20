@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MCP_AGENT_TOOLS, MCP_WRITE_TOOL_NAMES, mcpToolName } from "../src/mcp-agent-tools";
 import { WRITE_TOOLS } from "../src/mcp-jwt";
 import { OPERATION_CATALOG } from "../src/orchestrate";
+import { A2A_OPS } from "../src/a2a-ops";
 
 const read = (p: string) => readFileSync(p, "utf8");
 
@@ -71,7 +72,29 @@ describe("MCP agent tools (issue #173)", () => {
       for (const m of read(f).matchAll(opPattern)) found.add(m[0].slice(1, -1));
     }
     expect(found.size).toBeGreaterThan(40);
-    for (const op of found) expect(covered, `operation ${op} has no MCP tool`).toContain(op);
+    // Accounting-only operation names (#327): the R0 loop producers emit
+    // these into the #252 accounting stream from inside the agents
+    // (src/loop-accounting.ts), the way the stream already carries
+    // authn.success / accounting.purge. They are NOT A2A operations —
+    // no handler routes them, no caller can invoke them — so they
+    // correctly have no MCP tool and must never get a fabricated one.
+    // The cross-check keeps the exception honest: if one is ever
+    // registered as a real A2A op, this guard fails until it is removed
+    // from the exception list and given a tool.
+    const ACCOUNTING_ONLY_OPS = new Set([
+      "orchestrator.plan",
+      "autopilot.cycle",
+      "scheduled.firing",
+      "qa.suite",
+    ]);
+    const a2aOps = new Set(Object.values(A2A_OPS).flat().map((o) => o.operation));
+    for (const op of ACCOUNTING_ONLY_OPS) {
+      expect(a2aOps.has(op), `${op} is registered as an A2A op — remove it from ACCOUNTING_ONLY_OPS`).toBe(false);
+    }
+    for (const op of found) {
+      if (ACCOUNTING_ONLY_OPS.has(op)) continue;
+      expect(covered, `operation ${op} has no MCP tool`).toContain(op);
+    }
   });
 
   it("COVERAGE GUARD: every orchestrator-catalog operation has an MCP tool", () => {

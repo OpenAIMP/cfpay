@@ -27,6 +27,8 @@ import {
 } from "./investigate";
 import type { Env } from "./types";
 import { selfOrigin } from "./self-origin";
+import { ownTenantId } from "./tenancy";
+import { emitLoopOutcome, errorCodeOf } from "./loop-accounting";
 
 export interface QACheckResult {
   ok: boolean;
@@ -2322,6 +2324,7 @@ export class QAAgent extends Think<Env> {
     investigation?: { question: string; answer: string; steps: number };
     error?: string;
   }> {
+    const suiteStartedAt = Date.now();
     const checks: { name: string; passed: boolean; detail: string; skipped?: boolean }[] = [];
     const record = (
       name: string,
@@ -2449,8 +2452,41 @@ export class QAAgent extends Think<Env> {
           runId,
         );
       }
+      // R0.3 (#327): the in-Worker QA loop's outcome, recorded once the
+      // suite verdict is known — exactly one event per suite run. (The
+      // post-deploy smoke script is a different loop: it runs outside
+      // the Worker and stays not_yet_recorded in the R0 ledger.)
+      emitLoopOutcome(
+        {
+          agent: "qa",
+          operation: "qa.suite",
+          tenantId: ownTenantId(this.ctx.id.name),
+          outcome: suiteOk ? "ok" : "error",
+          durationMs: Date.now() - suiteStartedAt,
+          ...(suiteOk ? {} : { errorCode: "QA_CHECKS_FAILED" }),
+          detail: {
+            checksTotal: checks.length,
+            checksFailed: checks.filter((c) => !c.skipped && !c.passed).length,
+            checksSkipped: checks.filter((c) => c.skipped).length,
+            emailed,
+          },
+        },
+        this.env,
+      );
       return { ok: suiteOk, checks, emailed, investigation };
     } catch (err) {
+      emitLoopOutcome(
+        {
+          agent: "qa",
+          operation: "qa.suite",
+          tenantId: ownTenantId(this.ctx.id.name),
+          outcome: "error",
+          durationMs: Date.now() - suiteStartedAt,
+          errorCode: errorCodeOf(err, "QA_SUITE_ERROR"),
+          detail: { checksTotal: checks.length, stage: "exception" },
+        },
+        this.env,
+      );
       return {
         ok: false,
         checks,
