@@ -56,6 +56,7 @@ import {
 } from "./tenancy";
 import { selfProvisionOwnTenant } from "./tenant-provision";
 import { stampTenantOnConnection } from "./tenant-connection";
+import { emitLoopOutcome } from "./loop-accounting";
 
 interface ObjectiveRow {
   id: string;
@@ -475,10 +476,25 @@ export class AutopilotAgent extends Think<Env> {
     summary?: string;
     error?: string;
   }> {
-    const obj = this.objectiveRow();
-    if (!obj) return { ok: false, error: "no_objective" };
-    const cycleId = `cycle-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const startedAt = Date.now();
+    const obj = this.objectiveRow();
+    if (!obj) {
+      // R0.3 (#327): a cycle attempt with no objective is a skipped
+      // cycle — a genuine, known outcome, recorded as one.
+      emitLoopOutcome(
+        {
+          agent: "autopilot",
+          operation: "autopilot.cycle",
+          tenantId: ownTenantId(this.ctx.id.name),
+          outcome: "skipped",
+          durationMs: Date.now() - startedAt,
+          detail: { status: "no_objective" },
+        },
+        this.env,
+      );
+      return { ok: false, error: "no_objective" };
+    }
+    const cycleId = `cycle-${startedAt}-${Math.random().toString(36).slice(2, 8)}`;
     this.db().exec(
       `INSERT INTO autopilot_cycles (id, started_at, finished_at, status, hunt_id, summary, error, notifications)
        VALUES (?, ?, NULL, 'running', NULL, NULL, NULL, ?)`,
@@ -594,6 +610,20 @@ export class AutopilotAgent extends Think<Env> {
       error,
       JSON.stringify(notifications),
       cycleId,
+    );
+    // R0.3 (#327): the cycle loop's outcome, recorded once its terminal
+    // status is persisted — exactly one event per cycle.
+    emitLoopOutcome(
+      {
+        agent: "autopilot",
+        operation: "autopilot.cycle",
+        tenantId: ownTenantId(this.ctx.id.name),
+        outcome: error ? "error" : "ok",
+        durationMs: finishedAt - startedAt,
+        ...(error ? { errorCode: "HUNT_FAILED" } : {}),
+        detail: { cycleId, status, huntId, proposalId },
+      },
+      this.env,
     );
     return error
       ? { ok: false, error, cycleId, huntId, proposalId, status, summary }

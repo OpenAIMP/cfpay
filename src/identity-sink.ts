@@ -102,6 +102,9 @@ export async function recordAccountingDirect(
     authDecision?: unknown;
     scopeUsed?: string;
     detail?: unknown;
+    /** R0.3 (#327): persisted into the accounting columns, not dropped. */
+    errorCode?: string;
+    durationMs?: number;
   }>,
 ): Promise<void> {
   try {

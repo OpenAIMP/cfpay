@@ -67,6 +67,8 @@ function row(overrides: Partial<AccountingRow> & { operation: string }): Account
     authDecision: null,
     scopeUsed: null,
     detail: null,
+    errorCode: null,
+    durationMs: null,
     ...overrides,
   };
 }
@@ -93,8 +95,8 @@ describe("loopOutcomeFromRow", () => {
     expect(withDetail.durationMs).toBe(42);
     expect(withDetail.failureSignature).toBe("api.op::RATE_LIMITED");
 
-    // The persisted stream normally carries neither (appendAccounting
-    // drops them at the store boundary): both come back null and the
+    // A row carrying neither (e.g. written before #327 persisted the
+    // columns, with no detail either): both come back null and the
     // failure lands in the explicit "unclassified" signature bucket.
     const bare = loopOutcomeFromRow(row({ operation: "api.op", outcome: "error" }));
     expect(bare.errorCode).toBeNull();

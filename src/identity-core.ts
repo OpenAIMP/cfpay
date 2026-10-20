@@ -58,6 +58,12 @@ export interface AccountingRow {
   authDecision: string | null;
   scopeUsed: string | null;
   detail: string | null;
+  /** R0.3 (#327): the emitted error code, persisted as its own column.
+   *  Null on rows written before #327 (the reader falls back to detail). */
+  errorCode: string | null;
+  /** R0.3 (#327): the emitted duration in ms, persisted as its own
+   *  column. Null on rows written before #327. */
+  durationMs: number | null;
 }
 
 export interface AccountingInput {
@@ -71,6 +77,10 @@ export interface AccountingInput {
   authDecision?: unknown;
   scopeUsed?: string;
   detail?: unknown;
+  /** R0.3 (#327): catalog error code at emission (AspectEvent.errorCode). */
+  errorCode?: string | null;
+  /** R0.3 (#327): measured duration at emission (AspectEvent.durationMs). */
+  durationMs?: number | null;
 }
 
 export interface PurgeReport {
@@ -96,7 +106,7 @@ const SESSION_COLUMNS =
 const ACCOUNTING_COLUMNS =
   `id, operation, ts, level, tenant_id AS tenantId, user_id AS userId, ` +
   `correlation_id AS correlationId, outcome, auth_decision AS authDecision, ` +
-  `scope_used AS scopeUsed, detail`;
+  `scope_used AS scopeUsed, detail, error_code AS errorCode, duration_ms AS durationMs`;
 
 export function ensureIdentitySchema(db: SqlDb): void {
   db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -143,8 +153,26 @@ export function ensureIdentitySchema(db: SqlDb): void {
     outcome TEXT,
     auth_decision TEXT,
     scope_used TEXT,
-    detail TEXT
+    detail TEXT,
+    error_code TEXT,
+    duration_ms REAL
   )`);
+  // R0.3 (#327) additive upgrade: stores created before the error_code /
+  // duration_ms columns existed keep their table (CREATE IF NOT EXISTS is
+  // a no-op there), so add the columns explicitly. A duplicate-column
+  // error means the upgrade already landed — that is the only failure
+  // mode swallowed, and the columns' presence is proven by the write
+  // path below on every append.
+  for (const ddl of [
+    `ALTER TABLE accounting_events ADD COLUMN error_code TEXT`,
+    `ALTER TABLE accounting_events ADD COLUMN duration_ms REAL`,
+  ]) {
+    try {
+      db.run(ddl);
+    } catch {
+      /* column already present */
+    }
+  }
   db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions (token_hash)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_accounting_tenant_ts ON accounting_events (tenant_id, ts)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_accounting_user_ts ON accounting_events (user_id, ts)`);
@@ -513,7 +541,7 @@ export function appendAccounting(
   let written = 0;
   for (const e of events) {
     db.run(
-      `INSERT INTO accounting_events (operation, ts, level, tenant_id, user_id, correlation_id, outcome, auth_decision, scope_used, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO accounting_events (operation, ts, level, tenant_id, user_id, correlation_id, outcome, auth_decision, scope_used, detail, error_code, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       e.operation,
       e.ts,
       e.level ?? "info",
@@ -524,6 +552,14 @@ export function appendAccounting(
       e.authDecision === undefined ? null : JSON.stringify(e.authDecision),
       e.scopeUsed ?? null,
       e.detail === undefined || e.detail === null ? null : JSON.stringify(e.detail),
+      // R0.3 (#327): the sink-side persistence fix — before this, the
+      // AspectEvent's errorCode/durationMs were dropped at this boundary
+      // even though every producer set them. Only sane values persist:
+      // a non-empty string code, a finite non-negative duration.
+      typeof e.errorCode === "string" && e.errorCode ? e.errorCode : null,
+      typeof e.durationMs === "number" && Number.isFinite(e.durationMs) && e.durationMs >= 0
+        ? e.durationMs
+        : null,
     );
     written++;
   }
