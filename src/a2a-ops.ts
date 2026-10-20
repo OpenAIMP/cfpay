@@ -98,7 +98,10 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       operation: "chat.send",
       summary: "Send a message through the host agent's chat and get its reply.",
       access: "write",
-      inputs: [s("message", "string", true, "The message; the message text part is the fallback.")],
+      inputs: [
+        s("message", "string", true, "The message; the message text part is the fallback."),
+        s("question", "string", false, "Alternative to message; the message text part is the final fallback."),
+      ],
     },
     {
       operation: "desk.hunt",
@@ -261,6 +264,8 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
         s("to", "string", true, "Recipient email address."),
         s("subject", "string", true, "Email subject."),
         s("body", "string", true, "Email body (plain text)."),
+        s("html", "string", false, "Optional HTML body, sent alongside the plain-text body."),
+        s("from", "string", false, "Optional sender address; defaults to the agent's own address."),
       ],
     },
     {
@@ -271,6 +276,8 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
         s("to", "string", true, "Recipient email address."),
         s("subject", "string", true, "Email subject."),
         s("body", "string", true, "Email body (plain text)."),
+        s("html", "string", false, "Optional HTML body, sent alongside the plain-text body."),
+        s("from", "string", false, "Optional sender address; defaults to the agent's own address."),
         s("attachments", "json", true, 'Array of {filename, type, base64} records.'),
       ],
     },
@@ -499,9 +506,9 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
     },
     {
       operation: "orchestrator.jobs",
-      summary: "Recent orchestration jobs (most recent 10).",
+      summary: "Recent orchestration jobs, newest first (limit defaults to 10, clamped 1-50).",
       access: "read",
-      inputs: [],
+      inputs: [s("limit", "number", false, "Max jobs to return (default 10, clamped 1-50).")],
     },
     {
       operation: "orchestrator.run",

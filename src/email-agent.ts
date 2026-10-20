@@ -575,6 +575,10 @@ export class EmailAgent extends Think<Env, EmailState> {
           to: String(args.to || ""),
           subject: String(args.subject || ""),
           body: String(args.body || ""),
+          // Issue #335: the catalog advertises html/from on this operation;
+          // honor them (sendThroughAgent defaults from and skips html when absent).
+          html: args.html !== undefined ? String(args.html) : undefined,
+          from: args.from !== undefined ? String(args.from) : undefined,
         });
         return {
           text: result.ok
@@ -592,6 +596,9 @@ export class EmailAgent extends Think<Env, EmailState> {
           to: String(args.to || ""),
           subject: String(args.subject || ""),
           body: String(args.body || ""),
+          // Issue #335: html/from are advertised on this operation too; honor them.
+          html: args.html !== undefined ? String(args.html) : undefined,
+          from: args.from !== undefined ? String(args.from) : undefined,
           attachments: args.attachments,
         });
         return {
