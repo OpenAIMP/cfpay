@@ -12,6 +12,7 @@
 
 import { Agent, callable } from "agents";
 import type { Env } from "./types";
+import { readLoopMetrics } from "./r0-metrics-core";
 import {
   ensureIdentitySchema,
   loginComplete,
@@ -158,6 +159,25 @@ export class IdentityAgent extends Agent<Env> {
   async myActivity(userId: string, opts?: { limit?: number; eventClass?: string }) {
     this.ensureSchema();
     return myActivity(this.idb(), userId, opts);
+  }
+
+  /**
+   * R0 loop-metrics ledger (issue #241 R0.1 / #325): per-operation
+   * success/failure aggregation + recurrence detection over this DO's
+   * accounting stream, for one tenant. Read-only; all logic lives in
+   * the SDK-free src/r0-metrics-core.ts. The readable summary surface
+   * built on this is #326.
+   */
+  @callable()
+  async loopMetrics(opts: {
+    tenantId: string;
+    from?: string;
+    to?: string;
+    windowMs?: number;
+    minOccurrences?: number;
+  }) {
+    this.ensureSchema();
+    return readLoopMetrics(this.idb(), opts);
   }
 
   @callable()
