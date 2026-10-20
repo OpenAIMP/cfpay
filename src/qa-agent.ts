@@ -3006,16 +3006,28 @@ export class QAAgent extends Think<Env> {
         // Issue #94 step 3: the generalized audit as a service
         // operation; caller credentials ride in spec.auth and are
         // never stored or logged here.
-        const spec = (args.spec ?? null) as UxAuditSpec | null;
+        // Issue #352: the MCP spec also advertises a bare `url` on this
+        // operation; honor it as a single-page shorthand - with no spec
+        // it IS the audit target, and alongside a spec it joins the page
+        // list. It is never silently dropped; the http(s) check below
+        // and qaUxAuditUrl's one-origin rule apply to it unchanged.
+        const pageUrlOf = (p: unknown): string =>
+          typeof p === "string" ? p : ((p as { url?: unknown })?.url as string) ?? "";
+        const rawSpec = (args.spec ?? null) as UxAuditSpec | null;
+        const urlArg = typeof args.url === "string" && args.url ? args.url : null;
+        let spec: UxAuditSpec | null = rawSpec;
+        if (urlArg) {
+          const pages = Array.isArray(rawSpec?.pages) ? [...rawSpec.pages] : [];
+          if (!pages.some((p) => pageUrlOf(p) === urlArg)) pages.push(urlArg);
+          spec = { ...(rawSpec ?? {}), pages } as UxAuditSpec;
+        }
         const specPages = Array.isArray(spec?.pages) ? spec.pages : [];
         if (!spec || specPages.length === 0) {
           return {
-            text: "qa.ux_audit needs a spec with at least one page URL.",
+            text: "qa.ux_audit needs a spec with at least one page URL (or a url).",
             data: { ok: false, error: "bad_spec" },
           };
         }
-        const pageUrlOf = (p: unknown): string =>
-          typeof p === "string" ? p : ((p as { url?: unknown })?.url as string) ?? "";
         if (!specPages.every((p) => /^https?:\/\//.test(pageUrlOf(p)))) {
           // Same http(s)-only bound as qa.check, for the same reason.
           return {

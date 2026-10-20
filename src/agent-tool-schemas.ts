@@ -67,7 +67,7 @@ export const qaAgentToolSchema = {
       enum: ["qa.summary", "qa.check", "qa.dashboard", "qa.ux_audit", "qa.investigate", "qa.browser_profile"],
       description: "Which QA operation to perform.",
     },
-    url: { type: "string", description: "http(s) URL to load. Required for qa.check; the start URL for qa.investigate." },
+    url: { type: "string", description: "http(s) URL to load. Required for qa.check; the start URL for qa.investigate; for qa.ux_audit, a single-page shorthand used when no spec is given (and added to the spec's pages otherwise)." },
     question: { type: "string", description: "What to investigate, in plain language. Required for qa.investigate (max 500 chars)." },
     action: { type: "string", enum: ["start", "status", "stop"], description: "For qa.browser_profile: manage the persistent browser profile." },
     profile: { type: "boolean", description: "For qa.investigate / qa.ux_audit spec: run inside the persistent browser profile when one is active." },

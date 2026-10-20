@@ -119,7 +119,10 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       operation: "desk.autopilot",
       summary: "Deep multi-step research answer via the autopilot pipeline.",
       access: "action",
-      inputs: [s("goal", "string", true, "The goal or question; 'question' and the message text part are fallbacks.")],
+      inputs: [
+        s("goal", "string", true, "The goal or question; 'question' and the message text part are fallbacks."),
+        s("question", "string", false, "Alternative to goal; the message text part is the final fallback."),
+      ],
     },
     {
       operation: "identity.loopMetrics",
@@ -392,8 +395,14 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
         s(
           "spec",
           "json",
-          true,
-          'Audit spec object with at least one page URL: {"pages": [{"url": "https://..."}]}. Credentials ride in spec.auth and are never stored.',
+          false,
+          'Audit spec object with at least one page URL: {"pages": [{"url": "https://..."}]}. Credentials ride in spec.auth and are never stored. Required unless url is given.',
+        ),
+        s(
+          "url",
+          "string",
+          false,
+          "Single-page shorthand: with no spec it is the audit target; alongside a spec it is added to the spec's pages.",
         ),
       ],
     },

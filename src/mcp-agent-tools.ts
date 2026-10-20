@@ -81,7 +81,6 @@ export const MCP_FIELDS: Record<string, McpFieldDef> = {
   action: { kind: "string", describe: "Sub-action where the operation supports one (qa.browser_profile)." },
   checks: { kind: "array", describe: "Check names for qa.check." },
   spec: { kind: "object", describe: "Audit spec for qa.ux_audit." },
-  profile: { kind: "string", describe: "Browser profile name (qa.browser_profile)." },
   attachments: { kind: "array", describe: "Email attachments: records with filename, type, and base64 content." },
 };
 
@@ -194,7 +193,13 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   spec("qa", "QA_AGENT", "qa", "qa.dashboard", "action", [], "Verify the dashboard end to end. Slow (browser)."),
   spec("qa", "QA_AGENT", "qa", "qa.ux_audit", "action", ["url", "spec"], "Run a UX audit. Slow (browser)."),
   spec("qa", "QA_AGENT", "qa", "qa.investigate", "action", ["question", "url"], "Investigate a question with a real browser. Slow."),
-  spec("qa", "QA_AGENT", "qa", "qa.browser_profile", "action", ["action", "profile"], "Inspect the persistent browser profile."),
+  // Issue #352 correction: qa.browser_profile used to advertise a `profile`
+  // field ("browser profile name"), but QAAgent keeps exactly ONE persistent
+  // browser profile per instance (qaBrowserProfile manages a single stored
+  // session row) - there is no name to select and no named-profiles feature
+  // that could honor one. The field was removed from the spec rather than
+  // left advertised-and-silently-dropped.
+  spec("qa", "QA_AGENT", "qa", "qa.browser_profile", "action", ["action"], "Inspect the persistent browser profile."),
 
   // chat (conversation history)
   spec("chat", "CHAT_AGENT", "chat", "chat.summary", "read", [], "Conversation history summary."),
