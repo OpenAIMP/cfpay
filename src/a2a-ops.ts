@@ -632,6 +632,20 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       access: "action",
       inputs: [],
     },
+    {
+      operation: "autopilot.submitProposal",
+      summary:
+        "Stage a persisted rebalance proposal's delta actions as trade proposals in the EXISTING human-approval trade workflow (issue #242 P3.2): each staged action becomes a pending trade proposal a human approves or rejects in the dashboard, and the proposal-to-trade attribution is recorded. AutopilotAgent gains no execution path; refuses when trading is disabled on the deployment. Idempotent per proposal.",
+      access: "action",
+      inputs: [s("proposalId", "string", true, "The persisted rebalance proposal id (see autopilot.proposals).")],
+    },
+    {
+      operation: "autopilot.executions",
+      summary:
+        "Execution attribution for staged rebalance proposals (issue #242 P3.2): per staged action, the trade proposal id, the human decision (pending/approved/rejected/expired), and the execution outcome, refreshed from the host's trade ledger at read time.",
+      access: "read",
+      inputs: [s("limit", "number", false, "Max attribution records to return.")],
+    },
   ],
 };
 
