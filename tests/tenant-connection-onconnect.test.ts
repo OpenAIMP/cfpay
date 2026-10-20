@@ -77,14 +77,18 @@ describe("stampTenantOnConnection (issue #316)", () => {
     expect(conn.state).toBeNull();
   });
 
-  it("is a no-op when the cutover kill switch is off (defensive re-check)", async () => {
+  it("stamps regardless of env contents (no cutover kill switch remains, issue #346)", async () => {
+    // Converted from the old kill-switch-off case: env used to be able to
+    // suppress stamping via the staged-rollout flag; that flag is gone, so
+    // an arbitrary env object is inert and the tenant instance stamps.
     const conn = fakeConnection();
     const stamp = await stampTenantOnConnection(
-      agent("slack:usr_conn_3", { TENANT_CUTOVER: "none" }),
+      agent("slack:usr_conn_3", { SOME_LEGACY_FLAG: "none" }),
       conn,
     );
-    expect(stamp).toBeNull();
-    expect(conn.state).toBeNull();
+    expect(stamp).not.toBeNull();
+    expect(stamp!.tenantId).toBe("usr_conn_3");
+    expect(conn.state).not.toBeNull();
   });
 
   it("is a no-op without an instance name", async () => {
@@ -159,13 +163,21 @@ describe("readTenantConnectionStamp", () => {
 
 describe("stampForInstance (pure)", () => {
   it("derives tenant/user from the instance name", () => {
-    const s = stampForInstance("orchestrator:usr_pure_1", {});
+    const s = stampForInstance("orchestrator:usr_pure_1");
     expect(s).toMatchObject({ tenantId: "usr_pure_1", userId: "usr_pure_1" });
   });
 
-  it("returns null for operator names and cutover-off bases", () => {
-    expect(stampForInstance("qa", {})).toBeNull();
-    expect(stampForInstance("chat:usr_x", { TENANT_CUTOVER: "none" })).toBeNull();
-    expect(stampForInstance(undefined, {})).toBeNull();
+  it("returns null for operator names, singleton bases, and missing names", () => {
+    expect(stampForInstance("qa")).toBeNull();
+    // A tenant-suffixed singleton base still stamps nothing (defensive
+    // re-check; qa never gets per-tenant instances).
+    expect(stampForInstance("qa:usr_x")).toBeNull();
+    expect(stampForInstance("agent")).toBeNull();
+    expect(stampForInstance(undefined)).toBeNull();
+    expect(stampForInstance(null)).toBeNull();
+  });
+
+  it("stamps any tenant-suffixed non-singleton base", () => {
+    expect(stampForInstance("chat:usr_x")).toMatchObject({ tenantId: "usr_x" });
   });
 });

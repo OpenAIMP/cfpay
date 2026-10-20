@@ -24,14 +24,6 @@ export interface Env {
    * debug|info|warn|error. Configuration, never a code change.
    */
   LOG_LEVEL?: string;
-  /**
-   * P3 tenancy (issue #252, design §4): per-surface cutover flag —
-   * comma-separated agent base names or "all" (default "all"); "none"
-   * disables every surface. Flag off for a surface = today's singleton
-   * resolution for everyone (kill switch / rollback). Configuration,
-   * never a secret.
-   */
-  TENANT_CUTOVER?: string;
   CfmailAgent: DurableObjectNamespace;
   /**
    * Trade-approval workflow for the Public tab (src/trade-workflow.ts). A

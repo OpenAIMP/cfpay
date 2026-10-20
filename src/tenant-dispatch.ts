@@ -2,7 +2,7 @@
  * Tenant-aware A2A dispatch (issue #252 P3, design §4).
  *
  * The single seam for Worker-initiated in-process A2A calls: resolve the
- * cutover-aware instance name, assert the cross-tenant envelope rule,
+ * tenant's instance name, assert the cross-tenant envelope rule,
  * provision the tenant on first use, then dispatch. Every index.ts A2A
  * branch, the MCP dispatcher, and the autopilot/scheduled in-process
  * dispatchers go through here (or its raw-stub sibling below).
@@ -14,12 +14,11 @@
  * orphans are reclaimable) and never reports ready (never half-visible).
  * The provisioning is a backstop: OAuth logins already seed the tuple.
  *
- * The honest form of the §6 dual-read window: TENANT_CUTOVER on = tenant
- * instances for users; off = singletons. When a cutover-enabled surface
- * provisions a tenant with no prior record, a `migration_fallback`
- * accounting event is emitted at this seam. No data moves and the
- * operator's singleton data is never copied (the operator → singleton
- * identity mapping is kept).
+ * Per-tenant resolution is unconditional (the staged-rollout flag was
+ * removed by issue #346). When a surface provisions a tenant with no
+ * prior record, a `migration_fallback` accounting event is emitted at
+ * this seam. No data moves and the operator's singleton data is never
+ * copied (the operator → singleton identity mapping is kept).
  *
  * RPC safety (self-heal #301): stubs are raw — never wrapped in a Proxy.
  */
@@ -82,8 +81,8 @@ export async function ensureTenantProvisioned(
   },
 ): Promise<void> {
   if (!tenantId || tenantId === OPERATOR_TENANT_ID) return;
-  const name = instanceName ?? resolveTenantInstance(base, tenantId, env as { TENANT_CUTOVER?: string });
-  if (name === base) return; // cutover off or singleton base: nothing to provision
+  const name = instanceName ?? resolveTenantInstance(base, tenantId);
+  if (name === base) return; // singleton base: nothing to provision
   const key = `${base}:${tenantId}`;
   if (provisionedTenants.has(key)) return;
   try {
@@ -138,15 +137,11 @@ export interface TenantDispatchOpts {
 
 /**
  * Dispatch one A2A message to a tenant's instance. Resolves the
- * cutover-aware instance name, enforces the cross-tenant envelope rule,
+ * tenant's instance name, enforces the cross-tenant envelope rule,
  * provisions on first use, and calls handleA2A on the raw stub.
  */
 export async function dispatchToTenantInstance(opts: TenantDispatchOpts): Promise<unknown> {
-  const instanceName = resolveTenantInstance(
-    opts.base,
-    opts.tenant.tenantId,
-    opts.env as { TENANT_CUTOVER?: string },
-  );
+  const instanceName = resolveTenantInstance(opts.base, opts.tenant.tenantId);
   const gate = checkDispatchEnvelope(opts.trace, instanceName);
   if (!gate.ok) throw new CrossTenantDispatchError(gate.reason ?? "cross-tenant dispatch rejected");
   await ensureTenantProvisioned(opts.env, opts.base, opts.tenant.tenantId, instanceName);
@@ -174,11 +169,7 @@ export async function tenantAgentStub(
   base: string,
   tenantId: string,
 ): Promise<{ stub: unknown; instanceName: string }> {
-  const instanceName = resolveTenantInstance(
-    base,
-    tenantId,
-    env as { TENANT_CUTOVER?: string },
-  );
+  const instanceName = resolveTenantInstance(base, tenantId);
   await ensureTenantProvisioned(env, base, tenantId, instanceName);
   const { getAgentByName } = await import("agents");
   const ns = (env as Record<string, unknown>)[binding];

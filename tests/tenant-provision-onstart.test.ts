@@ -6,8 +6,8 @@
  * WebSocket (routeAgentRequest → wake, no dispatch) never passes that
  * seam. Each tenantized agent self-provisions in onStart; this file pins
  * that the helper the onStart methods call does the right thing for every
- * entry path, stays idempotent, and leaves the operator/cutover-off
- * behavior byte-identical.
+ * entry path, stays idempotent, and leaves the operator behavior
+ * byte-identical.
  *
  * Pure-agent-likes only — no Durable Objects. The tuple store goes through
  * the injected identity seam (mirroring ensureTenantProvisioned's deps).
@@ -67,12 +67,15 @@ describe("selfProvisionOwnTenant (issue #315)", () => {
     expect(identity.calls).toEqual([]);
   });
 
-  it("is a no-op when the cutover kill switch is off", async () => {
+  it("provisions regardless of env contents (no cutover kill switch remains, issue #346)", async () => {
+    // Converted from the old kill-switch-off case: env used to be able to
+    // suppress provisioning via the staged-rollout flag; that flag is gone,
+    // so an arbitrary env object is inert and the wake provisions.
     const identity = fakeIdentity();
-    await selfProvisionOwnTenant(woken("chat:usr_onstart_4", { TENANT_CUTOVER: "none" }), {
+    await selfProvisionOwnTenant(woken("chat:usr_onstart_4", { SOME_LEGACY_FLAG: "none" }), {
       identity,
     });
-    expect(identity.calls).toEqual([]);
+    expect(identity.has("user:usr_onstart_4:owner:tenant:usr_onstart_4")).toBe(true);
   });
 
   it("covers every tenantized surface base", async () => {

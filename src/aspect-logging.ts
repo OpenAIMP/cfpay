@@ -230,8 +230,7 @@ export const setAccountingSink = setOutcomeLedgerSink;
  * events are emitted by the P2 identity work; authz events are emitted by
  * the authz aspect from P1; ai.spend is emitted by the budget guard from
  * P3; migration_fallback is emitted at first-use tenant provisioning
- * during the P3 cutover (the honest form of the §6 dual-read window: flag
- * on = tenant instances for users, flag off = singletons — no data moves).
+ * (per-tenant resolution is unconditional — no data moves).
  * All are AspectEvents — the accounting sink persists them unchanged.
  */
 export type AccountingEventKind =

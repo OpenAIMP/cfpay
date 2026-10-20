@@ -53,7 +53,6 @@ import {
   checkDispatchEnvelope,
   ownTenantId,
   resolveTenantInstance,
-  type CutoverEnv,
 } from "./tenancy";
 import { selfProvisionOwnTenant } from "./tenant-provision";
 import { stampTenantOnConnection } from "./tenant-connection";
@@ -484,7 +483,7 @@ export class ScheduledAgent extends Think<Env> {
     const binding = (this.env as Env & { ORCHESTRATOR_AGENT?: DurableObjectNamespace }).ORCHESTRATOR_AGENT;
     if (!binding) throw new Error("OrchestratorAgent binding is not configured.");
     const tenantId = ownTenantId(this.ctx.id.name);
-    const instanceName = resolveTenantInstance("orchestrator", tenantId, this.env as CutoverEnv);
+    const instanceName = resolveTenantInstance("orchestrator", tenantId);
     const trace = a2aTraceFor(tenantId);
     const envelope = checkDispatchEnvelope(trace, instanceName);
     if (!envelope.ok) throw new Error(envelope.reason ?? "cross-tenant dispatch rejected");

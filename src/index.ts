@@ -771,9 +771,9 @@ async function handleFetch(
       // instance than the dashboard reads. No RPC needed here (dedupe is inside the DO).
       // P3 tenancy: provider webhooks carry no user credential, so they
       // land on the operator tenant — resolveTenantInstance keeps the
-      // singleton for the operator (and honors TENANT_CUTOVER).
+      // singleton for the operator.
       const agentId = env.CfmailAgent.idFromName(
-        resolveTenantInstance("agent", OPERATOR_TENANT_ID, env),
+        resolveTenantInstance("agent", OPERATOR_TENANT_ID),
       );
       const agent = env.CfmailAgent.get(agentId);
 
@@ -973,7 +973,7 @@ async function handleSlackWebhook(request: Request, env: Env): Promise<Response>
   // P3 tenancy: the legacy Slack webhook carries no user credential — it
   // lands on the operator tenant's host instance (singleton, unchanged).
   const agentId = env.CfmailAgent.idFromName(
-    resolveTenantInstance("agent", OPERATOR_TENANT_ID, env),
+    resolveTenantInstance("agent", OPERATOR_TENANT_ID),
   );
   const agent = env.CfmailAgent.get(agentId) as any;
 
@@ -1042,7 +1042,7 @@ async function handleSlackInstall(request: Request, env: Env): Promise<Response>
     // lands on the operator tenant's host instance (singleton, unchanged).
     const agent = await getAgentByName(
       env.CfmailAgent as any,
-      resolveTenantInstance("agent", OPERATOR_TENANT_ID, env),
+      resolveTenantInstance("agent", OPERATOR_TENANT_ID),
     );
     const stored = await (agent as any).setSlackBotToken(data.access_token);
     if (!stored?.success) {

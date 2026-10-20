@@ -4,14 +4,16 @@
  * Matrix: surfaces × attack shapes —
  *  1. guessed ids (401/403/404-without-leak),
  *  2. cross-tenant correlation replay,
- *  3. stale singleton fallback / flag-off behavior,
+ *  3. stale singleton fallback (a tenant must never fall back to a
+ *     shared singleton),
  *  4. shared-cache identity (a cached validity never confers identity),
  *  5. secret isolation (instance separation),
  *  6. budget isolation (budgets live in the per-tenant host instance),
  *  7. FGA negatives (viewer can't approve; actor_for scoping; revoked
  *     sessions inert),
- * plus the P3 machinery: tenancy resolution, TENANT_CUTOVER semantics,
- * first-use provisioning + migration_fallback, and the A2A edge identity.
+ * plus the P3 machinery: tenancy resolution, unconditional per-tenant
+ * resolution, first-use provisioning + migration_fallback, and the A2A
+ * edge identity.
  *
  * Pure modules only — no Durable Objects. Tuple-store interactions go
  * through the injected seams (enforceAuthz tupleCheck/tupleAdd,
@@ -23,7 +25,6 @@ import {
   OPERATOR_TENANT_ID,
   TENANT_SINGLETON_BASES,
   checkDispatchEnvelope,
-  cutoverEnabled,
   instanceFor,
   isOperatorTenant,
   ownTenantId,
@@ -32,6 +33,7 @@ import {
   tenantFromAuthDecision,
   tenantOfInstance,
 } from "../src/tenancy";
+import * as tenancy from "../src/tenancy";
 import {
   emitAuthzDecision,
   enforceAuthz,
@@ -188,53 +190,39 @@ describe("tenancy resolution (P3)", () => {
   });
 });
 
-describe("TENANT_CUTOVER flag semantics", () => {
-  it("defaults to all surfaces on", () => {
-    expect(cutoverEnabled("scheduler")).toBe(true);
-    expect(cutoverEnabled("scheduler", {})).toBe(true);
-    expect(cutoverEnabled("scheduler", { TENANT_CUTOVER: "all" })).toBe(true);
+describe("per-tenant resolution is unconditional (issue #346)", () => {
+  // The staged-rollout flag that gated P3's per-tenant resolution was
+  // removed once its staging condition (two consecutive green deploys
+  // post-P3) was verified met. These pins replace the old flag-semantics
+  // suite: there is no env input left to consult, so the behavior that
+  // production ran with the flag at "all" is now the only behavior.
+  it("the staged-rollout flag helper no longer exists", () => {
+    expect((tenancy as Record<string, unknown>).cutoverEnabled).toBeUndefined();
   });
 
-  it("comma-separated list enables only the named surfaces", () => {
-    const env = { TENANT_CUTOVER: "scheduler,autopilot" };
-    expect(cutoverEnabled("scheduler", env)).toBe(true);
-    expect(cutoverEnabled("autopilot", env)).toBe(true);
-    expect(cutoverEnabled("agent", env)).toBe(false);
-    expect(cutoverEnabled("slack", env)).toBe(false);
+  it("every cut-over base resolves per-tenant, for every tenant", () => {
+    for (const base of ["scheduler", "autopilot", "agent", "slack", "chat"]) {
+      expect(resolveTenantInstance(base, UID_A)).toBe(`${base}:${UID_A}`);
+      expect(resolveTenantInstance(base, UID_B)).toBe(`${base}:${UID_B}`);
+    }
   });
 
-  it('"none" disables every surface (kill switch)', () => {
-    const env = { TENANT_CUTOVER: "none" };
-    expect(cutoverEnabled("scheduler", env)).toBe(false);
-    expect(cutoverEnabled("agent", env)).toBe(false);
+  it("operator keeps the singleton (identity mapping, no data moves)", () => {
+    expect(resolveTenantInstance("scheduler", "operator")).toBe("scheduler");
+    expect(resolveTenantInstance("agent", "operator")).toBe("agent");
+    expect(resolveTenantInstance("agent", "")).toBe("agent");
   });
 
-  it("qa is never cut over, even with all", () => {
+  it("qa is never per-tenant (permanent singleton base, not rollout staging)", () => {
     expect(TENANT_SINGLETON_BASES.has("qa")).toBe(true);
-    expect(cutoverEnabled("qa", { TENANT_CUTOVER: "all" })).toBe(false);
-    expect(cutoverEnabled("qa", { TENANT_CUTOVER: "qa" })).toBe(false);
-  });
-
-  it("flag off → singleton resolution for everyone (no leak across the flag)", () => {
-    const env = { TENANT_CUTOVER: "none" };
-    expect(resolveTenantInstance("scheduler", UID_A, env)).toBe("scheduler");
-    expect(resolveTenantInstance("scheduler", UID_B, env)).toBe("scheduler");
-    // Both tenants resolve to the SAME singleton — and the operator's
-    // singleton is the identity mapping, so nothing crosses tenants.
-    expect(resolveTenantInstance("agent", "operator", env)).toBe("agent");
-  });
-
-  it("flag on → per-tenant instances; operator keeps the singleton (no data moves)", () => {
-    expect(resolveTenantInstance("scheduler", UID_A, {})).toBe(`scheduler:${UID_A}`);
-    expect(resolveTenantInstance("scheduler", UID_B, {})).toBe(`scheduler:${UID_B}`);
-    expect(resolveTenantInstance("scheduler", "operator", {})).toBe("scheduler");
-    expect(resolveTenantInstance("agent", "operator", {})).toBe("agent");
+    expect(resolveTenantInstance("qa", UID_A)).toBe("qa");
+    expect(resolveTenantInstance("qa", UID_B)).toBe("qa");
   });
 
   it("a guessed tenant id resolves only to its own instance name", () => {
     // Tenant A cannot make resolution return tenant B's instance.
-    expect(resolveTenantInstance("agent", UID_A, {})).not.toBe(`agent:${UID_B}`);
-    expect(resolveTenantInstance("agent", UID_A, {})).toBe(`agent:${UID_A}`);
+    expect(resolveTenantInstance("agent", UID_A)).not.toBe(`agent:${UID_B}`);
+    expect(resolveTenantInstance("agent", UID_A)).toBe(`agent:${UID_A}`);
   });
 });
 
@@ -537,12 +525,15 @@ describe("first-use provisioning + migration_fallback", () => {
     expect(ledger.some((e) => e.operation === "migration_fallback")).toBe(false);
   });
 
-  it("operator tenant and cutover-off surfaces provision nothing", async () => {
+  it("operator tenant, singleton-named instances, and singleton bases provision nothing", async () => {
     const tuples = fakeTuples();
     await ensureTenantProvisioned({}, "scheduler", "operator", "scheduler", {
       identity: tuples,
     });
-    await ensureTenantProvisioned({ TENANT_CUTOVER: "none" }, "scheduler", "usr_prov3", "scheduler", {
+    // Converted from the old flag-off case (issue #346): with the staged
+    // flag gone, an explicitly singleton instance name is what provisions
+    // nothing — resolution itself no longer has an "off" mode.
+    await ensureTenantProvisioned({}, "scheduler", "usr_prov3", "scheduler", {
       identity: tuples,
     });
     await ensureTenantProvisioned({}, "qa", "usr_prov4", "qa", { identity: tuples });
@@ -690,8 +681,8 @@ describe("shared-cache identity", () => {
 
 describe("secret + budget isolation via instance separation", () => {
   it("two tenants never share a host instance (budgets, tokens, hunts live there)", () => {
-    const a = resolveTenantInstance("agent", UID_A, {});
-    const b = resolveTenantInstance("agent", UID_B, {});
+    const a = resolveTenantInstance("agent", UID_A);
+    const b = resolveTenantInstance("agent", UID_B);
     expect(a).not.toBe(b);
     expect(new Set([a, b]).size).toBe(2);
   });
@@ -710,13 +701,13 @@ describe("secret + budget isolation via instance separation", () => {
       "scheduler",
       "autopilot",
     ]) {
-      expect(resolveTenantInstance(base, UID_A, {})).toBe(`${base}:${UID_A}`);
+      expect(resolveTenantInstance(base, UID_A)).toBe(`${base}:${UID_A}`);
     }
   });
 
   it("qa, cards-adjacent globals, and the operator stay singleton", () => {
-    expect(resolveTenantInstance("qa", UID_A, {})).toBe("qa");
-    expect(resolveTenantInstance("agent", "operator", {})).toBe("agent");
+    expect(resolveTenantInstance("qa", UID_A)).toBe("qa");
+    expect(resolveTenantInstance("agent", "operator")).toBe("agent");
   });
 });
 
