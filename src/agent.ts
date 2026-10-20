@@ -74,7 +74,7 @@ import {
   parseCandidates,
   sizePlan,
 } from "./opportunity-hunt";
-import { deskAutopilot, deskHunt } from "./desk-ops";
+import { deskAutopilot, deskHunt, deskPortfolio } from "./desk-ops";
 import type { HuntRequest, StoredHunt } from "./opportunity-hunt";
 import {
   computeCost,
@@ -1591,6 +1591,8 @@ Do not claim to have completed a payment unless you have received confirmation.`
         });
         return loopMetricsReply(ledger);
       }
+      case "desk.portfolio":
+        return deskPortfolio(this, args, text);
 
       default:
         return {
@@ -1598,7 +1600,7 @@ Do not claim to have completed a payment unless you have received confirmation.`
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["chat.summary", "chat.facts", "chat.send", "desk.hunt", "desk.autopilot", "identity.loopMetrics"],
+            supported: ["chat.summary", "chat.facts", "chat.send", "desk.hunt", "desk.autopilot", "identity.loopMetrics", "desk.portfolio"],
           },
         };
     }

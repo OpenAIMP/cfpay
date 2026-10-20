@@ -8,6 +8,14 @@
  * and emails the recommendations report through EmailAgent when the
  * objective carries a notify address.
  *
+ * P2.2 (#329): each successful cycle also runs portfolio construction
+ * (src/portfolio-core.ts) over the hunt's sized trades, reads current
+ * holdings back from the host (`desk.portfolio` - the host keeps the
+ * Public token; this agent gains no credentials), and persists a
+ * rebalance proposal (src/autopilot-proposals.ts): target vs current
+ * with a reasoned delta action per underlying. A proposal is a review
+ * record - it executes nothing.
+ *
  * This agent places no orders and sends no mail on its own: hunts are
  * report-only pipelines on the host, notifications are best-effort
  * (failures are recorded on the cycle row, never fatal), and any order
@@ -29,6 +37,15 @@ import {
   type AutopilotObjectiveInput,
   type AutopilotObjective,
 } from "./autopilot-core";
+import { constructPortfolio } from "./portfolio-core";
+import {
+  buildRebalanceProposal,
+  ProposalStore,
+  type HoldingsSnapshot,
+  type RebalanceProposal,
+} from "./autopilot-proposals";
+import type { HuntPlan } from "./opportunity-hunt";
+import type { PortfolioPosition } from "./public-data";
 import type { Env } from "./types";
 import { mintCorrelationId, withTracePart } from "./aspect-logging";
 import {
@@ -177,6 +194,10 @@ export class AutopilotAgent extends Think<Env> {
        )`,
     );
     return this.ctx.storage.sql;
+  }
+
+  private proposalStore(): ProposalStore {
+    return new ProposalStore(this.ctx.storage.sql);
   }
 
   private objectiveRow(): ObjectiveRow | undefined {
@@ -405,6 +426,11 @@ export class AutopilotAgent extends Think<Env> {
   }
 
   @callable()
+  async autopilotProposals(limit?: number): Promise<{ proposals: RebalanceProposal[] }> {
+    return { proposals: this.proposalStore().list(limit) };
+  }
+
+  @callable()
   async autopilotSummary(): Promise<Record<string, unknown>> {
     const obj = this.objectiveRow();
     const cycles = this.db()
@@ -420,12 +446,15 @@ export class AutopilotAgent extends Think<Env> {
          FROM autopilot_cycles`,
       )
       .toArray() as unknown as { c: number; ok: number | null }[];
+    const store = this.proposalStore();
     return {
       objectiveSet: !!obj,
       objective: obj ? this.toObjectiveView(obj) : null,
       cycles: totals[0]?.c ?? 0,
       cyclesCompleted: totals[0]?.ok ?? 0,
       lastCycle: cycles[0] ? this.toCycleView(cycles[0]) : null,
+      proposals: store.count(),
+      lastProposal: store.latest(),
     };
   }
 
@@ -441,6 +470,7 @@ export class AutopilotAgent extends Think<Env> {
     ok: boolean;
     cycleId?: string;
     huntId?: string | null;
+    proposalId?: string | null;
     status?: string;
     summary?: string;
     error?: string;
@@ -460,14 +490,16 @@ export class AutopilotAgent extends Think<Env> {
     notifications.slackStart = await this.bestEffortNotify(`Autopilot research started: ${obj.goal}`);
 
     let huntId: string | null = null;
+    let huntData: unknown;
     let summary = "";
     let error: string | null = null;
+    const symbols: string[] = JSON.parse(obj.symbolsJson ?? "[]");
     try {
-      const symbols: string[] = JSON.parse(obj.symbolsJson ?? "[]");
       const { text, data } = await this.dispatchToAgent("CfmailAgent", "agent", "desk.hunt", {
         budget: obj.budget,
         ...(symbols.length ? { symbols } : {}),
       });
+      huntData = data;
       summary = (text || "Hunt completed.").slice(0, 4000);
       huntId = (data as { huntId?: string } | undefined)?.huntId ?? null;
       const okFlag = (data as { ok?: boolean } | undefined)?.ok;
@@ -476,6 +508,66 @@ export class AutopilotAgent extends Think<Env> {
       }
     } catch (err) {
       error = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+    }
+
+    // P2.2 (#329): construction + rebalance proposal. Construction
+    // (P2.1) runs over the hunt's sized trades; holdings come from the
+    // host's desk.portfolio read. The persisted proposal is a review
+    // record - this step places no orders and touches no trade path.
+    // A failed holdings read still persists the plan (with the failure
+    // named and no delta lines); a failed proposal step is recorded on
+    // the cycle like a notification, never fatal to the cycle.
+    let proposalId: string | null = null;
+    if (!error) {
+      try {
+        const plan = (huntData as { plan?: HuntPlan } | undefined)?.plan;
+        if (plan && Array.isArray(plan.trades)) {
+          const built = constructPortfolio(plan.trades, { budget: obj.budget, symbols });
+          let holdings: HoldingsSnapshot;
+          try {
+            const { data: hData } = await this.dispatchToAgent("CfmailAgent", "agent", "desk.portfolio", {});
+            const hd = hData as
+              | {
+                  ok?: boolean;
+                  positions?: PortfolioPosition[];
+                  fetchedAt?: string;
+                  totalValue?: number | null;
+                  error?: string;
+                }
+              | undefined;
+            holdings =
+              hd?.ok && Array.isArray(hd.positions)
+                ? {
+                    ok: true,
+                    positions: hd.positions,
+                    fetchedAt: hd.fetchedAt ?? null,
+                    totalValue: hd.totalValue ?? null,
+                  }
+                : { ok: false, error: String(hd?.error ?? "holdings read failed") };
+          } catch (err) {
+            holdings = {
+              ok: false,
+              error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+            };
+          }
+          const proposal = buildRebalanceProposal({
+            id: `proposal-${cycleId}`,
+            cycleId,
+            createdAt: Date.now(),
+            goal: obj.goal,
+            budget: obj.budget,
+            plan: built,
+            holdings,
+          });
+          this.proposalStore().save(proposal);
+          proposalId = proposal.id;
+          notifications.proposal = proposalId;
+        } else {
+          notifications.proposal = "skipped: hunt returned no plan";
+        }
+      } catch (err) {
+        notifications.proposal = `error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200);
+      }
     }
 
     notifications.slackReady = await this.bestEffortNotify(
@@ -504,8 +596,8 @@ export class AutopilotAgent extends Think<Env> {
       cycleId,
     );
     return error
-      ? { ok: false, error, cycleId, huntId, status, summary }
-      : { ok: true, cycleId, huntId, status, summary };
+      ? { ok: false, error, cycleId, huntId, proposalId, status, summary }
+      : { ok: true, cycleId, huntId, proposalId, status, summary };
   }
 
   async handleA2A(body: unknown, origin: string): Promise<unknown> {
@@ -518,7 +610,7 @@ export class AutopilotAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-  /** Route one A2A message: autopilot.summary/objective.get/objective.set/objective.clear/cycles/runCycle; no operation = summary. */
+  /** Route one A2A message: autopilot.summary/objective.get/objective.set/objective.clear/cycles/runCycle/proposals; no operation = summary. */
   async handleA2AMessage(
     message: any,
     _context: { taskId: string; contextId: string },
@@ -589,7 +681,7 @@ export class AutopilotAgent extends Think<Env> {
       const res = await this.autopilotRunCycle();
       return res.ok
         ? {
-            text: `Cycle ${res.cycleId} completed${res.huntId ? ` (hunt ${res.huntId})` : ""}: ${res.summary}`,
+            text: `Cycle ${res.cycleId} completed${res.huntId ? ` (hunt ${res.huntId})` : ""}${res.proposalId ? `; rebalance proposal ${res.proposalId} recorded for review` : ""}: ${res.summary}`,
             data: res,
           }
         : {
@@ -598,6 +690,32 @@ export class AutopilotAgent extends Think<Env> {
               : `Cycle ${res.cycleId ?? ""} failed: ${res.error}`,
             data: res,
           };
+    }
+    if (op === "autopilot.proposals") {
+      const { proposals } = await this.autopilotProposals(
+        typeof args.limit === "number" ? args.limit : undefined,
+      );
+      const latest = proposals[0];
+      if (!latest) {
+        return {
+          text: "No rebalance proposals yet. A proposal is built by autopilot.runCycle from the hunt's construction plan and the current holdings read (desk.portfolio).",
+          data: { ok: true, proposals },
+        };
+      }
+      const actionable = latest.lines.filter((l) => l.action !== "none");
+      const head = latest.holdings.ok
+        ? `Latest rebalance proposal ${latest.id} (cycle ${latest.cycleId}, ${new Date(latest.createdAt).toISOString()}):`
+        : `Latest rebalance proposal ${latest.id} (cycle ${latest.cycleId}, ${new Date(latest.createdAt).toISOString()}) - holdings read failed (${latest.holdings.error}), so it records the target allocation with no delta actions:`;
+      return {
+        text: [
+          head,
+          ...(actionable.length
+            ? actionable.map((l) => `${l.action.toUpperCase()} ${l.underlying}: ${l.reason}`)
+            : ["No delta actions proposed (every underlying aligned, unvalued, or unheld)."]),
+          "Review record only - nothing has been executed.",
+        ].join("\n"),
+        data: { ok: true, proposals },
+      };
     }
     if (op && op !== "autopilot.summary") {
       return { text: `Unknown operation: ${op}`, data: { ok: false, error: "unknown_operation" } };

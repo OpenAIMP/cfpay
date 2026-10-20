@@ -136,6 +136,7 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   // field - and no from/to fields either: the tool returns the caller's full recorded
   // ledger (windowing is an A2A-argument refinement).
   spec("cfmail", "CfmailAgent", "agent", "identity.loopMetrics", "read", [], "R0 loop-metrics summary for the caller's tenant: per-operation success rates, failure recurrences, and recording coverage over the accounting stream."),
+  spec("cfmail", "CfmailAgent", "agent", "desk.portfolio", "read", [], "Read the account's current Public.com portfolio positions (read-only holdings seam; places no orders)."),
 
   // email
   spec("email", "EMAIL_AGENT", "email", "email.summary", "read", [], "Email agent summary."),
@@ -215,6 +216,7 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.objective.clear", "write", [], "Clear the portfolio objective and cancel its schedule. Destructive."),
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.cycles", "read", ["limit"], "Recent autopilot discovery cycles."),
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.runCycle", "action", [], "Run one autopilot discovery cycle now (heavyweight hunt + notifications)."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.proposals", "read", ["limit"], "Recent persisted rebalance proposals (target vs current, delta actions with reasons; review records only)."),
 ];
 
 /** Names of the write-class tools, for JWT scope enforcement. */
