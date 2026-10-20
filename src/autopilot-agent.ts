@@ -41,6 +41,7 @@ import { constructPortfolio } from "./portfolio-core";
 import {
   buildRebalanceProposal,
   ProposalStore,
+  renderProposalText,
   type HoldingsSnapshot,
   type RebalanceProposal,
 } from "./autopilot-proposals";
@@ -654,10 +655,11 @@ export class AutopilotAgent extends Think<Env> {
     if (op === "autopilot.summary") {
       const s = await this.autopilotSummary();
       const obj = s.objective as ObjectiveView | null;
+      const head = obj
+        ? `Autopilot: objective ${obj.enabled ? "armed" : "UNARMED (schedule failed)"} - "${obj.goal}" ($${Number(obj.budget).toLocaleString("en-US")}, ${obj.cadenceCron}). ${Number(s.cycles)} cycle(s), ${Number(s.cyclesCompleted)} completed.`
+        : `Autopilot: no objective set. Set one with autopilot.objective.set {goal, budget}.`;
       return {
-        text: obj
-          ? `Autopilot: objective ${obj.enabled ? "armed" : "UNARMED (schedule failed)"} - "${obj.goal}" ($${Number(obj.budget).toLocaleString("en-US")}, ${obj.cadenceCron}). ${Number(s.cycles)} cycle(s), ${Number(s.cyclesCompleted)} completed.`
-          : `Autopilot: no objective set. Set one with autopilot.objective.set {goal, budget}.`,
+        text: `${head}\n\n${renderProposalText(s.lastProposal as RebalanceProposal | null)}`,
         data: s,
       };
     }
@@ -725,25 +727,11 @@ export class AutopilotAgent extends Think<Env> {
       const { proposals } = await this.autopilotProposals(
         typeof args.limit === "number" ? args.limit : undefined,
       );
-      const latest = proposals[0];
-      if (!latest) {
-        return {
-          text: "No rebalance proposals yet. A proposal is built by autopilot.runCycle from the hunt's construction plan and the current holdings read (desk.portfolio).",
-          data: { ok: true, proposals },
-        };
-      }
-      const actionable = latest.lines.filter((l) => l.action !== "none");
-      const head = latest.holdings.ok
-        ? `Latest rebalance proposal ${latest.id} (cycle ${latest.cycleId}, ${new Date(latest.createdAt).toISOString()}):`
-        : `Latest rebalance proposal ${latest.id} (cycle ${latest.cycleId}, ${new Date(latest.createdAt).toISOString()}) - holdings read failed (${latest.holdings.error}), so it records the target allocation with no delta actions:`;
+      // The latest proposal renders through the one shared renderer
+      // (issue #242 P2.3): the same text the summary reply and the
+      // desk snapshot carry, rejections and basis notes included.
       return {
-        text: [
-          head,
-          ...(actionable.length
-            ? actionable.map((l) => `${l.action.toUpperCase()} ${l.underlying}: ${l.reason}`)
-            : ["No delta actions proposed (every underlying aligned, unvalued, or unheld)."]),
-          "Review record only - nothing has been executed.",
-        ].join("\n"),
+        text: renderProposalText(proposals[0] ?? null),
         data: { ok: true, proposals },
       };
     }
@@ -752,10 +740,11 @@ export class AutopilotAgent extends Think<Env> {
     }
     const s = await this.autopilotSummary();
     const obj = s.objective as ObjectiveView | null;
+    const head = obj
+      ? `Autopilot status. Objective ${obj.enabled ? "armed" : "UNARMED"}: "${obj.goal}" ($${Number(obj.budget).toLocaleString("en-US")}, ${obj.cadenceCron}). ${Number(s.cycles)} cycle(s) so far.`
+      : "Autopilot status. No objective set - nothing runs until one is created.";
     return {
-      text: obj
-        ? `Autopilot status. Objective ${obj.enabled ? "armed" : "UNARMED"}: "${obj.goal}" ($${Number(obj.budget).toLocaleString("en-US")}, ${obj.cadenceCron}). ${Number(s.cycles)} cycle(s) so far.`
-        : "Autopilot status. No objective set - nothing runs until one is created.",
+      text: `${head}\n\n${renderProposalText(s.lastProposal as RebalanceProposal | null)}`,
       data: s,
     };
   }

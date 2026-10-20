@@ -62,3 +62,14 @@ export async function identityStub(env: any): Promise<any> {
   const { getAgentByName } = await import("agents");
   return (await getAgentByName(env.IDENTITY_AGENT as any, "identity")) as any;
 }
+
+/**
+ * The autopilot agent's RPC-capable stub (issue #242 P2.3).
+ * Single operator instance, same name ("autopilot") as the API's
+ * tenant resolution for the operator tenant. Used by QAAgent's desk
+ * snapshot to read the latest rebalance proposal for its email body.
+ */
+export async function autopilotAgentStub(env: any): Promise<any> {
+  const { getAgentByName } = await import("agents");
+  return (await getAgentByName(env.AUTOPILOT_AGENT as any, "autopilot")) as any;
+}

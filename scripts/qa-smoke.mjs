@@ -921,6 +921,70 @@ async function runSections() {
     record("dashboard capability routes (via QAAgent probes)", false, err.message);
   }
   }
+
+  if (shouldRun("autopilot rebalance proposals read surface")) {
+  // 16. Autopilot rebalance proposals (issue #242 P2.3): the read
+  //     surface behind the summary/snapshot/dashboard proposal views
+  //     must answer honestly in production. A persisted proposal OR
+  //     the explicit no-proposal state both PASS - the surface states
+  //     plainly which one it is. A malformed reply, an erroring op,
+  //     or a 200 whose text and data disagree FAILS. Read-only and
+  //     headless: proposals execute nothing, and this section never
+  //     runs a cycle.
+  try {
+    const res = await fetch(`${BASE_URL}/a2a/autopilot`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${API_KEY}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "smoke-autopilot-proposals",
+        method: "message/send",
+        params: {
+          message: {
+            kind: "message",
+            role: "user",
+            messageId: `smoke-${Date.now()}`,
+            parts: [{ kind: "data", data: { operation: "autopilot.proposals" } }],
+          },
+        },
+      }),
+    });
+    const json = await res.json().catch(() => null);
+    const parts = json?.result?.parts || [];
+    const text = parts
+      .filter((p) => p.kind === "text")
+      .map((p) => p.text || "")
+      .join(" ");
+    // Over HTTP the reply Message's TEXT is the contract (the
+    // structured data part does not reliably cross message/send -
+    // issue #201, see section 14): the renderer states plainly which
+    // state it is in. When a data part IS present, it must agree.
+    const dataPart = parts.find((p) => p.kind === "data")?.data;
+    const saysEmpty = text.includes("No rebalance proposals yet");
+    const saysProposal =
+      text.includes("Rebalance proposal") && text.includes("review record only");
+    let dataAgrees = true;
+    if (dataPart && Array.isArray(dataPart.proposals)) {
+      dataAgrees = dataPart.ok === true && (dataPart.proposals.length > 0 ? saysProposal : saysEmpty);
+    }
+    const honest =
+      res.status === 200 &&
+      json?.result?.kind === "message" &&
+      text.length > 0 &&
+      (saysEmpty || saysProposal) &&
+      dataAgrees;
+    record(
+      "autopilot rebalance proposals read surface",
+      honest,
+      `status=${res.status}, text="${text.slice(0, 110)}"`,
+    );
+  } catch (err) {
+    record("autopilot rebalance proposals read surface", false, err.message);
+  }
+  }
 }
 
 main().catch((err) => {

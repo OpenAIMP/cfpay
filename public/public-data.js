@@ -649,7 +649,8 @@ function deskInitViews() {
         + '<button class="btn" onclick="deskApClear()">Clear</button>'
         + '<button class="btn" onclick="deskApRun()">Run cycle now</button></div>'
         + '<div id="deskApResult" style="margin-top:0.5rem;font-size:0.82rem;"></div>'
-        + '<div id="deskApCycles" style="margin-top:0.6rem;"></div>';
+        + '<div id="deskApCycles" style="margin-top:0.6rem;"></div>'
+        + '<div id="deskApProposal" style="margin-top:0.6rem;"></div>';
       orchSection.appendChild(apCard);
     }
   }
@@ -1620,6 +1621,41 @@ function deskApCycleHtml(c) {
     + (c.error ? ' \u00b7 <span style="color:var(--red,#c0392b);">' + escapeHtml(String(c.error).slice(0, 140)) + '</span>' : '')
     + '</div>';
 }
+// Latest rebalance proposal (issue #242 P2.3): the same structured
+// record the A2A summary and the desk snapshot render as text via
+// renderProposalText (src/autopilot-proposals.ts) - here as HTML.
+// Review record only: a proposal executes nothing.
+function deskApProposalHtml(p) {
+  if (!p) return '<div style="font-size:0.82rem;font-weight:600;margin-bottom:0.25rem;">Latest rebalance proposal</div>'
+    + '<span style="color:var(--muted);font-size:0.8rem;">No rebalance proposals yet \u2014 a proposal is built when a cycle runs (hunt plan vs current holdings). Nothing is executed from a proposal.</span>';
+  const when = new Date(p.createdAt).toISOString().slice(0, 16).replace('T', ' ');
+  const money = (n) => '$' + Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  let h = '<div style="font-size:0.82rem;font-weight:600;margin-bottom:0.25rem;">Latest rebalance proposal '
+    + '<span class="badge-ok">review only</span></div>'
+    + '<div style="font-size:0.8rem;color:var(--muted);">' + escapeHtml(p.id) + ' \u00b7 cycle ' + escapeHtml(p.cycleId) + ' \u00b7 ' + when + ' UTC'
+    + ' \u00b7 goal ' + escapeHtml(p.goal) + ' \u00b7 budget ' + money(p.budget) + '</div>';
+  if (p.holdings && p.holdings.ok) {
+    h += '<div style="font-size:0.8rem;margin-top:0.2rem;">Holdings read OK \u2014 ' + (p.holdings.positions || []).length + ' position(s)'
+      + (p.holdings.totalValue != null ? ', total reported value ' + money(p.holdings.totalValue) : '') + '.</div>';
+  } else {
+    h += '<div style="font-size:0.8rem;margin-top:0.2rem;"><span class="badge-failed">holdings read failed</span> '
+      + escapeHtml((p.holdings && p.holdings.error) || 'unknown error')
+      + ' \u2014 the target allocation is recorded with no delta actions.</div>';
+  }
+  const lines = p.lines || [];
+  h += lines.length
+    ? lines.map((l) => '<div style="font-size:0.8rem;padding:0.25rem 0;border-top:1px solid var(--border);">'
+      + '<b>' + escapeHtml(String(l.action).toUpperCase()) + ' ' + escapeHtml(l.underlying) + '</b> '
+      + '<span style="color:var(--muted);">' + escapeHtml(l.reason) + '</span></div>').join('')
+    : '<div style="font-size:0.8rem;color:var(--muted);margin-top:0.2rem;">No delta lines in this proposal.</div>';
+  const rej = (p.plan && p.plan.rejections) || [];
+  if (rej.length) {
+    h += '<div style="font-size:0.8rem;margin-top:0.3rem;">Construction rejections (' + rej.length + '):</div>'
+      + rej.map((r) => '<div style="font-size:0.78rem;color:var(--muted);">\u2013 ' + escapeHtml(r.underlying) + ' (' + escapeHtml(r.strategy) + ', exp ' + escapeHtml(r.expiry) + ') [' + escapeHtml(r.reason) + ']: ' + escapeHtml(r.detail) + '</div>').join('');
+  }
+  h += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.3rem;">Basis: target figures are max-risk dollars from deterministic construction; current figures are quantities and market values as reported by the broker read. Shares compare each side against the objective budget \u2014 an exposure proxy for human review, not a like-for-like risk measure.</div>';
+  return h;
+}
 async function deskApLoad() {
   const box = document.getElementById('deskApObjective');
   const cyc = document.getElementById('deskApCycles');
@@ -1631,6 +1667,8 @@ async function deskApLoad() {
     cyc.innerHTML = cycles.length
       ? '<div style="font-size:0.82rem;font-weight:600;margin-bottom:0.25rem;">Recent cycles (' + (s.cycles || 0) + ' total)</div>' + cycles.map(deskApCycleHtml).join('')
       : '<span style="color:var(--muted);font-size:0.8rem;">No cycles yet.</span>';
+    const prop = document.getElementById('deskApProposal');
+    if (prop) prop.innerHTML = deskApProposalHtml(s && s.lastProposal);
   } catch (e) {
     box.innerHTML = '<span class="badge-failed">Autopilot unavailable</span>';
   }

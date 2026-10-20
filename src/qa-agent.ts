@@ -2235,6 +2235,20 @@ export class QAAgent extends Think<Env> {
       .filter((s) => shotNames.includes(s.name))
       .map((s) => `- desk-${s.name}: ${s.label}`)
       .join("\n");
+    // The latest rebalance proposal (issue #242 P2.3), rendered by the
+    // one shared renderer so the snapshot reads exactly what the A2A
+    // summary says. Best-effort: a failed read is named in the body,
+    // never silently dropped and never fabricated.
+    let proposalText: string;
+    try {
+      const { autopilotAgentStub } = await import("./agent-stubs");
+      const { renderProposalText } = await import("./autopilot-proposals");
+      const autopilot = await autopilotAgentStub(env);
+      const { proposals } = await autopilot.autopilotProposals(1);
+      proposalText = renderProposalText(proposals?.[0] ?? null);
+    } catch (err) {
+      proposalText = `Latest rebalance proposal could not be read (${err instanceof Error ? err.message : String(err)}).`;
+    }
     const body = [
       `Autopilot Trading Desk Snapshot - ${new Date().toISOString()}`,
       ``,
@@ -2245,6 +2259,8 @@ export class QAAgent extends Think<Env> {
       `Portfolio: ${desk.portfolio || "n/a"}`,
       ``,
       `Autopilot runs: ${desk.runs || "n/a"}`,
+      ``,
+      proposalText,
       ``,
       `Attached screenshots (${attachments.length}):`,
       manifest,

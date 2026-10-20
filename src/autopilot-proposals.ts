@@ -251,6 +251,66 @@ export function buildRebalanceProposal(input: {
   return { ...head, lines };
 }
 
+/**
+ * The one text rendering of a rebalance proposal (issue #242 P2.3,
+ * #330). Every surface that shows a proposal as text - the
+ * autopilot.summary / autopilot.proposals A2A replies and the desk
+ * snapshot email - renders through this function, so the wording a
+ * reviewer reads can never drift between surfaces. The dashboard
+ * renders the same structured record as HTML in public-data.js.
+ *
+ * Honesty rules: a null proposal renders the explicit no-proposal
+ * state (never an empty string a surface could mistake for "nothing
+ * to say"); a holdings-read failure is named on the rendering with
+ * zero delta actions; the comparison basis (max-risk dollars vs
+ * reported market values, shares of the objective budget) is stated
+ * on the face of the output via the proposal's own notes.
+ */
+export function renderProposalText(proposal: RebalanceProposal | null | undefined): string {
+  if (!proposal) {
+    return "No rebalance proposals yet. A proposal is built by autopilot.runCycle from the hunt's construction plan and the current holdings read (desk.portfolio).";
+  }
+  const when = new Date(proposal.createdAt).toISOString();
+  const out: string[] = [
+    `Rebalance proposal ${proposal.id} (cycle ${proposal.cycleId}, ${when}) - review record only; nothing has been executed.`,
+    `Goal: "${proposal.goal}" - budget ${money(proposal.budget)}.`,
+  ];
+  if (proposal.holdings.ok) {
+    const h = proposal.holdings;
+    out.push(
+      `Holdings basis: read OK${h.fetchedAt ? ` at ${h.fetchedAt}` : ""} - ${h.positions.length} position(s)` +
+        (h.totalValue != null ? `, total reported value ${money(h.totalValue)}.` : ", no reported total value."),
+    );
+  } else {
+    out.push(
+      `Holdings basis: READ FAILED (${proposal.holdings.error}) - the target allocation below is recorded with NO delta actions; a diff against holdings nobody read would be fabrication.`,
+    );
+  }
+  const plan = proposal.plan;
+  out.push(
+    `Target allocation: ${money(plan.totalRisk)} total max risk across ${plan.allocations.length} allocated trade(s); ${money(plan.unallocated)} of the budget unallocated.`,
+  );
+  out.push("Delta lines:");
+  if (proposal.lines.length) {
+    for (const l of proposal.lines) out.push(`- ${l.action.toUpperCase()} ${l.underlying}: ${l.reason}`);
+  } else {
+    out.push("- none (no holdings diff was computed for this proposal).");
+  }
+  if (plan.rejections.length) {
+    out.push(`Construction rejections (${plan.rejections.length}):`);
+    for (const r of plan.rejections) {
+      out.push(`- ${r.underlying} (${r.strategy}, exp ${r.expiry}) [${r.reason}]: ${r.detail}`);
+    }
+  } else {
+    out.push("Construction rejections: none.");
+  }
+  if (proposal.notes.length) {
+    out.push("Notes:");
+    for (const n of proposal.notes) out.push(`- ${n}`);
+  }
+  return out.join("\n");
+}
+
 export const PROPOSALS_MAX_KEPT = 20;
 
 /** SQL-backed proposal store, mirroring HuntStore's shape. */
