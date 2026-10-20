@@ -646,6 +646,13 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       access: "read",
       inputs: [s("limit", "number", false, "Max attribution records to return.")],
     },
+    {
+      operation: "autopilot.chain",
+      summary:
+        "End-to-end attribution chain (issue #242 P3.3): the objective, cycles, funding position, latest rebalance proposal, and its execution attribution in ONE read - each stage linked by id, honest empty states, executions in last recorded state (refresh via autopilot.executions).",
+      access: "read",
+      inputs: [],
+    },
   ],
 };
 

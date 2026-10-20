@@ -232,6 +232,7 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.fundingSync", "action", [], "Sync the account's funding movements from Public into the payments funding ledger, attributed to the objective (idempotent; recording only, moves no money)."),
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.submitProposal", "action", ["proposalId"], "Stage a rebalance proposal's delta actions as trade proposals in the existing human-approval trade workflow; the attribution is recorded and nothing executes without a human approval there."),
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.executions", "read", ["limit"], "Execution attribution: rebalance proposal -> trade proposal -> human decision -> execution outcome (refreshed from the host trade ledger)."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.chain", "read", [], "End-to-end attribution chain (issue #242 P3.3): objective -> cycles -> funding position -> latest rebalance proposal -> execution attribution in one read, each stage linked by id."),
 ];
 
 /** Names of the write-class tools, for JWT scope enforcement. */

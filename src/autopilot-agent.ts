@@ -74,6 +74,11 @@ import {
   type ExecutionAttribution,
   type TradeStatusView,
 } from "./autopilot-execution";
+import {
+  buildChainSummary,
+  renderChainText,
+  type ChainSummary,
+} from "./autopilot-chain";
 import { hostStubFor } from "./agent-stubs";
 import type { HuntPlan } from "./opportunity-hunt";
 import type { PortfolioPosition } from "./public-data";
@@ -586,10 +591,9 @@ export class AutopilotAgent extends Think<Env> {
     }
   }
 
-  @callable()
-  async autopilotSummary(): Promise<Record<string, unknown>> {
-    const obj = this.objectiveRow();
-    const cycles = this.db()
+  /** Cycle counts for the summary and the chain: one read, shared. */
+  private cycleCounts(): { total: number; completed: number; last: CycleView | null } {
+    const rows = this.db()
       .exec(
         `SELECT id, started_at AS startedAt, finished_at AS finishedAt, status,
                 hunt_id AS huntId, summary, error, notifications
@@ -602,6 +606,17 @@ export class AutopilotAgent extends Think<Env> {
          FROM autopilot_cycles`,
       )
       .toArray() as unknown as { c: number; ok: number | null }[];
+    return {
+      total: totals[0]?.c ?? 0,
+      completed: totals[0]?.ok ?? 0,
+      last: rows[0] ? this.toCycleView(rows[0]) : null,
+    };
+  }
+
+  @callable()
+  async autopilotSummary(): Promise<Record<string, unknown>> {
+    const obj = this.objectiveRow();
+    const { total, completed, last } = this.cycleCounts();
     const store = this.proposalStore();
     // P3.1 (#331): the funding position is read from PaymentsAgent's
     // ledger at summary time; an unavailable read is reported as
@@ -615,9 +630,9 @@ export class AutopilotAgent extends Think<Env> {
     return {
       objectiveSet: !!obj,
       objective: obj ? this.toObjectiveView(obj) : null,
-      cycles: totals[0]?.c ?? 0,
-      cyclesCompleted: totals[0]?.ok ?? 0,
-      lastCycle: cycles[0] ? this.toCycleView(cycles[0]) : null,
+      cycles: total,
+      cyclesCompleted: completed,
+      lastCycle: last,
       proposals: store.count(),
       lastProposal: store.latest(),
       funding: fundingView.available
@@ -986,6 +1001,65 @@ export class AutopilotAgent extends Think<Env> {
     };
   }
 
+  /**
+   * The end-to-end attribution chain (issue #242 P3.3, #333): ONE read
+   * that joins the objective, cycles, funding position, latest
+   * rebalance proposal, and its execution attribution for THIS
+   * tenant's objective. The tenant is the serving instance - never
+   * an argument, so one tenant cannot read another's chain.
+   *
+   * Execution records are the last recorded state (byProposal of the
+   * latest proposal, re-joined by id in the pure builder); the host
+   * ledger refresh stays in autopilot.executions, so this read never
+   * double-fires the trade-done notify path. The read feeds the R0
+   * ledger (#241): one autopilot.chain outcome per genuine read, so
+   * the P4 learning loop has its substrate.
+   */
+  @callable()
+  async autopilotChain(): Promise<{ ok: true; chain: ChainSummary }> {
+    const startedAt = Date.now();
+    const obj = this.objectiveRow();
+    const { total, completed, last } = this.cycleCounts();
+    const fundingView = await this.autopilotFunding();
+    const proposal = this.proposalStore().latest();
+    const executions = proposal ? this.executionStore().byProposal(proposal.id) : [];
+    const chain = buildChainSummary({
+      objective: obj
+        ? {
+            goal: obj.goal,
+            budget: obj.budget,
+            cadenceCron: obj.cadenceCron,
+            enabled: obj.enabled === 1,
+            scheduleGoalId: obj.scheduleGoalId,
+          }
+        : null,
+      cyclesTotal: total,
+      cyclesCompleted: completed,
+      lastCycle: last,
+      funding: fundingView.available
+        ? { available: true, position: fundingView.position }
+        : { available: false, error: fundingView.error },
+      proposal,
+      executions,
+    });
+    emitLoopOutcome(
+      {
+        agent: "autopilot",
+        operation: "autopilot.chain",
+        tenantId: ownTenantId(this.ctx.id.name),
+        outcome: "ok",
+        durationMs: Date.now() - startedAt,
+        detail: {
+          objectiveSet: !!obj,
+          proposalId: proposal?.id ?? null,
+          executionCount: chain.executions.length,
+        },
+      },
+      this.env,
+    );
+    return { ok: true, chain };
+  }
+
   async handleA2A(body: unknown, origin: string): Promise<unknown> {
     const { createA2ATransport, handleCollecting, autopilotCard } = await import("./a2a");
     const a2a = createA2ATransport(this.ctx.storage.sql, origin, autopilotCard(origin), {
@@ -996,7 +1070,7 @@ export class AutopilotAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-  /** Route one A2A message: autopilot.summary/objective.get/objective.set/objective.clear/cycles/runCycle/proposals/funding/fundingSync/submitProposal/executions; no operation = summary. */
+  /** Route one A2A message: autopilot.summary/objective.get/objective.set/objective.clear/cycles/runCycle/proposals/funding/fundingSync/submitProposal/executions/chain; no operation = summary. */
   async handleA2AMessage(
     message: any,
     _context: { taskId: string; contextId: string },
@@ -1165,6 +1239,10 @@ export class AutopilotAgent extends Think<Env> {
             : ""),
         data: { ok: true, ...view },
       };
+    }
+    if (op === "autopilot.chain") {
+      const view = await this.autopilotChain();
+      return { text: renderChainText(view.chain), data: view };
     }
     if (op && op !== "autopilot.summary") {
       return { text: `Unknown operation: ${op}`, data: { ok: false, error: "unknown_operation" } };
