@@ -1922,7 +1922,7 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     // or clearing the objective stays owner-only (the scheduled.delete
     // precedent)
     const catalog = read("src/orchestrate.ts");
-    expect(catalog).toContain('"autopilot.summary", "autopilot.objective.get", "autopilot.cycles", "autopilot.runCycle"');
+    expect(catalog).toContain('"autopilot.summary", "autopilot.objective.get", "autopilot.cycles", "autopilot.runCycle", "autopilot.proposals"');
     expect(catalog).not.toContain(String.raw`"autopilot.objective.set"`);
     expect(catalog).not.toContain(String.raw`"autopilot.objective.clear"`);
     // host tool
@@ -1938,11 +1938,13 @@ describe("the Public autopilot stays wired (issue #107)", () => {
       'op === "autopilot.objective.clear"',
       'op === "autopilot.cycles"',
       'op === "autopilot.runCycle"',
+      'op === "autopilot.proposals"',
     ]) expect(agent).toContain(op);
     // MCP specs: summary/objective.get/cycles read, runCycle action,
     // objective.set/objective.clear write
     const mcp = read("src/mcp-agent-tools.ts");
     expect(mcp).toContain('"autopilot.summary", "read"');
+    expect(mcp).toContain('"autopilot.proposals", "read"');
     expect(mcp).toContain('"autopilot.runCycle", "action"');
     expect(mcp).toContain('"autopilot.objective.set", "write"');
     expect(mcp).toContain('"autopilot.objective.clear", "write"');
@@ -1957,6 +1959,41 @@ describe("the Public autopilot stays wired (issue #107)", () => {
     // no order placement anywhere in the new agent
     expect(agent).not.toContain("placeOrder");
     expect(agent).not.toContain("executeTrade");
+  });
+
+  it("the holdings seam + rebalance proposals stay wired (issue #242 P2.2)", () => {
+    const host = read("src/agent.ts");
+    const desk = read("src/desk-ops.ts");
+    const agent = read("src/autopilot-agent.ts");
+    const proposals = read("src/autopilot-proposals.ts");
+    // host: desk.portfolio routes to the desk-ops implementation,
+    // which reuses the stored-token backend + the get_portfolio read
+    // path and normalizes with extractPositions
+    expect(host).toContain('case "desk.portfolio"');
+    expect(host).toContain("deskPortfolio(this, args, text)");
+    expect(desk).toContain("export async function deskPortfolio(");
+    expect(desk).toContain('"get_portfolio"');
+    expect(desk).toContain("extractPositions");
+    // desk.hunt carries the full plan to in-process consumers
+    expect(desk).toContain("plan: result.hunt.plan");
+    // agent: runCycle constructs over the hunt plan, reads holdings
+    // via the seam, and persists the proposal in its own SQL
+    expect(agent).toContain('"desk.portfolio"');
+    expect(agent).toContain("constructPortfolio(plan.trades");
+    expect(agent).toContain("buildRebalanceProposal({");
+    expect(agent).toContain("ProposalStore");
+    expect(proposals).toContain("autopilot_proposals");
+    // honest empty states: no objective returns before any proposal
+    // work exists, a hunt with no plan records the skip on the cycle,
+    // and the read op says plainly when nothing is persisted yet
+    expect(agent).toContain('error: "no_objective"');
+    expect(agent).toContain("skipped: hunt returned no plan");
+    expect(agent).toContain("No rebalance proposals yet.");
+    // the guardrail: proposals are review records - no trade path is
+    // referenced by the seam, the builder, or the agent's new code
+    expect(proposals).not.toContain("proposeTrade");
+    expect(proposals).not.toContain("placeOrder");
+    expect(desk).not.toContain("proposeTrade");
   });
 
   it("error catalog phase 2: A2A failures carry codes; dispatch errors are catalog bodies (issue #209)", () => {

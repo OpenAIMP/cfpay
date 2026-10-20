@@ -128,6 +128,12 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
         s("to", "string", false, "ISO-8601 window end."),
       ],
     },
+    {
+      operation: "desk.portfolio",
+      summary: "Read the account's current Public.com portfolio positions (read-only holdings seam; places no orders).",
+      access: "read",
+      inputs: [],
+    },
   ],
 
   payments: [
@@ -576,6 +582,12 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       summary: "Run one autopilot discovery cycle now (heavyweight hunt + notifications).",
       access: "action",
       inputs: [],
+    },
+    {
+      operation: "autopilot.proposals",
+      summary: "Recent persisted rebalance proposals: target vs current holdings with delta actions and reasons. Review records only - nothing is executed.",
+      access: "read",
+      inputs: [s("limit", "number", false, "Max proposals to return.")],
     },
   ],
 };

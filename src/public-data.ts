@@ -141,6 +141,102 @@ export function extractAccountId(result: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * One position row out of a get_portfolio result, normalized to the
+ * fields this system reasons about. Everything the tool did not
+ * provide stays null - nothing is estimated or invented here.
+ */
+export interface PortfolioPosition {
+  /** Ticker as the tool reported it (an OCC-style code for options). */
+  symbol: string;
+  /** Signed quantity (negative = short), in the tool's own units. */
+  quantity: number;
+  /** Market value in dollars when the tool reported one, else null. */
+  marketValue: number | null;
+  /** Current per-unit price when the tool reported one, else null. */
+  currentPrice: number | null;
+  /** "equity" / "option" when the row says so, the raw type otherwise. */
+  kind: string | null;
+}
+
+const POSITION_SYMBOL_FIELDS = ["symbol", "ticker", "instrumentSymbol", "instrument_symbol"];
+const POSITION_QUANTITY_FIELDS = ["quantity", "shares", "units", "qty", "contracts"];
+const POSITION_VALUE_FIELDS = ["marketValue", "market_value", "value", "currentValue", "totalValue"];
+const POSITION_PRICE_FIELDS = ["currentPrice", "lastPrice", "price", "mark", "unitPrice"];
+
+function numField(rec: Record<string, unknown>, fields: string[]): number | null {
+  for (const f of fields) {
+    const v = rec[f];
+    const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function positionFromRow(row: unknown): PortfolioPosition | null {
+  if (!row || typeof row !== "object") return null;
+  const rec = row as Record<string, unknown>;
+  // The symbol may ride on a nested instrument object.
+  let symbol = "";
+  for (const f of POSITION_SYMBOL_FIELDS) {
+    if (typeof rec[f] === "string" && (rec[f] as string).trim()) {
+      symbol = (rec[f] as string).trim().toUpperCase();
+      break;
+    }
+  }
+  if (!symbol) {
+    const inst = rec.instrument;
+    if (inst && typeof inst === "object") {
+      // Symbol from the instrument; quantity/value from whichever
+      // level of the row carries them (the outer row wins conflicts).
+      const merged: Record<string, unknown> = { ...(inst as Record<string, unknown>), ...rec };
+      delete merged.instrument;
+      return positionFromRow(merged);
+    }
+    return null;
+  }
+  const quantity = numField(rec, POSITION_QUANTITY_FIELDS);
+  if (quantity === null || quantity === 0) return null;
+  const rawType = [rec.type, rec.assetType, rec.asset_type, rec.instrumentType]
+    .find((v) => typeof v === "string" && (v as string).trim()) as string | undefined;
+  let kind: string | null = rawType ? rawType.trim().toLowerCase() : null;
+  if (!kind && /^(call|put)$/i.test(String(rec.optionType ?? rec.option_type ?? ""))) kind = "option";
+  if (kind && /option|call|put/.test(kind)) kind = "option";
+  else if (kind && /equity|stock|share/.test(kind)) kind = "equity";
+  return {
+    symbol,
+    quantity,
+    marketValue: numField(rec, POSITION_VALUE_FIELDS),
+    currentPrice: numField(rec, POSITION_PRICE_FIELDS),
+    kind,
+  };
+}
+
+/**
+ * Positions from a get_portfolio result. The tool's payload shape is
+ * not published and the desk renders it as a generic table today, so
+ * extraction is liberal the way extractSpot/extractExpirations are:
+ * walk the payload, score each array by how many rows parse as
+ * positions, and take the best one (a payload that nests the same
+ * array twice is read once, never double-counted). Rows without a
+ * symbol or a nonzero quantity are not positions and are skipped.
+ */
+export function extractPositions(result: unknown): PortfolioPosition[] {
+  let best: PortfolioPosition[] = [];
+  const walk = (v: unknown, depth: number): void => {
+    if (depth > 4 || v === null || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      const parsed = v.map(positionFromRow).filter((p): p is PortfolioPosition => p !== null);
+      if (parsed.length > best.length) best = parsed;
+      for (const el of v) walk(el, depth + 1);
+      return;
+    }
+    for (const val of Object.values(v as Record<string, unknown>)) walk(val, depth + 1);
+  };
+  walk(result, 0);
+  return best;
+}
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}/;
 const EXPIRY_FIELDS = ["expiration", "expirationDate", "expiry", "date", "expiration_date"];
 
