@@ -985,6 +985,79 @@ async function runSections() {
     record("autopilot rebalance proposals read surface", false, err.message);
   }
   }
+
+  if (shouldRun("autopilot attribution chain read surface")) {
+  // 17. Autopilot attribution chain (issue #242 P3.3): the ONE read
+  //     joining objective -> cycles -> funding -> latest proposal ->
+  //     execution attribution must answer honestly in production. The
+  //     no-objective state, the objective-without-proposal state, and a
+  //     well-formed chain all PASS - the surface states plainly which
+  //     one it is. A malformed reply, an erroring op, or a 200 whose
+  //     text and data disagree FAILS. Read-only and headless: the
+  //     chain reports the last recorded execution state (the host
+  //     ledger refresh stays in autopilot.executions) and never runs
+  //     a cycle or stages an order.
+  try {
+    const res = await fetch(`${BASE_URL}/a2a/autopilot`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${API_KEY}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "smoke-autopilot-chain",
+        method: "message/send",
+        params: {
+          message: {
+            kind: "message",
+            role: "user",
+            messageId: `smoke-${Date.now()}`,
+            parts: [{ kind: "data", data: { operation: "autopilot.chain" } }],
+          },
+        },
+      }),
+    });
+    const json = await res.json().catch(() => null);
+    const parts = json?.result?.parts || [];
+    const text = parts
+      .filter((p) => p.kind === "text")
+      .map((p) => p.text || "")
+      .join(" ");
+    // Over HTTP the reply Message's TEXT is the contract (the
+    // structured data part does not reliably cross message/send -
+    // issue #201, see section 14): the renderer states plainly which
+    // state it is in. When a data part IS present, it must agree.
+    const dataPart = parts.find((p) => p.kind === "data")?.data;
+    const saysEmpty = text.includes("Objective: none set");
+    const saysChain =
+      text.includes("Attribution chain") &&
+      (text.includes("Objective:") || saysEmpty);
+    let dataAgrees = true;
+    if (dataPart && dataPart.chain && typeof dataPart.chain === "object") {
+      const chain = dataPart.chain;
+      const chainHasObjective = chain.objective !== null && chain.objective !== undefined;
+      dataAgrees =
+        dataPart.ok === true &&
+        (chainHasObjective
+          ? text.includes("Objective:") && !saysEmpty
+          : saysEmpty);
+    }
+    const honest =
+      res.status === 200 &&
+      json?.result?.kind === "message" &&
+      text.length > 0 &&
+      (saysEmpty || saysChain) &&
+      dataAgrees;
+    record(
+      "autopilot attribution chain read surface",
+      honest,
+      `status=${res.status}, text="${text.slice(0, 110)}"`,
+    );
+  } catch (err) {
+    record("autopilot attribution chain read surface", false, err.message);
+  }
+  }
 }
 
 main().catch((err) => {
