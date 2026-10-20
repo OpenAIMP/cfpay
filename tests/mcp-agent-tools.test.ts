@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { MCP_AGENT_TOOLS, MCP_WRITE_TOOL_NAMES, mcpToolName } from "../src/mcp-agent-tools";
+import { MCP_AGENT_TOOLS, MCP_FIELDS, MCP_WRITE_TOOL_NAMES, mcpToolName } from "../src/mcp-agent-tools";
 import { WRITE_TOOLS } from "../src/mcp-jwt";
 import { OPERATION_CATALOG } from "../src/orchestrate";
 import { A2A_OPS } from "../src/a2a-ops";
@@ -109,5 +109,28 @@ describe("MCP agent tools (issue #173)", () => {
     for (const agent of new Set(MCP_AGENT_TOOLS.map((t) => t.agent))) {
       expect(readme, `README matrix is missing ${agent}`).toContain(`| ${agent}`);
     }
+  });
+});
+
+describe("every spec field has a definition (issue #353)", () => {
+  it("resolves every field of every spec in MCP_FIELDS", () => {
+    // src/mcp.ts builds each tool's input schema via zodField(MCP_FIELDS[f])
+    // and dereferences def.kind with no fallback: one undefined field made
+    // the whole MCP server construction throw (production /mcp 1101) after
+    // the #331 funding and slack.postFile specs referenced fields that were
+    // never defined. This pin makes that class of drift fail in CI instead.
+    for (const spec of MCP_AGENT_TOOLS) {
+      for (const f of spec.fields) {
+        expect(MCP_FIELDS[f], `${spec.operation} field ${f}`).toBeDefined();
+        expect(["string", "number", "boolean", "object", "array"]).toContain(MCP_FIELDS[f].kind);
+      }
+    }
+  });
+
+  it("defines the fields the #331-era specs introduced", () => {
+    for (const f of ["tenantId", "records", "filename", "contentB64", "title", "initial_comment"]) {
+      expect(MCP_FIELDS[f], f).toBeDefined();
+    }
+    expect(MCP_FIELDS.records.kind).toBe("array");
   });
 });

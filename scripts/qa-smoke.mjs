@@ -874,6 +874,34 @@ async function runSections() {
   }
   }
 
+  if (shouldRun("MCP server answers tools/list")) {
+  // 18. MCP server liveness (issue #353): the /mcp handler builds every
+  //     tool's input schema at construction; one spec field without a
+  //     definition made construction throw and every /mcp request fail
+  //     with a Worker exception (1101) while every other smoke section
+  //     stayed green. A bare tools/list POST must answer with the tool
+  //     list (production MCP_AUTH_MODE is "none" today, so no credential
+  //     is needed; if that ever changes, a 401/403 here is the honest
+  //     auth posture, not a construction failure).
+  try {
+    const res = await fetch(`${BASE_URL}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    const text = await res.text();
+    const toolCount = (text.match(/"name"\s*:/g) || []).length;
+    const okRes = res.status === 200 && text.includes('"tools"') && toolCount >= 50;
+    record(
+      "MCP server answers tools/list",
+      okRes,
+      okRes ? `${toolCount} tools listed` : `status=${res.status}, tools found=${toolCount}`,
+    );
+  } catch (err) {
+    record("MCP server answers tools/list", false, err.message);
+  }
+  }
+
   if (shouldRun("dashboard capability routes (via QAAgent probes)")) {
   // 15. Dashboard capability routes (issues #260 / #264): the QA tab's
   //     dispatch + capability routes, exercised post-deploy. These routes
