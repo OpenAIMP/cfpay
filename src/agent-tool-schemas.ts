@@ -233,6 +233,7 @@ export const orchestratorAgentToolSchema = {
       description: "Which orchestrator operation to perform.",
     },
     goal: { type: "string", description: "The goal to plan and execute. Required for orchestrator.run." },
+    limit: { type: "number", description: "Max jobs to list. For orchestrator.jobs (default 10, cap 50)." },
     mode: { type: "string", enum: ["plan", "supervise"], description: "plan (default): execute the validated plan. supervise: the model reviews results between waves and may revise the remaining steps (bounded)." },
   },
   required: ["operation"],

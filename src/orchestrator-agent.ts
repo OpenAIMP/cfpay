@@ -611,7 +611,10 @@ export class OrchestratorAgent extends Think<Env> {
       };
     }
     if (op === "orchestrator.jobs") {
-      const jobs = await this.orchestrateJobs(10);
+      // Issue #335: the catalog advertises `limit`; honor it. orchestrateJobs
+      // clamps to [1, 50]; a missing or non-positive limit keeps the default 10.
+      const limit = Number(args.limit) > 0 ? Number(args.limit) : 10;
+      const jobs = await this.orchestrateJobs(limit);
       return {
         text: jobs.length
           ? jobs.map((j) => `${j.id} [${j.status}] ${j.goal}`).join("\n")

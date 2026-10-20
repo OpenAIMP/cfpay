@@ -140,6 +140,8 @@ const agentToolInputSchema = {
       to: { type: "string", description: "Recipient, when sending." },
       subject: { type: "string", description: "Subject, when sending." },
       body: { type: "string", description: "Body, when sending." },
+      html: { type: "string", description: "Optional HTML body, when sending (issue #335)." },
+      from: { type: "string", description: "Optional sender address, when sending; defaults to the agent's own address (issue #335)." },
     },
     required: ["request"],
   },
@@ -1546,7 +1548,10 @@ Do not claim to have completed a payment unless you have received confirmation.`
       }
 
       case "chat.send": {
-        const message_ = String(args.message || text || "").trim();
+        // Issue #335: the MCP spec advertises both `message` and `question`;
+        // honor `question` here the same way chat.summary does (the message
+        // text part stays the final fallback).
+        const message_ = String(args.message || args.question || text || "").trim();
         if (!message_) {
           return { text: "chat.send needs a message.", data: { ok: false, error: "missing_message" } };
         }
@@ -2857,6 +2862,11 @@ Do not claim to have completed a payment unless you have received confirmation.`
               to: String(args.to || ""),
               subject: String(args.subject || ""),
               body: String(args.body || ""),
+              // Issue #335: the catalog advertises html/from on both send
+              // operations; honor them. sendThroughAgent skips html when it
+              // is absent and defaults from to the agent's own address.
+              html: args.html !== undefined ? String(args.html) : undefined,
+              from: args.from !== undefined ? String(args.from) : undefined,
               // Passed through only for the attachments operation; absent for email.send,
               // which validates undefined as no attachments.
               attachments: args.attachments,
