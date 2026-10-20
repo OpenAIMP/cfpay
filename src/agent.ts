@@ -1572,13 +1572,33 @@ Do not claim to have completed a payment unless you have received confirmation.`
       case "desk.autopilot":
         return deskAutopilot(this, args, text);
 
+      case "identity.loopMetrics": {
+        // R0 loop-metrics summary (issue #241 R0.2, child issue #326):
+        // the caller's own tenant ledger over IdentityAgent's accounting
+        // stream, via the identity singleton's loopMetrics callable. The
+        // tenant is THIS instance's tenant, parsed from its instance
+        // name — never an argument: an op that could name a tenant would
+        // be a cross-tenant read. The operator singleton ("agent") reads
+        // the operator tenant's ledger, the identity surface's existing
+        // convention (identity reads resolve as the caller, src/api.ts).
+        const { identityStub } = await import("./agent-stubs");
+        const { ownTenantId } = await import("./tenancy");
+        const { loopMetricsReply } = await import("./r0-metrics-core");
+        const ledger = await (await identityStub(this.env)).loopMetrics({
+          tenantId: ownTenantId(this.ctx.id.name),
+          from: typeof args.from === "string" && args.from ? args.from : undefined,
+          to: typeof args.to === "string" && args.to ? args.to : undefined,
+        });
+        return loopMetricsReply(ledger);
+      }
+
       default:
         return {
           text: `Unknown operation: ${op}`,
           data: {
             ok: false,
             error: "unknown_operation",
-            supported: ["chat.summary", "chat.facts", "chat.send", "desk.hunt", "desk.autopilot"],
+            supported: ["chat.summary", "chat.facts", "chat.send", "desk.hunt", "desk.autopilot", "identity.loopMetrics"],
           },
         };
     }

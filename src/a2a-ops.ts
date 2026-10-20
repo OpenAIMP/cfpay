@@ -118,6 +118,16 @@ export const A2A_OPS: Record<A2aSurfaceKey, A2aOpSpec[]> = {
       access: "action",
       inputs: [s("goal", "string", true, "The goal or question; 'question' and the message text part are fallbacks.")],
     },
+    {
+      operation: "identity.loopMetrics",
+      summary:
+        "R0 loop-metrics summary (issue #241): per-operation success/failure rates, failure recurrences, and recording coverage over the caller's own tenant accounting stream. The tenant is the caller's resolved tenant, never an input.",
+      access: "read",
+      inputs: [
+        s("from", "string", false, "ISO-8601 window start; default is all recorded events."),
+        s("to", "string", false, "ISO-8601 window end."),
+      ],
+    },
   ],
 
   payments: [

@@ -130,6 +130,12 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   // but no orders, no sends, no funds movement - they are report-only.
   spec("cfmail", "CfmailAgent", "agent", "desk.hunt", "action", ["budget", "maxRiskPct", "maxUnderlyingPct", "horizonDays", "symbols"], "Run a budget-bounded defined-risk opportunity hunt (heavyweight analysis; places no orders)."),
   spec("cfmail", "CfmailAgent", "agent", "desk.autopilot", "action", ["goal", "question"], "Deep multi-step research answer to a question via the autopilot pipeline."),
+  // R0 loop metrics (issue #241 R0.2, #326): the identity domain is served by the host
+  // surface (IdentityAgent is RPC-only, no A2A surface of its own). Read class; the
+  // tenant is the caller's resolved tenant inside the handler, so there is no tenant
+  // field - and no from/to fields either: the tool returns the caller's full recorded
+  // ledger (windowing is an A2A-argument refinement).
+  spec("cfmail", "CfmailAgent", "agent", "identity.loopMetrics", "read", [], "R0 loop-metrics summary for the caller's tenant: per-operation success rates, failure recurrences, and recording coverage over the accounting stream."),
 
   // email
   spec("email", "EMAIL_AGENT", "email", "email.summary", "read", [], "Email agent summary."),
