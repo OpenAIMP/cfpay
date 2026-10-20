@@ -16,6 +16,16 @@
  * with a reasoned delta action per underlying. A proposal is a review
  * record - it executes nothing.
  *
+ * P3.2 (#332): a human may submit a persisted proposal for execution
+ * staging (src/autopilot-execution.ts): its delta actions enter the
+ * EXISTING human-approval trade workflow as trade proposals via the
+ * host's proposeTrade, and the decision + outcome are written back
+ * here as attribution records, refreshed from the host's trade
+ * ledger at read time. This agent still places no orders - it
+ * stages proposals for the human gate and records what the gate
+ * decided; the Slack trade-done rides the same notify path as the
+ * cycle notifications.
+ *
  * This agent places no orders and sends no mail on its own: hunts are
  * report-only pipelines on the host, notifications are best-effort
  * (failures are recorded on the cycle row, never fatal), and any order
@@ -48,10 +58,23 @@ import {
 import {
   buildRebalanceProposal,
   ProposalStore,
+  PROPOSALS_MAX_KEPT,
   renderProposalText,
   type HoldingsSnapshot,
   type RebalanceProposal,
 } from "./autopilot-proposals";
+import {
+  applyTradeStatus,
+  buildStagedOrders,
+  ExecutionStore,
+  EXECUTIONS_MAX_KEPT,
+  isTerminalAttribution,
+  renderExecutionsText,
+  tradeDoneText,
+  type ExecutionAttribution,
+  type TradeStatusView,
+} from "./autopilot-execution";
+import { hostStubFor } from "./agent-stubs";
 import type { HuntPlan } from "./opportunity-hunt";
 import type { PortfolioPosition } from "./public-data";
 import type { Env } from "./types";
@@ -207,6 +230,10 @@ export class AutopilotAgent extends Think<Env> {
 
   private proposalStore(): ProposalStore {
     return new ProposalStore(this.ctx.storage.sql);
+  }
+
+  private executionStore(): ExecutionStore {
+    return new ExecutionStore(this.ctx.storage.sql);
   }
 
   private objectiveRow(): ObjectiveRow | undefined {
@@ -580,6 +607,11 @@ export class AutopilotAgent extends Think<Env> {
     // ledger at summary time; an unavailable read is reported as
     // such, never replaced with invented figures.
     const fundingView = await this.autopilotFunding();
+    // P3.2 (#332): execution attribution counts are this agent's own
+    // recorded state (refreshed by autopilot.executions from the host
+    // trade ledger); the summary reports the last recorded state and
+    // never fabricates a fresher one.
+    const execRecords = this.executionStore().list(EXECUTIONS_MAX_KEPT);
     return {
       objectiveSet: !!obj,
       objective: obj ? this.toObjectiveView(obj) : null,
@@ -599,6 +631,16 @@ export class AutopilotAgent extends Think<Env> {
             lastMovementAt: fundingView.position.lastMovementAt,
           }
         : { available: false, error: fundingView.error },
+      executions: {
+        total: execRecords.length,
+        awaitingApproval: execRecords.filter((r) => r.decision === "pending").length,
+        approved: execRecords.filter((r) => r.decision === "approved" && r.outcome === "none").length,
+        rejected: execRecords.filter((r) => r.decision === "rejected").length,
+        expired: execRecords.filter((r) => r.decision === "expired").length,
+        executed: execRecords.filter((r) => r.outcome === "executed").length,
+        failed: execRecords.filter((r) => r.outcome === "failed").length,
+        last: execRecords[0] ?? null,
+      },
     };
   }
 
@@ -773,6 +815,177 @@ export class AutopilotAgent extends Think<Env> {
       : { ok: true, cycleId, huntId, proposalId, status, summary };
   }
 
+  /**
+   * Stage a persisted rebalance proposal's delta actions as trade
+   * proposals in the EXISTING human-approval trade workflow (issue
+   * #242 P3.2, #332): for each staged order, the host's proposeTrade
+   * callable records a pending trade proposal on this tenant's host
+   * instance and starts its approval workflow - the same path a
+   * model-proposed order takes. This agent gains no execution path:
+   * it never decides a trade proposal, never sends a workflow
+   * event, and never executes one; a human approves or rejects each
+   * staged trade in the dashboard exactly as before.
+   *
+   * The link lives here: one attribution record per staged order,
+   * keyed by the trade proposal id proposeTrade returns (the host
+   * record needs no new field - its question carries the readable
+   * attribution). Staging is idempotent per proposal: a proposal
+   * with attribution records already returns them unstaged-twice.
+   * A per-order staging failure is recorded on that order's record
+   * and does not stop the others.
+   */
+  @callable()
+  async autopilotSubmitProposal(
+    proposalId: string,
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    note?: string;
+    executions?: ExecutionAttribution[];
+  }> {
+    if (!proposalId || typeof proposalId !== "string") {
+      return { ok: false, error: "proposal_id_required" };
+    }
+    const proposal = this.proposalStore()
+      .list(PROPOSALS_MAX_KEPT)
+      .find((p) => p.id === proposalId);
+    if (!proposal) return { ok: false, error: "proposal_not_found" };
+    const store = this.executionStore();
+    const existing = store.byProposal(proposalId);
+    if (existing.length) {
+      return { ok: true, note: "already_staged", executions: existing };
+    }
+    const orders = buildStagedOrders(proposal);
+    if (!orders.length) {
+      return {
+        ok: false,
+        error: "nothing_to_stage",
+        note: "This proposal carries no delta lines to stage: either its holdings read failed (the plan was recorded without a diff) or every line is already aligned with the target.",
+      };
+    }
+    const tradingAllowed =
+      String(
+        (this.env as unknown as Record<string, string | undefined>).PUBLIC_ALLOW_TRADING ?? "",
+      )
+        .trim()
+        .toLowerCase() === "true";
+    if (!tradingAllowed) {
+      return {
+        ok: false,
+        error: "trading_disabled",
+        note: "PUBLIC_ALLOW_TRADING is not enabled on this deployment, so no trade proposals were staged. The proposal stays a review record; enable trading and submit again.",
+      };
+    }
+    const host = (await hostStubFor(this.env, ownTenantId(this.ctx.id.name))) as {
+      proposeTrade: (
+        tool: string,
+        args: Record<string, unknown>,
+        question: string,
+      ) => Promise<{ id: string }>;
+    };
+    const now = Date.now();
+    const records: ExecutionAttribution[] = [];
+    for (const order of orders) {
+      const rec: ExecutionAttribution = {
+        id: `exec:${order.key}`,
+        proposalId: proposal.id,
+        cycleId: proposal.cycleId,
+        goal: proposal.goal,
+        underlying: order.underlying,
+        action: order.action,
+        reason: order.reason,
+        tool: order.tool,
+        args: order.args,
+        tradeProposalId: null,
+        stageError: null,
+        decision: "none",
+        decidedAt: null,
+        decisionNotes: null,
+        outcome: "none",
+        result: null,
+        createdAt: now,
+        updatedAt: now,
+        notifiedAt: null,
+      };
+      try {
+        const tp = await host.proposeTrade(order.tool, order.args, order.question);
+        if (!tp || typeof tp.id !== "string" || !tp.id) {
+          throw new Error("host proposeTrade returned no proposal id");
+        }
+        rec.tradeProposalId = tp.id;
+        rec.decision = "pending";
+      } catch (err) {
+        rec.stageError = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+        rec.outcome = "failed";
+      }
+      store.save(rec);
+      records.push(rec);
+    }
+    return { ok: true, executions: records };
+  }
+
+  /**
+   * The execution attribution chain (issue #242 P3.2, #332),
+   * refreshed at read time from the host's trade ledger - the single
+   * record of decisions and outcomes - through the host's
+   * getTradeProposal callable. Each non-terminal record is folded
+   * with the ledger's current state; a completion this refresh
+   * newly observes posts the Slack trade-done (with the attribution
+   * ids) through the agent's existing SlackAgent notify path,
+   * exactly once. A host read failure answers with the last recorded
+   * state plus the refresh error - never an invented state.
+   */
+  @callable()
+  async autopilotExecutions(
+    limit?: number,
+  ): Promise<{ executions: ExecutionAttribution[]; refreshError?: string }> {
+    const n =
+      typeof limit === "number" && limit > 0 && limit <= EXECUTIONS_MAX_KEPT
+        ? Math.floor(limit)
+        : 20;
+    const store = this.executionStore();
+    let refreshError: string | undefined;
+    const toRefresh = store
+      .list(EXECUTIONS_MAX_KEPT)
+      .filter((r) => r.tradeProposalId && !isTerminalAttribution(r));
+    if (toRefresh.length) {
+      try {
+        const host = (await hostStubFor(this.env, ownTenantId(this.ctx.id.name))) as {
+          getTradeProposal: (id: string) => Promise<TradeStatusView | null>;
+        };
+        for (const rec of toRefresh) {
+          const tp = await host.getTradeProposal(rec.tradeProposalId as string);
+          if (!tp) continue;
+          const folded = applyTradeStatus(rec, tp, Date.now());
+          let out = folded.record;
+          if (folded.completed && !out.notifiedAt) {
+            const res = await this.bestEffortNotify(tradeDoneText(out));
+            if (res === "ok") out = { ...out, notifiedAt: Date.now() };
+          }
+          if (folded.changed || out !== folded.record) store.save(out);
+        }
+      } catch (err) {
+        refreshError = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+      }
+    }
+    // A trade-done whose Slack post failed earlier is retried here,
+    // once per read, until it lands (notifiedAt is the receipt).
+    for (const rec of store.list(EXECUTIONS_MAX_KEPT)) {
+      if (
+        (rec.outcome === "executed" || rec.outcome === "failed") &&
+        !rec.notifiedAt &&
+        rec.tradeProposalId
+      ) {
+        const res = await this.bestEffortNotify(tradeDoneText(rec));
+        if (res === "ok") store.save({ ...rec, notifiedAt: Date.now() });
+      }
+    }
+    return {
+      executions: store.list(n),
+      ...(refreshError ? { refreshError } : {}),
+    };
+  }
+
   async handleA2A(body: unknown, origin: string): Promise<unknown> {
     const { createA2ATransport, handleCollecting, autopilotCard } = await import("./a2a");
     const a2a = createA2ATransport(this.ctx.storage.sql, origin, autopilotCard(origin), {
@@ -783,7 +996,7 @@ export class AutopilotAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-  /** Route one A2A message: autopilot.summary/objective.get/objective.set/objective.clear/cycles/runCycle/proposals/funding/fundingSync; no operation = summary. */
+  /** Route one A2A message: autopilot.summary/objective.get/objective.set/objective.clear/cycles/runCycle/proposals/funding/fundingSync/submitProposal/executions; no operation = summary. */
   async handleA2AMessage(
     message: any,
     _context: { taskId: string; contextId: string },
@@ -913,6 +1126,44 @@ export class AutopilotAgent extends Think<Env> {
             ? `Funding sync: ${res.note}`
             : `Funding sync: recorded ${res.recorded ?? 0} new movement(s), ${res.skipped ?? 0} skipped (already recorded or invalid). ${view?.available ? renderFundingPositionText(view.position) : ""}`,
         data: res,
+      };
+    }
+    if (op === "autopilot.submitProposal") {
+      const res = await this.autopilotSubmitProposal(
+        typeof args.proposalId === "string" ? args.proposalId : "",
+      );
+      if (!res.ok) {
+        return {
+          text:
+            res.error === "proposal_not_found"
+              ? "No persisted rebalance proposal with that id. List proposals with autopilot.proposals."
+              : res.error === "proposal_id_required"
+                ? "autopilot.submitProposal requires {proposalId} - the persisted rebalance proposal to stage."
+                : `Cannot stage this proposal: ${res.note ?? res.error}`,
+          data: res,
+        };
+      }
+      const staged = (res.executions ?? []).filter((r) => r.tradeProposalId).length;
+      const failed = (res.executions ?? []).length - staged;
+      return {
+        text:
+          res.note === "already_staged"
+            ? `Proposal ${String(args.proposalId)} was already staged (${(res.executions ?? []).length} attribution record(s)); nothing was staged twice. See autopilot.executions.`
+            : `Staged ${staged} trade proposal(s) from rebalance proposal ${String(args.proposalId)} in the existing approval workflow${failed ? `; ${failed} order(s) failed to stage (see autopilot.executions for the recorded error)` : ""}. Each awaits a human decision in the dashboard (Public tab -> Logs -> Trade approvals); nothing executes without an approval there.`,
+        data: res,
+      };
+    }
+    if (op === "autopilot.executions") {
+      const view = await this.autopilotExecutions(
+        typeof args.limit === "number" ? args.limit : undefined,
+      );
+      return {
+        text:
+          renderExecutionsText(view.executions) +
+          (view.refreshError
+            ? `\n(Host refresh failed: ${view.refreshError} - showing the last recorded state.)`
+            : ""),
+        data: { ok: true, ...view },
       };
     }
     if (op && op !== "autopilot.summary") {
