@@ -33,9 +33,18 @@ import type { Env, PaymentRecord, StripeCheckout, StripeCheckoutStatus } from ".
 import { ZERO_ADDRESS, generateId } from "./payments";
 import { selfProvisionOwnTenant } from "./tenant-provision";
 import { stampTenantOnConnection } from "./tenant-connection";
+import {
+  fundingPosition,
+  mergeFundingRecords,
+  type FundingPosition,
+  type FundingRecord,
+} from "./funding-core";
 
 /** Bound on ledger size, matching the monolith's previous limit. */
 const MAX_STORED_PAYMENTS = 200;
+
+/** Bound on the funding ledger, matching the payments ledger bound. */
+const MAX_STORED_FUNDING = 200;
 
 /** Prune abandoned Stripe intents after 24h so state cannot grow forever. */
 const CHECKOUT_TTL_MS = 24 * 3600 * 1000;
@@ -45,6 +54,16 @@ const DEDUPE_TTL_MS = 72 * 3600 * 1000;
 
 export interface PaymentsState {
   payments: PaymentRecord[];
+  /**
+   * The funding ledger (issue #242 P3.1, #331): brokerage funding
+   * movements read from the account's Public surface and recorded
+   * here, attributed to the AutopilotAgent objective. A separate book
+   * from `payments` on purpose: funding movements are not payments
+   * received or sent by this system, and folding them into the
+   * payments totals would misstate both. This agent stays the single
+   * owner of money records; the funding book is its second ledger.
+   */
+  funding: FundingRecord[];
   totalReceived: number;
   totalSent: number;
   stripeCheckouts: Record<string, StripeCheckout>;
@@ -56,6 +75,7 @@ export interface PaymentsState {
 
 const EMPTY: PaymentsState = {
   payments: [],
+  funding: [],
   totalReceived: 0,
   totalSent: 0,
   stripeCheckouts: {},
@@ -146,6 +166,7 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
     const s = (this.state || {}) as Partial<PaymentsState>;
     return {
       payments: Array.isArray(s.payments) ? s.payments : [],
+      funding: Array.isArray(s.funding) ? s.funding : [],
       totalReceived: typeof s.totalReceived === "number" ? s.totalReceived : 0,
       totalSent: typeof s.totalSent === "number" ? s.totalSent : 0,
       stripeCheckouts: s.stripeCheckouts && typeof s.stripeCheckouts === "object" ? s.stripeCheckouts : {},
@@ -230,6 +251,65 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
   async paymentTotals(): Promise<{ received: number; sent: number; stored: number }> {
     const s = this.state_();
     return { received: s.totalReceived, sent: s.totalSent, stored: s.payments.length };
+  }
+
+  /* --------------------------- funding ledger --------------------------- */
+
+  /**
+   * Record brokerage funding movements into the funding ledger
+   * (issue #242 P3.1, #331). The single write path for the funding
+   * book. Recording is idempotent on each movement's source
+   * reference — a re-sync of the same account history records
+   * nothing twice — and it moves NO money: these are records of
+   * movements the host already read from the account, never
+   * instructions to make one. Returns how many were actually
+   * recorded, so a caller can tell a real write from a no-op.
+   */
+  @callable()
+  async recordFunding(records: FundingRecord[]): Promise<{ recorded: number; skipped: number }> {
+    const s = this.state_();
+    const merged = mergeFundingRecords(s.funding, Array.isArray(records) ? records : [], MAX_STORED_FUNDING);
+    if (merged.recorded > 0) this.commit({ ...s, funding: merged.records });
+    return { recorded: merged.recorded, skipped: merged.skipped };
+  }
+
+  /** Newest first (by movement timestamp, then recording order). */
+  @callable()
+  async listFunding(limit: number): Promise<FundingRecord[]> {
+    const s = this.state_();
+    const n = typeof limit === "number" && limit > 0 ? Math.min(Math.floor(limit), 200) : 50;
+    return [...s.funding].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, n);
+  }
+
+  /**
+   * The funding position for one tenant from the recorded ledger.
+   * Computed from the stored records at read time (fundingPosition
+   * is the single aggregation), so the position can never drift from
+   * the records themselves. A tenant with nothing recorded gets the
+   * explicit zero state, not an error. With no tenant named, the
+   * position covers this instance's whole book (instances are
+   * tenant-scoped under #252, so that is the owning tenant's book).
+   */
+  @callable()
+  async fundingTotals(tenantId: string | null): Promise<FundingPosition> {
+    const s = this.state_();
+    if (typeof tenantId === "string" && tenantId) return fundingPosition(s.funding, tenantId);
+    const tenants = [...new Set(s.funding.map((r) => r.attribution?.tenantId).filter(Boolean))];
+    if (tenants.length <= 1) return fundingPosition(s.funding, tenants[0] ?? "");
+    // Defensive only: a tenant-scoped instance should never hold a
+    // mixed book. Merge the per-tenant positions arithmetically.
+    const parts = tenants.map((t) => fundingPosition(s.funding, t as string));
+    const sum = (pick: (p: FundingPosition) => number) =>
+      Math.round(parts.reduce((a, p) => a + pick(p), 0) * 100) / 100;
+    return {
+      tenantId: "",
+      recorded: parts.some((p) => p.recorded),
+      count: parts.reduce((a, p) => a + p.count, 0),
+      totalDeposits: sum((p) => p.totalDeposits),
+      totalWithdrawals: sum((p) => p.totalWithdrawals),
+      net: sum((p) => p.net),
+      lastMovementAt: parts.map((p) => p.lastMovementAt).filter(Boolean).sort().at(-1) ?? null,
+    };
   }
 
   /**
@@ -738,7 +818,43 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
       case "payments.totals":
         return { text: "Ledger totals.", data: await this.paymentTotals() };
 
+      case "funding.list": {
+        const limit = Number(args.limit) > 0 ? Math.min(Number(args.limit), 200) : 50;
+        const records = await this.listFunding(limit);
+        return { text: "Returned " + records.length + " funding record(s).", data: { records } };
+      }
+
+      case "funding.totals": {
+        const position = await this.fundingTotals(
+          typeof args.tenantId === "string" && args.tenantId ? args.tenantId : null,
+        );
+        return {
+          text: position.recorded
+            ? `Funding position: ${position.count} movement(s), net ${position.net}.`
+            : "Funding position: no funding movements recorded.",
+          data: position,
+        };
+      }
+
       // ---- write operations ----
+      case "funding.record": {
+        // Recording only (issue #242 P3.1): movements the caller read
+        // from the account are written to the funding ledger with
+        // their objective attribution. This path executes nothing -
+        // no payment processing, no checkout, no transfer.
+        if (!Array.isArray(args.records)) {
+          return {
+            text: "funding.record needs a records array of funding movements with objective attribution.",
+            data: { ok: false, error: "missing_fields" },
+          };
+        }
+        const r = await this.recordFunding(args.records as FundingRecord[]);
+        return {
+          text: `Recorded ${r.recorded} funding movement(s); ${r.skipped} skipped (already recorded or invalid).`,
+          data: { ok: true, recorded: r.recorded, skipped: r.skipped },
+        };
+      }
+
       case "payment.process": {
         const email = String(args.email || "").trim();
         const request = String(args.request || "").trim();
@@ -799,6 +915,9 @@ export class PaymentsAgent extends Think<Env, PaymentsState> {
               "ledger.summary",
               "payments.list",
               "payments.totals",
+              "funding.list",
+              "funding.totals",
+              "funding.record",
               "payment.process",
               "checkout.create",
               "checkout.status",

@@ -39,6 +39,13 @@ import {
 } from "./autopilot-core";
 import { constructPortfolio } from "./portfolio-core";
 import {
+  buildFundingRecords,
+  renderFundingPositionText,
+  type FundingMovement,
+  type FundingPosition,
+  type FundingRecord,
+} from "./funding-core";
+import {
   buildRebalanceProposal,
   ProposalStore,
   renderProposalText,
@@ -258,7 +265,7 @@ export class AutopilotAgent extends Think<Env> {
    * the cross-tenant envelope rule is asserted before the call.
    */
   private async dispatchToAgent(
-    binding: "SCHEDULED_AGENT" | "CfmailAgent" | "SLACK_AGENT" | "EMAIL_AGENT",
+    binding: "SCHEDULED_AGENT" | "CfmailAgent" | "SLACK_AGENT" | "EMAIL_AGENT" | "PAYMENTS_AGENT",
     instance: string,
     operation: string,
     args: Record<string, unknown>,
@@ -432,6 +439,126 @@ export class AutopilotAgent extends Think<Env> {
     return { proposals: this.proposalStore().list(limit) };
   }
 
+  /**
+   * The recorded funding position for this instance's objective
+   * (issue #242 P3.1, #331): read from PaymentsAgent's funding
+   * ledger at read time — the totals are the ledger's own
+   * aggregation of its stored records, never a projection this
+   * agent maintains, so the two can never disagree. A payments
+   * read failure answers available:false rather than inventing a
+   * position.
+   */
+  @callable()
+  async autopilotFunding(limit?: number): Promise<
+    | { available: true; position: FundingPosition; records: FundingRecord[] }
+    | { available: false; error: string }
+  > {
+    const tenantId = ownTenantId(this.ctx.id.name);
+    const n = typeof limit === "number" && limit > 0 && limit <= 200 ? Math.floor(limit) : 20;
+    try {
+      const totals = await this.dispatchToAgent("PAYMENTS_AGENT", "payments", "funding.totals", {
+        tenantId,
+      });
+      const list = await this.dispatchToAgent("PAYMENTS_AGENT", "payments", "funding.list", {
+        limit: n,
+      });
+      const position = totals.data as FundingPosition | undefined;
+      const records = (list.data as { records?: FundingRecord[] } | undefined)?.records ?? [];
+      if (!position || typeof position.net !== "number") {
+        return { available: false, error: "payments funding read returned no position" };
+      }
+      return { available: true, position, records };
+    } catch (err) {
+      return {
+        available: false,
+        error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      };
+    }
+  }
+
+  /**
+   * Sync brokerage funding movements into the payments ledger
+   * (issue #242 P3.1, #331): read the account's movements from the
+   * host's Public read surface (desk.funding — the host keeps the
+   * token), stamp them with this objective's attribution, and
+   * record them through PaymentsAgent (funding.record). Recording
+   * only: this initiates no transfer and moves no money, and
+   * re-syncing is idempotent (the ledger dedupes on the movement's
+   * source reference). When the read surface cannot observe funding
+   * movements, the result says so and nothing is recorded.
+   */
+  @callable()
+  async autopilotFundingSync(): Promise<{
+    ok: boolean;
+    observable?: boolean;
+    recorded?: number;
+    skipped?: number;
+    note?: string;
+    error?: string;
+    funding?: unknown;
+  }> {
+    const obj = this.objectiveRow();
+    if (!obj) return { ok: false, error: "no_objective" };
+    const tenantId = ownTenantId(this.ctx.id.name);
+    let readData:
+      | {
+          ok?: boolean;
+          observable?: boolean;
+          movements?: FundingMovement[];
+          error?: string;
+          code?: string;
+        }
+      | undefined;
+    try {
+      const { data } = await this.dispatchToAgent("CfmailAgent", "agent", "desk.funding", {});
+      readData = data as typeof readData;
+    } catch (err) {
+      return {
+        ok: false,
+        error: "funding_read_failed",
+        note: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      };
+    }
+    if (!readData || readData.ok === false) {
+      return { ok: false, error: String(readData?.error ?? "funding_read_failed") };
+    }
+    if (readData.observable === false) {
+      return {
+        ok: true,
+        observable: false,
+        recorded: 0,
+        skipped: 0,
+        note: "Funding movements are not observable through this account's Public read surface; nothing was recorded and no movement is claimed.",
+        funding: await this.autopilotFunding(),
+      };
+    }
+    const records = buildFundingRecords(
+      Array.isArray(readData.movements) ? readData.movements : [],
+      { tenantId, objectiveId: obj.id, goal: obj.goal },
+      new Date().toISOString(),
+    );
+    try {
+      const { data } = await this.dispatchToAgent("PAYMENTS_AGENT", "payments", "funding.record", {
+        records,
+      });
+      const rec = data as { ok?: boolean; recorded?: number; skipped?: number } | undefined;
+      if (!rec || rec.ok === false) return { ok: false, error: "funding_record_failed" };
+      return {
+        ok: true,
+        observable: true,
+        recorded: rec.recorded ?? 0,
+        skipped: rec.skipped ?? 0,
+        funding: await this.autopilotFunding(),
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: "funding_record_failed",
+        note: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      };
+    }
+  }
+
   @callable()
   async autopilotSummary(): Promise<Record<string, unknown>> {
     const obj = this.objectiveRow();
@@ -449,6 +576,10 @@ export class AutopilotAgent extends Think<Env> {
       )
       .toArray() as unknown as { c: number; ok: number | null }[];
     const store = this.proposalStore();
+    // P3.1 (#331): the funding position is read from PaymentsAgent's
+    // ledger at summary time; an unavailable read is reported as
+    // such, never replaced with invented figures.
+    const fundingView = await this.autopilotFunding();
     return {
       objectiveSet: !!obj,
       objective: obj ? this.toObjectiveView(obj) : null,
@@ -457,6 +588,17 @@ export class AutopilotAgent extends Think<Env> {
       lastCycle: cycles[0] ? this.toCycleView(cycles[0]) : null,
       proposals: store.count(),
       lastProposal: store.latest(),
+      funding: fundingView.available
+        ? {
+            available: true,
+            recorded: fundingView.position.recorded,
+            count: fundingView.position.count,
+            totalDeposits: fundingView.position.totalDeposits,
+            totalWithdrawals: fundingView.position.totalWithdrawals,
+            net: fundingView.position.net,
+            lastMovementAt: fundingView.position.lastMovementAt,
+          }
+        : { available: false, error: fundingView.error },
     };
   }
 
@@ -641,7 +783,7 @@ export class AutopilotAgent extends Think<Env> {
     return await handleCollecting(a2a.transport, body);
   }
 
-  /** Route one A2A message: autopilot.summary/objective.get/objective.set/objective.clear/cycles/runCycle/proposals; no operation = summary. */
+  /** Route one A2A message: autopilot.summary/objective.get/objective.set/objective.clear/cycles/runCycle/proposals/funding/fundingSync; no operation = summary. */
   async handleA2AMessage(
     message: any,
     _context: { taskId: string; contextId: string },
@@ -733,6 +875,44 @@ export class AutopilotAgent extends Think<Env> {
       return {
         text: renderProposalText(proposals[0] ?? null),
         data: { ok: true, proposals },
+      };
+    }
+    if (op === "autopilot.funding") {
+      const view = await this.autopilotFunding(
+        typeof args.limit === "number" ? args.limit : undefined,
+      );
+      if (!view.available) {
+        return {
+          text: `Funding position unavailable: ${view.error}`,
+          data: { ok: false, ...view },
+        };
+      }
+      const lines = view.records
+        .slice(0, 10)
+        .map(
+          (r) =>
+            `${r.ts} ${r.direction} $${r.amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${r.sourceRef})`,
+        );
+      return {
+        text: [renderFundingPositionText(view.position), ...lines].join("\n"),
+        data: { ok: true, ...view },
+      };
+    }
+    if (op === "autopilot.fundingSync") {
+      const res = await this.autopilotFundingSync();
+      const view = res.funding as
+        | { available: true; position: FundingPosition }
+        | { available: false; error: string }
+        | undefined;
+      return {
+        text: !res.ok
+          ? res.error === "no_objective"
+            ? "No autopilot objective set; funding movements are attributed to an objective, so set one with autopilot.objective.set first."
+            : `Funding sync failed: ${res.error}${res.note ? ` (${res.note})` : ""}`
+          : res.observable === false
+            ? `Funding sync: ${res.note}`
+            : `Funding sync: recorded ${res.recorded ?? 0} new movement(s), ${res.skipped ?? 0} skipped (already recorded or invalid). ${view?.available ? renderFundingPositionText(view.position) : ""}`,
+        data: res,
       };
     }
     if (op && op !== "autopilot.summary") {

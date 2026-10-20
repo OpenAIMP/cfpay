@@ -20,6 +20,7 @@ import {
   parseToolJson,
   schemaProps,
 } from "./public-data";
+import { extractFundingMovements } from "./funding-core";
 
 /**
  * The host slice the desk.* operations need. The host class satisfies
@@ -216,6 +217,115 @@ export async function deskPortfolio(
     return {
       text: "Portfolio read failed: " + String(error),
       data: { ok: false, error: "portfolio_read_failed", code: a2aErrorCode(error) },
+    };
+  }
+}
+
+/**
+ * Candidate Public tool names for account funding/activity history.
+ * Public.com does not publish its tool list, so the read probes for
+ * the first of these the account actually offers (the same
+ * live-schema discipline as get_portfolio). Order is preference:
+ * transfer-specific feeds before generic activity feeds.
+ */
+export const FUNDING_TOOL_CANDIDATES = [
+  "get_transfers",
+  "list_transfers",
+  "get_funding_history",
+  "get_cash_transfers",
+  "get_transactions",
+  "get_activity",
+  "get_account_activity",
+  "get_account_history",
+  "get_history",
+] as const;
+
+/**
+ * desk.funding - the account's brokerage funding movements
+ * (deposits/withdrawals) as an A2A operation (issue #242 P3.1,
+ * #331): the read half of the funding ledger. AutopilotAgent syncs
+ * what this returns into PaymentsAgent's ledger, attributed to the
+ * objective; this op itself records nothing and moves nothing.
+ *
+ * Honesty contract, in the desk.portfolio style — with one addition:
+ * when the account offers NO funding/activity tool at all, funding
+ * movements are UNOBSERVABLE through this integration. That is a
+ * property of the read surface, not a failure, so the reply is
+ * ok:true with observable:false and an empty movement list: the
+ * ledger then says "not observable" rather than inventing movements
+ * or claiming none happened. A tool that IS offered but fails or
+ * answers non-JSON is a structured error, like desk.portfolio.
+ */
+export async function deskFunding(
+  host: DeskHost,
+  args: Record<string, any>,
+  text: string,
+): Promise<DeskReply> {
+  let backend: DeskBackend;
+  try {
+    backend = await deskBackend(host);
+  } catch (error) {
+    return {
+      text: "Funding read failed: " + String(error),
+      data: { ok: false, error: "funding_read_failed", code: a2aErrorCode(error) },
+    };
+  }
+  if (!backend.ok) {
+    return {
+      text: `desk.funding cannot run: ${backend.code}`,
+      data: { ok: false, error: backend.code.toLowerCase(), code: backend.code },
+    };
+  }
+  const tool = backend.tools.find((t) => (FUNDING_TOOL_CANDIDATES as readonly string[]).includes(t.name));
+  if (!tool) {
+    const fetchedAt = new Date().toISOString();
+    return {
+      text: "Funding movements are not observable: this account's Public tools offer no transfers/activity feed, so no deposits or withdrawals can be read. Nothing was recorded and nothing is claimed about movements the integration cannot see.",
+      data: { ok: true, observable: false, movements: [], count: 0, fetchedAt },
+    };
+  }
+  try {
+    const callArgs: Record<string, unknown> = {};
+    const { properties, required } = schemaProps(tool.inputSchema);
+    const acctProp = matchProp(properties, ["accountId", "account_id", "account", "accountNumber"]);
+    if (acctProp && required.includes(acctProp)) {
+      const accounts = parseToolJson(await callTool(backend.token, "get_accounts", {}, backend.session));
+      const accountId = extractAccountId(accounts);
+      if (!accountId) {
+        return {
+          text: `desk.funding cannot run: ${tool.name} requires an account id, but none could be read from get_accounts.`,
+          data: { ok: false, error: "account_id_unavailable", code: "PUBLIC_UPSTREAM" },
+        };
+      }
+      callArgs[acctProp] = accountId;
+    }
+    const missing = missingRequired(tool.inputSchema, callArgs);
+    if (missing.length) {
+      return {
+        text: `desk.funding cannot run: ${tool.name} requires unsupported parameters: ${missing.join(", ")}.`,
+        data: { ok: false, error: "funding_params_unsupported", code: "PUBLIC_UPSTREAM" },
+      };
+    }
+    const raw = await callTool(backend.token, tool.name, callArgs, backend.session);
+    const parsed = parseToolJson(raw);
+    if (parsed === undefined) {
+      return {
+        text: `desk.funding failed: the ${tool.name} result was not JSON, so no funding movements could be read from it.`,
+        data: { ok: false, error: "funding_unparseable", code: "PUBLIC_UPSTREAM" },
+      };
+    }
+    const movements = extractFundingMovements(parsed);
+    const fetchedAt = new Date().toISOString();
+    return {
+      text: movements.length
+        ? `${movements.length} funding movement(s) read from ${tool.name} (as of ${fetchedAt}).`
+        : `${tool.name} reported no readable funding movements (the account may have none in the reported history).`,
+      data: { ok: true, observable: true, tool: tool.name, movements, count: movements.length, fetchedAt },
+    };
+  } catch (error) {
+    return {
+      text: "Funding read failed: " + String(error),
+      data: { ok: false, error: "funding_read_failed", code: a2aErrorCode(error) },
     };
   }
 }

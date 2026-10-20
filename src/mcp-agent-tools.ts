@@ -137,6 +137,10 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   // ledger (windowing is an A2A-argument refinement).
   spec("cfmail", "CfmailAgent", "agent", "identity.loopMetrics", "read", [], "R0 loop-metrics summary for the caller's tenant: per-operation success rates, failure recurrences, and recording coverage over the accounting stream."),
   spec("cfmail", "CfmailAgent", "agent", "desk.portfolio", "read", [], "Read the account's current Public.com portfolio positions (read-only holdings seam; places no orders)."),
+  // Funding read seam (issue #242 P3.1, #331): the account's brokerage funding
+  // movements from the Public read surface. Read class; reports unobservable
+  // honestly when the account offers no funding/activity feed.
+  spec("cfmail", "CfmailAgent", "agent", "desk.funding", "read", [], "Read the account's brokerage funding movements (deposits/withdrawals) from the Public read surface; observable:false when no funding feed is offered."),
 
   // email
   spec("email", "EMAIL_AGENT", "email", "email.summary", "read", [], "Email agent summary."),
@@ -150,6 +154,12 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   spec("payments", "PAYMENTS_AGENT", "payments", "ledger.summary", "read", [], "Payments ledger summary."),
   spec("payments", "PAYMENTS_AGENT", "payments", "payments.list", "read", ["direction", "limit"], "List payment records."),
   spec("payments", "PAYMENTS_AGENT", "payments", "payments.totals", "read", [], "Payment totals."),
+  // Funding ledger (issue #242 P3.1, #331): a separate book inside PaymentsAgent.
+  // funding.record is write-class (it writes ledger records) but executes nothing:
+  // no payment processing, no checkout, no transfer - records of movements already read.
+  spec("payments", "PAYMENTS_AGENT", "payments", "funding.list", "read", ["limit"], "List recorded brokerage funding movements, newest first."),
+  spec("payments", "PAYMENTS_AGENT", "payments", "funding.totals", "read", ["tenantId"], "Funding position from the recorded ledger (deposits, withdrawals, net); zero state when nothing is recorded."),
+  spec("payments", "PAYMENTS_AGENT", "payments", "funding.record", "write", ["records"], "Record brokerage funding movements with objective attribution (idempotent on source reference; recording only, moves no money)."),
   spec("payments", "PAYMENTS_AGENT", "payments", "payment.process", "write", ["email", "request", "claim", "card"], "Process a payment request (refuses without a verified claim or card reference)."),
   spec("payments", "PAYMENTS_AGENT", "payments", "checkout.create", "write", ["requestId", "email", "request"], "Create an x402 checkout."),
   spec("payments", "PAYMENTS_AGENT", "payments", "checkout.status", "read", ["requestId"], "A checkout's status."),
@@ -217,6 +227,8 @@ export const MCP_AGENT_TOOLS: McpAgentToolSpec[] = [
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.cycles", "read", ["limit"], "Recent autopilot discovery cycles."),
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.runCycle", "action", [], "Run one autopilot discovery cycle now (heavyweight hunt + notifications)."),
   spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.proposals", "read", ["limit"], "Recent persisted rebalance proposals (target vs current, delta actions with reasons; review records only)."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.funding", "read", ["limit"], "Recorded funding position for the objective, read from PaymentsAgent's funding ledger (totals + recent movements; explicit zero state)."),
+  spec("autopilot", "AUTOPILOT_AGENT", "autopilot", "autopilot.fundingSync", "action", [], "Sync the account's funding movements from Public into the payments funding ledger, attributed to the objective (idempotent; recording only, moves no money)."),
 ];
 
 /** Names of the write-class tools, for JWT scope enforcement. */
