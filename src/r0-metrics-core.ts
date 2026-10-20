@@ -8,8 +8,10 @@
  * This module is the ledger over it: pure, SDK-free aggregation logic
  * plus one thin read seam (`readLoopMetrics`) that pages the existing
  * identity-core `queryAccounting` path. No new table, no new DO, no new
- * binding. The readable summary surface is sibling issue #326; producer
- * wiring for loops outside the stream is R0.3 (#327).
+ * binding. The readable summary surface (sibling issue #326) is
+ * `renderLoopMetricsSummary` below, served by the identity.loopMetrics
+ * operation on the host A2A surface; producer wiring for loops outside
+ * the stream is R0.3 (#327).
  *
  * What the accounting stream does and does not carry (verified against
  * src/aspect-logging.ts, src/aspect-error.ts and src/identity-core.ts —
@@ -486,6 +488,87 @@ export function buildLoopMetricsLedger(
     recurrences,
     unrecordedLoops: UNRECORDED_LOOPS,
   };
+}
+
+/* ------------------------- summary surface (#326) ------------------------ */
+
+/**
+ * The readable R0 summary (issue #241 R0.2, child issue #326): render
+ * one tenant's ledger as the text half of the identity.loopMetrics
+ * reply. Pure and deterministic — same ledger, same text, no clock.
+ *
+ * Honesty rules, mirroring the ledger's own:
+ * - An empty stream says "no outcomes recorded yet" — never a table of
+ *   zeroes dressed as data.
+ * - Cycle time appears only when the ledger's stats say samples exist;
+ *   today's stream records no durations, so the normal rendering is
+ *   "cycle time unavailable (no durations recorded)", stated per
+ *   operation rather than silently omitted.
+ * - Unrecorded loops are named as not yet recorded, with their
+ *   producers, in every rendering — including the empty one.
+ * - A truncated read is flagged as a lower bound.
+ */
+export function renderLoopMetricsSummary(ledger: LoopMetricsLedger): string {
+  const pct = (rate: number | null): string => {
+    if (rate === null) return "n/a";
+    const p = Math.round(rate * 1000) / 10;
+    return `${Number.isInteger(p) ? p : p.toFixed(1)}%`;
+  };
+  const window = (ms: number): string => {
+    if (ms % 86400000 === 0) return `${ms / 86400000}d`;
+    if (ms % 3600000 === 0) return `${ms / 3600000}h`;
+    if (ms % 60000 === 0) return `${ms / 60000}m`;
+    return `${ms}ms`;
+  };
+  const lines: string[] = [];
+  if (ledger.eventCount === 0) {
+    lines.push(
+      `Loop metrics (R0) for tenant ${ledger.tenantId ?? "unknown"}: no outcomes recorded yet — the accounting stream holds no events for this tenant.`,
+    );
+  } else {
+    lines.push(
+      `Loop metrics (R0) for tenant ${ledger.tenantId ?? "unknown"}: ${ledger.eventCount} events, ${ledger.fromTs} to ${ledger.toTs}.`,
+    );
+    for (const m of ledger.operations) {
+      const counts = `${m.successes} ok, ${m.failures} failed, ${m.denied} denied, ${m.skipped} skipped${m.other ? `, ${m.other} other` : ""}`;
+      const rate =
+        m.successRate === null
+          ? `no attempts (${counts})`
+          : `${pct(m.successRate)} success (${counts})`;
+      const failure = m.lastFailureTs
+        ? `; last failure ${m.lastFailureTs} (${m.lastFailureSignature})`
+        : "";
+      const cycle = m.cycleTime.available
+        ? `; cycle time p50 ${m.cycleTime.p50Ms}ms, mean ${Math.round(m.cycleTime.meanMs ?? 0)}ms over ${m.cycleTime.samples} sample${m.cycleTime.samples === 1 ? "" : "s"}`
+        : "; cycle time unavailable (no durations recorded)";
+      const flag = isUnreliable(m) ? " UNRELIABLE (at least half of attempts failed)." : "";
+      lines.push(`- ${m.operation}: ${m.runs} runs — ${rate}${failure}${cycle}.${flag}`);
+    }
+    if (ledger.recurrences.length) {
+      lines.push("Recurring failures:");
+      for (const r of ledger.recurrences) {
+        lines.push(
+          `- ${r.signature}: ${r.occurrences} failures, up to ${r.maxInWindow} within ${window(r.windowMs)}, last ${r.lastTs}.`,
+        );
+      }
+    }
+  }
+  if (ledger.unrecordedLoops.length) {
+    lines.push("Not yet recorded (outcomes exist but reach no ledger until a producer is wired, #327):");
+    for (const l of ledger.unrecordedLoops) {
+      lines.push(`- ${l.loop} — ${l.producer}.`);
+    }
+  }
+  if (ledger.truncated) {
+    lines.push("Note: the read hit the event cap — these figures are a lower bound.");
+  }
+  return lines.join("\n");
+}
+
+/** The identity.loopMetrics reply: rendered text + the ledger itself as
+ *  structured data, in the fleet's { text, data } handler shape. */
+export function loopMetricsReply(ledger: LoopMetricsLedger): { text: string; data: LoopMetricsLedger } {
+  return { text: renderLoopMetricsSummary(ledger), data: ledger };
 }
 
 /* ------------------------------ read seam ------------------------------- */
